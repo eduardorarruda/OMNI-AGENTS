@@ -3,8 +3,10 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "../../components/ui";
+import { EVENTO_FOCAR_TERMINAL } from "../conversa/colarNaSessao";
 import type { WorkspaceTab } from "../../types/workspace";
 import { joinPath, writeBinaryFile } from "../files/filesService";
+import { useContaDoWorkspace } from "../git/contaDoWorkspace";
 import {
   attachTerminal,
   beginConversation,
@@ -68,6 +70,9 @@ interface TerminalPaneProps {
 export function TerminalPane({ projectId, projectPath, paneId, tab, onSessionCreated }: TerminalPaneProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const sessionRef = useRef(tab.resourceId);
+  // Em ref: trocar a conta do workspace não pode reabrir a sessão; vale para a próxima que abrir.
+  const contaGithubRef = useRef<string | null>(null);
+  contaGithubRef.current = useContaDoWorkspace().conta;
   /** Criação de sessão em andamento. O efeito pode rodar de novo antes dela terminar (StrictMode no
    *  dev, remontagem): sem isto cada execução abria a sua PTY e "Novo terminal" virava dois. */
   const criandoRef = useRef<Promise<TerminalSession> | null>(null);
@@ -207,6 +212,7 @@ export function TerminalPane({ projectId, projectPath, paneId, tab, onSessionCre
             profileId: launch?.profile?.id,
             conversationId: conversationRef.current ?? undefined,
             externalSessionId,
+            contaGithub: contaGithubRef.current,
           });
           // Grava mesmo se esta execução do efeito já foi cancelada: a próxima usa esta sessão.
           sessionRef.current = session.id;
@@ -359,6 +365,10 @@ export function TerminalPane({ projectId, projectPath, paneId, tab, onSessionCre
       }
     }
     host.addEventListener("paste", handleImagePaste, { capture: true });
+    const focarAposColagem = (evento: Event) => {
+      if ((evento as CustomEvent<string>).detail === sessionRef.current) terminal.focus();
+    };
+    window.addEventListener(EVENTO_FOCAR_TERMINAL, focarAposColagem);
 
     void start();
 
@@ -367,6 +377,7 @@ export function TerminalPane({ projectId, projectPath, paneId, tab, onSessionCre
       if (pollTimer) window.clearTimeout(pollTimer);
       resizeObserver?.disconnect();
       host.removeEventListener("paste", handleImagePaste, { capture: true });
+      window.removeEventListener(EVENTO_FOCAR_TERMINAL, focarAposColagem);
       dataSubscription.dispose();
       terminal.dispose();
     };

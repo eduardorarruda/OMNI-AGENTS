@@ -20,7 +20,7 @@ import {
   descartarAnexo,
   enviarAnexo,
   montarPrompt,
-  type Anexo, EVENTO_ANEXAR, EVENTO_ARRASTANDO } from "./anexos";
+  type Anexo, EVENTO_ANEXAR, EVENTO_ARRASTANDO, EVENTO_TEXTO } from "./anexos";
 import { useRota, type Rota } from "./rota";
 import { useDados } from "./useDados";
 import { usePoll } from "./usePoll";
@@ -808,6 +808,12 @@ export function ConversationDetail({ conversation: daLista, refresh, abrirConver
     if (!tela) return;
     const anexar = (evento: Event) => adicionarRef.current((evento as CustomEvent<File[]>).detail ?? []);
     const arrastar = (evento: Event) => setArrastando(Boolean((evento as CustomEvent<boolean>).detail));
+    const receberTexto = (evento: Event) => {
+      const novo = (evento as CustomEvent<string>).detail ?? "";
+      // O que a pessoa já tinha escrito fica: a tarefa entra depois.
+      setText((atual) => (atual.trim() ? `${atual}\n\n${novo}` : novo));
+      tela.querySelector<HTMLTextAreaElement>(".composer-campo")?.focus();
+    };
     const colarSolto = (evento: ClipboardEvent) => {
       // Já tratado (o campo de texto ou a própria conversa colaram): não anexa duas vezes.
       if (evento.defaultPrevented) return;
@@ -821,10 +827,12 @@ export function ConversationDetail({ conversation: daLista, refresh, abrirConver
     };
     tela.addEventListener(EVENTO_ANEXAR, anexar);
     tela.addEventListener(EVENTO_ARRASTANDO, arrastar);
+    tela.addEventListener(EVENTO_TEXTO, receberTexto);
     document.addEventListener("paste", colarSolto);
     return () => {
       tela.removeEventListener(EVENTO_ANEXAR, anexar);
       tela.removeEventListener(EVENTO_ARRASTANDO, arrastar);
+      tela.removeEventListener(EVENTO_TEXTO, receberTexto);
       document.removeEventListener("paste", colarSolto);
     };
   }, []);
@@ -967,7 +975,9 @@ export function ConversationDetail({ conversation: daLista, refresh, abrirConver
   async function interromper() {
     setError(null);
     try {
-      const parou = await request<{ limpou?: boolean }>(`/conversas/${encodeURIComponent(conversation.id)}/parar`, { method: "POST" });
+      const parou = await request<{ limpou?: boolean; parou?: boolean }>(`/conversas/${encodeURIComponent(conversation.id)}/parar`, { method: "POST" });
+      // Em `falhaEnvio`, não em `error`: a leitura periódica limpa o `error` em segundos.
+      if (parou?.parou === false) setFalhaEnvio("O agente não parou: ele segue trabalhando no terminal. Tente Parar de novo ou encerre pelo terminal.");
       // A CLI devolveu o prompt ao campo dela e o engine o apagou lá: ele volta para este campo.
       if (parou?.limpou && ultimoTexto.current) {
         const texto = ultimoTexto.current;
@@ -1011,6 +1021,12 @@ export function ConversationDetail({ conversation: daLista, refresh, abrirConver
       await Promise.all([ler(), refresh()]);
     } catch (reason) { falhou(reason); }
   }
+
+  // Seta para cima no campo: as mensagens desta conversa, sem repetir a mesma em seguida.
+  const historicoEnviado = useMemo(() => mensagens
+    .filter((mensagem) => mensagem.role === "user" && (mensagem.kind ?? "text") === "text" && mensagem.text.trim())
+    .map((mensagem) => mensagem.text)
+    .filter((texto, indice, lista) => texto !== lista[indice - 1]), [mensagens]);
 
   async function enviarPrompt() {
     if (!conversation.capabilities || busy) return;
@@ -1154,7 +1170,7 @@ export function ConversationDetail({ conversation: daLista, refresh, abrirConver
     {!ativo && capability?.reason && <p className="m-dica">{capability.reason}</p>}
 
     <Composer texto={text} onTexto={setText} anexos={anexos} onAdicionar={adicionar} onRemover={remover}
-      onEnviar={() => void enviarPrompt()} podeEnviar={podeEnviar} ocupado={busy}
+      historico={historicoEnviado} onEnviar={() => void enviarPrompt()} podeEnviar={podeEnviar} ocupado={busy}
       placeholder={!capability?.prompt ? (capability?.escolha ? "Responda a pergunta acima para continuar"
         : capability?.enfileirar ? "Agente trabalhando… sua mensagem entra na fila"
         : trabalhando ? "Agente trabalhando… escreva a próxima mensagem"

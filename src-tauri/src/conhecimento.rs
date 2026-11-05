@@ -19,7 +19,7 @@ fn abrir() -> Result<Base, String> {
     Ok(base)
 }
 
-async fn bloqueante<T: Send + 'static>(tarefa: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
+pub(crate) async fn bloqueante<T: Send + 'static>(tarefa: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
     tauri::async_runtime::spawn_blocking(tarefa).await.map_err(|erro| erro.to_string())?
 }
 

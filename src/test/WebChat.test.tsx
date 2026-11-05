@@ -43,11 +43,11 @@ const MENSAGENS: Mensagem[] = [
 ];
 
 /** Servidor do PC de mentira, só com as rotas novas: `/painel` e a timeline com o estado junto. */
-function servidor(estado: { lista: Conversation[]; enviados: { url: string; body: unknown }[]; painelLido: number; etag304?: boolean }) {
+function servidor(estado: { lista: Conversation[]; enviados: { url: string; body: unknown }[]; painelLido: number; etag304?: boolean; parou?: boolean }) {
   return vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method === "POST") {
       estado.enviados.push({ url, body: init.body ? JSON.parse(String(init.body)) : null });
-      return new Response(JSON.stringify({ id: "a", ok: true }), { status: 202 });
+      return new Response(JSON.stringify({ id: "a", ok: true, parou: estado.parou }), { status: 202 });
     }
     if (url === "/painel") {
       estado.painelLido += 1;
@@ -130,6 +130,22 @@ it("com o agente trabalhando aparece o Parar, que para o agente no PC", async ()
   const parar = await screen.findByRole("button", { name: "Parar" }, { timeout: 4000 });
   await act(async () => { await userEvent.click(parar); });
   await waitFor(() => expect(estado.enviados.some((item) => item.url.endsWith("/parar"))).toBe(true));
+});
+
+it("avisa quando o Parar não conseguiu parar o agente, e fica em silêncio quando parou", async () => {
+  const lista = [conversa({ state: "working", capabilities: { prompt: false, approve: false, revision: '"r"', approval_text: null, reason: null } })];
+  const estado = { lista, enviados: [] as { url: string; body: unknown }[], painelLido: 0, parou: false };
+  vi.stubGlobal("fetch", servidor(estado));
+  render(<WebApp />);
+  await abrir();
+  const parar = await screen.findByRole("button", { name: "Parar" }, { timeout: 4000 });
+  estado.parou = true;
+  await act(async () => { await userEvent.click(parar); });
+  await waitFor(() => expect(estado.enviados.some((item) => item.url.endsWith("/parar"))).toBe(true));
+  expect(screen.queryByText(/O agente não parou/)).not.toBeInTheDocument();
+  estado.parou = false;
+  await act(async () => { await userEvent.click(await screen.findByRole("button", { name: "Parar" }, { timeout: 4000 })); });
+  expect(await screen.findByText(/O agente não parou/, {}, { timeout: 4000 })).toBeInTheDocument();
 });
 
 it("terminal: digitação passa, respostas automáticas do xterm não", () => {

@@ -6,7 +6,8 @@ import { CheckIcon, ChatIcon, TerminalIcon } from "../../components/ui/PixelIcon
 import { AgentIcon } from "../../components/ui/AgentIcon";
 import { EtiquetaDoStatus, statusDaConversa } from "../../components/ConversaStatus";
 import type { TerminalSession } from "../terminal/terminalService";
-import { EVENTO_ANEXAR, EVENTO_ARRASTANDO, tipoPelaExtensao } from "../../mobile/anexos";
+import { EVENTO_ANEXAR, EVENTO_ARRASTANDO, EVENTO_TEXTO, tipoPelaExtensao } from "../../mobile/anexos";
+import { EVENTO_TEXTO_DA_SESSAO, type TextoDaSessao } from "./colarNaSessao";
 import { ConversationDetail } from "../../mobile/MobileApp";
 import { listTerminalSessions } from "../terminal/terminalService";
 import { useSessionProvider } from "../terminal/sessionProviders";
@@ -199,6 +200,21 @@ function useSoltarArquivos(area: React.RefObject<HTMLDivElement | null>) {
   }, [area]);
 }
 
+/** Texto mandado para esta sessão vai para o campo da conversa, o que a pessoa está vendo. */
+function useReceberTexto(area: React.RefObject<HTMLDivElement | null>, sessionId: string) {
+  useEffect(() => {
+    const receber = (evento: Event) => {
+      const { sessionId: alvo, texto } = (evento as CustomEvent<TextoDaSessao>).detail;
+      const tela = area.current?.querySelector(".chat-tela");
+      if (alvo !== sessionId || !tela) return;
+      evento.preventDefault();
+      tela.dispatchEvent(new CustomEvent(EVENTO_TEXTO, { detail: texto }));
+    };
+    window.addEventListener(EVENTO_TEXTO_DA_SESSAO, receber);
+    return () => window.removeEventListener(EVENTO_TEXTO_DA_SESSAO, receber);
+  }, [area, sessionId]);
+}
+
 function ChatDaSessao({ sessionId, onVerTerminal }: { sessionId: string; onVerTerminal: () => void }) {
   const [conversa, setConversa] = useState<Conversation | null>(null);
   const [erro, setErro] = useState<string | null>(null);
@@ -206,6 +222,7 @@ function ChatDaSessao({ sessionId, onVerTerminal }: { sessionId: string; onVerTe
   const [pasta, setPasta] = useState<string | null>(null);
   const area = useRef<HTMLDivElement>(null);
   useSoltarArquivos(area);
+  useReceberTexto(area, sessionId);
   /** Quando a sessão nasceu: só sessão recém-aberta mostra a tela de abertura. */
   const [criadaEm, setCriadaEm] = useState<number | null>(null);
   /** Trava: depois que o agente ficou pronto (ou o tempo acabou), a abertura não volta. */

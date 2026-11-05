@@ -55,12 +55,16 @@ de conhecimento local e uma memória compartilhada entre conversas, tudo no pró
 - **Servidor MCP `omni-rag`:** o Claude consulta a base só quando a pessoa pedir, com as ferramentas `buscar_conhecimento` e `ler_trecho`. Liga-se por uma caixa na tela Conhecimento.
 - **Memória compartilhada entre conversas:** ganchos da CLI do Claude aplicados só nas sessões do OMNI, via `--settings`. `UserPromptSubmit` injeta notas relacionadas, `SessionStart` traz o índice, `PostCompact` guarda o resumo e `Stop` dispara uma passada com modelo rápido que salva até 2 notas por turno. Pode ser desligada na tela; a passada consome um pouco da conta.
 - **Modelos novos na lista:** Opus 5.5, Fable 5.1, Sonnet 5.5 e Haiku 5.5.
+- **Tarefas externas:** em Configurações → Tarefas você aponta o app para uma API HTTP (URL, cabeçalho, filtros e mapeamento de campos). A aba Tarefas lista as suas, mostra detalhe e comentários e tem o botão "Usar nesta conversa". A busca é só sob demanda, com cache local, e a chave fica num arquivo restrito no computador.
+- **Conta do GitHub por workspace:** clique na conta no rodapé para escolher qual conta do `gh` cada workspace usa. O token entra só no processo do terminal, nunca em disco.
+- **Histórico no campo de mensagem:** com o campo vazio, a seta para cima traz a última mensagem enviada, e a seta para baixo volta ao rascunho.
 
 ### Correções
 
 - A conversa retomada do Histórico agora registra a conversa (a aba Conversa não fica mais vazia).
 - Os terminais recebem `TERM` e `COLORTERM`: aberto pelo menu do sistema, a CLI ficava sem cor e a conversa travava em "Entrada do CLI não reconhecida".
 - O Histórico esconde as sessões automáticas de resumo do Claude Desktop ("Below is a conversation log..."), sem apagar nenhum arquivo.
+- **Botão Parar:** agora confere se a conversa parou de verdade. Quando o Esc não basta, como com subagentes em segundo plano, manda um Ctrl+C, e avisa se mesmo assim não parou. O status "trabalhando" também não fica mais preso.
 
 ### Tudo fica local
 

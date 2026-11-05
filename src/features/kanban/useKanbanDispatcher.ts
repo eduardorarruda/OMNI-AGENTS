@@ -24,7 +24,8 @@ export function useKanbanDispatcher(
   kanban: KanbanState,
   dispatch: React.Dispatch<KanbanAction>,
   projects: Project[],
-  sessions: TerminalSession[]
+  sessions: TerminalSession[],
+  contaGithub?: string | null
 ) {
   const sessionByProjectRef = useRef<Record<string, string>>({});
   const runningRef = useRef(false);
@@ -34,6 +35,8 @@ export function useKanbanDispatcher(
   projectsRef.current = projects;
   const sessionsRef = useRef(sessions);
   sessionsRef.current = sessions;
+  const contaGithubRef = useRef(contaGithub);
+  contaGithubRef.current = contaGithub;
 
   useEffect(() => {
     let cancelled = false;
@@ -110,6 +113,7 @@ export function useKanbanDispatcher(
           cols: 120,
           initialCommand: agent.command,
           provider: agent.id,
+          contaGithub: contaGithubRef.current,
         });
         sessionId = spawned.id;
         sessionByProjectRef.current[project.id] = sessionId;

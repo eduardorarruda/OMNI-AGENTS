@@ -1368,29 +1368,67 @@ async fn teclas(State(state): State<Arc<EngineState>>, RoutePath(id): RoutePath<
         Ok(Json(json!({"ok":true})))
     }).await.map_err(|_|error(StatusCode::INTERNAL_SERVER_ERROR,"Falha ao enviar teclas"))?
 }
-/// O "parar" da conversa: Esc, e depois apaga o prompt que a CLI devolveu ao campo (com texto lá, o
-/// próximo prompt dava "não reconhecida"). `limpou` diz à página para devolver o texto ao campo dela.
+/// Espera entre leituras da tela no "parar".
+const PARAR_PASSO_MS: u64 = 150;
+/// ~1,5 s: o que o Esc tem para encerrar o turno antes do Ctrl+C.
+const PARAR_ESPERA_ESC: usize = 10;
+/// ~3 s depois do Ctrl+C. Passando disso, o agente não parou e a resposta diz isso.
+const PARAR_ESPERA_CTRL_C: usize = 20;
+/// ~1,5 s de campo livre seguido para dar a parada por terminada.
+const PARAR_LIVRE: usize = 10;
+/// Limite do laço inteiro, para quem só tem o Esc.
+const PARAR_PASSOS: usize = 50;
+
+/// Agente ativo na tela, do jeito de cada CLI. O agente em segundo plano é só do Claude.
+fn agente_ativo(texto: &str, provider: &str) -> bool {
+    if provider == "claude" { interaction::ainda_trabalhando(texto) } else { in_turn(texto, provider) }
+}
+
+/// Esc, e no Claude um Ctrl+C se o Esc não bastou: com agente em segundo plano o Esc não encerra. É
+/// um só, e só com a tela dizendo que há trabalho: o seguinte, ou um com a tela parada, leva ao
+/// "Press Ctrl-C again to exit". Devolve `(limpou, parou)`.
+fn interromper(state: &Arc<EngineState>, sessao: &LiveSession, sessao_id: &str, provider: &str) -> Result<(bool, bool), ApiError> {
+    write_terminal(state,sessao_id,"\x1b").map_err(|erro|error(StatusCode::CONFLICT,&erro.to_string()))?;
+    let (mut limpou, mut livre, mut ctrl_c_em) = (false, 0, None);
+    // ponytail: Ctrl+U apaga até o começo da linha; texto de várias linhas leva um por linha, daí o laço.
+    // Parar logo depois de enviar: o campo aparece vazio por um instante e só depois a CLI devolve
+    // o texto (ou a colagem ainda chega). Por isso só sai com o campo livre por ~1,5 s seguidos.
+    for passo in 1..=PARAR_PASSOS {
+        std::thread::sleep(std::time::Duration::from_millis(PARAR_PASSO_MS));
+        let Ok(context) = sessao.interaction.lock() else { break };
+        let tela = context.parser.screen();
+        let ativo = agente_ativo(&tela.contents(),provider);
+        if !ativo && interaction::ready(tela,provider) { livre += 1; if livre >= PARAR_LIVRE { break; } continue; }
+        livre = 0;
+        let sobra = interaction::sobra_no_campo(tela,provider);
+        drop(context);
+        if sobra { limpou = true; let _ = write_terminal(state,sessao_id,"\x15"); }
+        if !ativo { continue; }
+        match ctrl_c_em {
+            None if provider == "claude" && passo >= PARAR_ESPERA_ESC => {
+                ctrl_c_em = Some(passo);
+                let _ = write_terminal(state,sessao_id,"\x03");
+            }
+            Some(enviado) if passo - enviado >= PARAR_ESPERA_CTRL_C => break,
+            _ => {}
+        }
+    }
+    let parou = sessao.interaction.lock().is_ok_and(|context| !agente_ativo(&context.parser.screen().contents(),provider));
+    Ok((limpou, parou))
+}
+
+/// O "parar" da conversa. `limpou`: o prompt que a CLI devolveu ao campo foi apagado (com texto lá,
+/// o próximo prompt dava "não reconhecida") e a página o devolve ao campo dela. `parou`: a tela não
+/// mostra mais nada em andamento; `false` é o agente seguindo, e o processo não é morto daqui porque
+/// entre os filhos da CLI não dá para separar o trabalho dos servidores MCP.
 async fn parar(State(state): State<Arc<EngineState>>, RoutePath(id): RoutePath<String>) -> Result<Json<Value>, ApiError> {
     tokio::task::spawn_blocking(move || {
         let (_, sessao) = current(&state,&id)?;
         let sessao = sessao.ok_or_else(||error(StatusCode::CONFLICT,"Sessão não está aberta no PC"))?;
         let (sessao_id, provider) = sessao.meta.lock().map(|meta| (meta.id.clone(), meta.provider.clone().unwrap_or_default()))
             .map_err(|_|error(StatusCode::INTERNAL_SERVER_ERROR,"Sessão indisponível"))?;
-        write_terminal(&state,&sessao_id,"\x1b").map_err(|erro|error(StatusCode::CONFLICT,&erro.to_string()))?;
-        let (mut limpou, mut livre) = (false, 0);
-        // ponytail: Ctrl+U apaga até o começo da linha; texto de várias linhas leva um por linha, daí o laço.
-        // Parar logo depois de enviar: o campo aparece vazio por um instante e só depois a CLI devolve
-        // o texto (ou a colagem ainda chega). Por isso só sai com o campo livre por ~1,5 s seguidos.
-        for _ in 0..50 {
-            std::thread::sleep(std::time::Duration::from_millis(150));
-            let Ok(context) = sessao.interaction.lock() else { break };
-            if interaction::ready(context.parser.screen(),&provider) { livre += 1; if livre >= 10 { break; } continue; }
-            livre = 0;
-            let sobra = interaction::sobra_no_campo(context.parser.screen(),&provider);
-            drop(context);
-            if sobra { limpou = true; let _ = write_terminal(&state,&sessao_id,"\x15"); }
-        }
-        Ok(Json(json!({"ok":true,"limpou":limpou})))
+        let (limpou, parou) = interromper(&state,&sessao,&sessao_id,&provider)?;
+        Ok(Json(json!({"ok":true,"limpou":limpou,"parou":parou})))
     }).await.map_err(|_|error(StatusCode::INTERNAL_SERVER_ERROR,"Falha ao parar"))?
 }
 /// Renomear a conversa. Vale para o celular e para a web de computador; o desktop chega aqui pelo
@@ -3474,7 +3512,6 @@ quebra"}"#] {
         assert!(validate(&MobileConfig{enabled:true,bind:"127.0.0.1:47321".into(),token:String::new(),serve:false,totp_secret:String::new(),totp_confirmed:false}).is_err());
     }
 
-    #[cfg(windows)]
     mod actions {
         use super::*;
         #[derive(Debug)] struct FakeChild;
@@ -3486,7 +3523,7 @@ quebra"}"#] {
             fn try_wait(&mut self) -> std::io::Result<Option<portable_pty::ExitStatus>> { Ok(None) }
             fn wait(&mut self) -> std::io::Result<portable_pty::ExitStatus> { Ok(portable_pty::ExitStatus::with_exit_code(0)) }
             fn process_id(&self) -> Option<u32> { Some(42) }
-            fn as_raw_handle(&self) -> Option<std::os::windows::io::RawHandle> { None }
+            #[cfg(windows)] fn as_raw_handle(&self) -> Option<std::os::windows::io::RawHandle> { None }
         }
         struct FakeMaster;
         impl MasterPty for FakeMaster {
@@ -3494,6 +3531,9 @@ quebra"}"#] {
             fn get_size(&self) -> Result<PtySize> { Ok(PtySize{rows:20,cols:100,pixel_width:0,pixel_height:0}) }
             fn try_clone_reader(&self) -> Result<Box<dyn Read + Send>> { Ok(Box::new(std::io::empty())) }
             fn take_writer(&self) -> Result<Box<dyn Write + Send>> { Ok(Box::new(std::io::sink())) }
+            #[cfg(unix)] fn process_group_leader(&self) -> Option<i32> { None }
+            #[cfg(unix)] fn as_raw_fd(&self) -> Option<std::os::fd::RawFd> { None }
+            #[cfg(unix)] fn tty_name(&self) -> Option<std::path::PathBuf> { None }
         }
         struct RecordingWriter(Arc<Mutex<Vec<u8>>>);
         impl Write for RecordingWriter {
@@ -3621,6 +3661,78 @@ quebra"}"#] {
             assert_eq!(estado(),SessionState::Answered,"redesenho virou trabalho");
             crate::append_output(&session,b"\x1b[2J\x1b[H* Pensando (esc to interrupt)",Some(42));
             assert_eq!(estado(),SessionState::Working);
+        }
+
+        /// Agente parado no `❯` com a TUI redesenhando sem pausa (o relógio do agente em segundo
+        /// plano, a linha de status): cada quadro zerava o tempo ocioso e a sessão ficava "trabalhando"
+        /// para sempre, com o Parar na tela. Sem sinal de turno, redesenho não segura o estado.
+        #[test] fn redesenho_constante_no_prompt_nao_segura_o_trabalhando() {
+            let (_dir,state) = fixture(); let (session,_,_) = fake_session(&state,"❯ ");
+            crate::append_output(&session,"\x1b[2J\x1b[H✶ Mulling… (esc to interrupt)\r\n❯ ".as_bytes(),Some(42));
+            assert_eq!(session.meta.lock().unwrap().state,SessionState::Working);
+            for _ in 0..13 {
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                crate::append_output(&session,"\x1b[2J\x1b[H● Pronto.\r\n\r\n❯ ".as_bytes(),Some(42));
+            }
+            assert_eq!(crate::settle(&session).state,SessionState::Answered,"parado no prompt seguiu trabalhando");
+        }
+        /// O texto da conversa logo acima do campo não é sinal de turno: a sessão parada no `❯` que
+        /// citava a frase ficava "trabalhando", com o aviso de fila no campo.
+        #[test] fn frase_do_turno_na_conversa_nao_prende_o_trabalhando() {
+            let (_dir,state) = fixture(); let (session,_,_) = fake_session(&state,"❯ ");
+            crate::append_output(&session,"\x1b[2J\x1b[H✶ Mulling… (esc to interrupt)\r\n❯ ".as_bytes(),Some(42));
+            crate::append_output(&session,"\x1b[2J\x1b[H● A tela mostra esc to interrupt no rodapé.\r\n\r\n❯ ".as_bytes(),Some(42));
+            session.interaction.lock().unwrap().turno_visto_em_ms = 1;
+            assert_eq!(crate::settle(&session).state,SessionState::Answered);
+            assert!(!interaction::pode_enfileirar(session.interaction.lock().unwrap().parser.screen(),"claude"));
+        }
+
+        /// Tela parada: só o Esc. Ctrl+C aqui abriria o aviso de saída da CLI.
+        #[test] fn parar_com_a_tela_parada_nao_manda_ctrl_c() {
+            let (_dir,state) = fixture(); let (session,bytes,_) = fake_session(&state,"● Pronto.\r\n\r\n❯ ");
+            assert_eq!(interromper(&state,&session,"s","claude").unwrap(),(false,true));
+            assert_eq!(bytes.lock().unwrap().as_slice(),b"\x1b");
+        }
+        /// O Esc encerra o turno sozinho: o Ctrl+C não sai.
+        #[test] fn parar_sem_ctrl_c_quando_o_esc_resolve() {
+            let (_dir,state) = fixture(); let (session,bytes,_) = fake_session(&state,"✶ Mulling… (esc to interrupt)\r\n❯ ");
+            let cli = session.clone();
+            std::thread::spawn(move || { std::thread::sleep(std::time::Duration::from_millis(400));
+                crate::append_output(&cli,"\x1b[2J\x1b[H⎿  Interrupted\r\n\r\n❯ ".as_bytes(),Some(42)); });
+            assert_eq!(interromper(&state,&session,"s","claude").unwrap(),(false,true));
+            assert_eq!(bytes.lock().unwrap().as_slice(),b"\x1b");
+        }
+        /// O caso comprovado na CLI 2.1.318: o Esc não encerra agente em segundo plano, um Ctrl+C
+        /// encerra tudo. A tela guarda o "Waiting for" depois disso e o segundo Ctrl+C não pode sair.
+        #[test] fn parar_com_agente_em_segundo_plano_manda_um_ctrl_c_so() {
+            let (_dir,state) = fixture(); let (session,bytes,_) = fake_session(&state,"✻ Waiting for 1 background agent to finish\r\n\r\n❯ ");
+            let (cli,recebido) = (session.clone(),bytes.clone());
+            std::thread::spawn(move || {
+                while !recebido.lock().unwrap().contains(&3) { std::thread::sleep(std::time::Duration::from_millis(20)); }
+                crate::append_output(&cli,"\x1b[2J\x1b[H✻ Waiting for 1 background agent to finish\r\n  ⎿  All background agents stopped\r\n\r\n❯ \r\n  Press Ctrl-C again to exit\x1b[4;3H".as_bytes(),Some(42));
+            });
+            assert_eq!(interromper(&state,&session,"s","claude").unwrap(),(false,true));
+            assert_eq!(bytes.lock().unwrap().as_slice(),b"\x1b\x03");
+        }
+        /// Nada resolveu: um Ctrl+C só, e a resposta diz que o agente não parou.
+        #[test] fn parar_relata_quando_o_agente_nao_para() {
+            let (_dir,state) = fixture(); let (session,bytes,_) = fake_session(&state,"✶ Mulling… (esc to interrupt)\r\n❯ ");
+            assert_eq!(interromper(&state,&session,"s","claude").unwrap(),(false,false));
+            assert_eq!(bytes.lock().unwrap().as_slice(),b"\x1b\x03");
+        }
+        /// Ctrl+C é só do Claude: nas outras CLIs ele pode encerrar a própria CLI.
+        #[test] fn parar_nas_outras_clis_fica_no_esc() {
+            let (_dir,state) = fixture(); let (session,bytes,_) = fake_session(&state,"• Working (3s • esc to interrupt)\r\n› ");
+            assert_eq!(interromper(&state,&session,"s","codex").unwrap(),(false,false));
+            assert_eq!(bytes.lock().unwrap().as_slice(),b"\x1b");
+        }
+        /// Com agente em segundo plano o Parar continua à mão: é por ele que dá para encerrá-lo.
+        #[test] fn redesenho_com_agente_em_segundo_plano_segue_trabalhando() {
+            let (_dir,state) = fixture(); let (session,_,_) = fake_session(&state,"❯ ");
+            crate::append_output(&session,"\x1b[2J\x1b[H✶ Mulling… (esc to interrupt)\r\n❯ ".as_bytes(),Some(42));
+            session.interaction.lock().unwrap().turno_visto_em_ms = 1;
+            crate::append_output(&session,"\x1b[2J\x1b[H✻ Waiting for 1 background agent to finish\r\n\r\n❯ ".as_bytes(),Some(42));
+            assert_eq!(crate::settle(&session).state,SessionState::Working);
         }
 
         /// Plano/Auto pelo chat do PC: o `Idempotency-Key` tem de atravessar o protocolo local.

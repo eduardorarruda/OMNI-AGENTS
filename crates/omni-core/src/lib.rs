@@ -1,5 +1,6 @@
 //! Read-only provider data. Never reads authentication files or calls provider APIs.
 pub mod cli_path;
+pub mod conta_gh;
 pub mod usage;
 pub mod conversations;
 pub mod feed;

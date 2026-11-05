@@ -32,6 +32,8 @@ export const ITENS_DE_BUSCA: ItemDeBusca[] = [
   { secao: "modelos", titulo: "Modelos salvos", termos: "subagentes agentes personalizados lista" },
   { secao: "extensoes", titulo: "Extensões", termos: "mcp plugins conectores servidores conta principal integrações", alvo: "" },
   { secao: "skills", titulo: "Skills", termos: "habilidades comandos claude projeto" },
+  { secao: "tarefas", titulo: "Conexão", termos: "tarefas api externa integração chave url cabeçalho" },
+  { secao: "tarefas", titulo: "Quais tarefas são suas", termos: "filtro responsável dono excluir" },
   { secao: "mobile", titulo: "Acesso remoto: celular e outro computador", termos: "celular mobile qr code navegador web outro pc rede" },
   { secao: "mobile", titulo: "Código do Authy", termos: "2fa autenticação senha segurança parear token" },
   { secao: "mobile", titulo: "Trocar endereço (avançado)", termos: "porta ip rede host url" },

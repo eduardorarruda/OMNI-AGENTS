@@ -1,11 +1,17 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { SegmentedControl } from "../../components/ui";
 import { CloseIcon, ListIcon } from "../../components/ui/PixelIcon";
 import { motionOn } from "../../lib/motion";
+import { TarefasExternas, type SessaoDoAgente } from "../tarefas/TarefasExternas";
 import { TodoList, useTodos } from "./TodoList";
 import "./tarefas.css";
 
 const LARGURA = 380;
+/** Título, status e responsável na mesma lista pedem mais espaço que as tarefas locais. */
+const LARGURA_EXTERNAS = 520;
+type Visao = "minhas" | "externas";
+const VISOES: { value: Visao; label: string }[] = [{ value: "minhas", label: "Minhas" }, { value: "externas", label: "Externas" }];
 /** Tempo da animação de saída; o painel só desmonta depois dela. */
 const SAIDA_MS = 160;
 
@@ -14,18 +20,20 @@ const SAIDA_MS = 160;
  * botão "respira" devagar (sem balançar como o sino: tarefa é lembrete, não alarme); atrasada
  * deixa o contador vermelho. Portal pelo mesmo motivo do sino (ver `NotificationBell`).
  */
-export function TarefasNoTopo() {
+export function TarefasNoTopo({ sessaoDoAgente = null, onConfigurar }: { sessaoDoAgente?: SessaoDoAgente | null; onConfigurar?: () => void }) {
   const tarefas = useTodos();
   const [aberto, setAberto] = useState(false);
   const [saindo, setSaindo] = useState(false);
+  const [visao, setVisao] = useState<Visao>("minhas");
+  const largura = visao === "externas" ? LARGURA_EXTERNAS : LARGURA;
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
   const botao = useRef<HTMLButtonElement>(null);
   const painel = useRef<HTMLDivElement>(null);
 
   const medir = useCallback(() => {
     const r = botao.current?.getBoundingClientRect();
-    if (r) setPos({ top: r.bottom + 8, left: Math.max(8, Math.min(r.right - LARGURA, window.innerWidth - LARGURA - 8)) });
-  }, []);
+    if (r) setPos({ top: r.bottom + 8, left: Math.max(8, Math.min(r.right - largura, window.innerWidth - largura - 8)) });
+  }, [largura]);
   useLayoutEffect(() => { if (aberto) medir(); }, [aberto, medir]);
 
   const fechar = useCallback(() => {
@@ -73,7 +81,7 @@ export function TarefasNoTopo() {
 
       {aberto && pos && createPortal(
         <div ref={painel} role="dialog" aria-label="Tarefas" className={`tarefas-painel${saindo ? " tarefas-painel-saindo" : ""}`}
-          style={{ position: "fixed", top: pos.top, left: pos.left, width: LARGURA }}>
+          style={{ position: "fixed", top: pos.top, left: pos.left, width: largura }}>
           <header className="tarefas-painel-topo">
             <span className="min-w-0">
               <span className="pixel-text text-text-primary text-sm">Tarefas</span>
@@ -86,7 +94,11 @@ export function TarefasNoTopo() {
               <CloseIcon className="h-3.5 w-3.5" aria-hidden />
             </button>
           </header>
-          <TodoList {...tarefas} />
+          <SegmentedControl size="sm" options={VISOES} value={visao} onChange={setVisao} className="px-4 pt-3" />
+          {visao === "minhas" ? <TodoList {...tarefas} /> : (
+            <TarefasExternas sessao={sessaoDoAgente} onUsada={fechar}
+              onConfigurar={() => { fechar(); onConfigurar?.(); }} />
+          )}
         </div>,
         document.body,
       )}

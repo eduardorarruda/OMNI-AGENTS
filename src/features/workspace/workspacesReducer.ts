@@ -73,6 +73,13 @@ export function workspacesReducer(state: WorkspaceCollection, action: Workspaces
           return action.icone === undefined ? resto : { ...resto, icone: action.icone };
         }),
       };
+    case "SET_WORKSPACE_GITHUB":
+      return {
+        ...state,
+        workspaces: state.workspaces.map((workspace) =>
+          workspace.id === action.workspaceId ? { ...workspace, contaGithub: action.contaGithub } : workspace
+        ),
+      };
     case "RENAME_WORKSPACE": {
       const name = action.name.trim();
       return {

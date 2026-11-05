@@ -2,10 +2,29 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TodoList, rotuloDoPrazo, useTodos } from "../features/todo/TodoList";
 import { TarefasNoTopo } from "../features/todo/TarefasNoTopo";
+import { invoke } from "@tauri-apps/api/core";
+
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
 function Lista() {
   return <TodoList {...useTodos()} />;
 }
+
+describe("TarefasNoTopo: quadro local e tarefas externas", () => {
+  it("o quadro local segue sendo o padrão e Externas só consulta o disco ao abrir", async () => {
+    const consulta = vi.mocked(invoke).mockResolvedValue({ configurada: false, tarefas: [], recebidas: 0, avisos: [], atualizado_em_ms: null, espera_ms: 0, deve_buscar: false });
+    const onConfigurar = vi.fn();
+    render(<TarefasNoTopo onConfigurar={onConfigurar} />);
+    fireEvent.click(screen.getByRole("button", { name: /Tarefas/ }));
+    expect(screen.getByLabelText("Nova tarefa")).toBeInTheDocument();
+    expect(consulta).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Externas" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Abrir Configurações" }));
+    expect(onConfigurar).toHaveBeenCalled();
+    expect(consulta.mock.calls.map(([comando]) => comando)).toEqual(["tarefas_estado"]);
+  });
+});
 
 const H = 3_600_000;
 /** Quarta, 21/10/2026 10:00 no fuso local. */

@@ -67,6 +67,9 @@ export interface WorkspaceState {
   /** Símbolo do workspace: favicon escolhido de um dos projetos, `null` = a caixa padrão, sem campo = o
    *  favicon do primeiro projeto que tiver um. */
   icone?: string | null;
+  /** Conta do `gh` dos terminais e agentes deste workspace. Só o nome; sem campo ou `null` = a conta
+   *  ativa do `gh`. */
+  contaGithub?: string | null;
 }
 
 /** Vários workspaces independentes — cada um com seus próprios projects/layout. */
@@ -139,6 +142,8 @@ export type WorkspacesAction =
   | { type: "RENAME_WORKSPACE"; workspaceId: string; name: string }
   /** `undefined` volta para o automático. */
   | { type: "SET_WORKSPACE_ICON"; workspaceId: string; icone: string | null | undefined }
+  /** `null` volta para a conta ativa do `gh`. */
+  | { type: "SET_WORKSPACE_GITHUB"; workspaceId: string; contaGithub: string | null }
   /** Pula pra uma sessão que pode estar em OUTRO workspace: troca o ativo, seleciona o projeto
    *  e abre a aba. Precisa viver aqui, no nível da coleção — as ações de `WorkspaceAction` são
    *  roteadas só pro workspace ativo (`workspacesReducer`), que é exatamente o que impede

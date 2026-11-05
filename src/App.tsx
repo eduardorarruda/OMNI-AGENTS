@@ -17,6 +17,7 @@ import { useKanban } from "./features/kanban/useKanban";
 import { useKanbanDispatcher } from "./features/kanban/useKanbanDispatcher";
 import { SessionProvidersContext } from "./features/terminal/sessionProviders";
 import { ProjetosContext } from "./features/projects/projetosContext";
+import { ContaDoWorkspaceContext } from "./features/git/contaDoWorkspace";
 import { useTerminalSessions } from "./features/terminal/useTerminalSessions";
 import { latestPerConversation, useAttention, type AttentionItem } from "./features/terminal/useAttention";
 import { useAttentionNotifier } from "./features/terminal/useAttentionNotifier";
@@ -63,7 +64,11 @@ export function App() {
   const { workspace, activeProject, dispatch, workspaces, activeWorkspaceId } = useWorkspace(temaPublicado);
   const { sessions, online: engineOnline } = useTerminalSessions();
   const { kanban, dispatch: kanbanDispatch } = useKanban();
-  useKanbanDispatcher(kanban, kanbanDispatch, workspace.projects, sessions);
+  useKanbanDispatcher(kanban, kanbanDispatch, workspace.projects, sessions, workspace.contaGithub);
+  const contaDoWorkspace = useMemo(() => ({
+    conta: workspace.contaGithub ?? null,
+    escolher: (contaGithub: string | null) => dispatch({ type: "SET_WORKSPACE_GITHUB", workspaceId: workspace.id, contaGithub }),
+  }), [workspace.contaGithub, workspace.id, dispatch]);
   // Com as Configurações abertas nenhuma pane está na tela, e com a janela fora de foco ninguém
   // está olhando para ela — nos dois casos nada pode ser marcado como visto.
   const janelaEmFoco = useJanelaEmFoco();
@@ -155,6 +160,7 @@ export function App() {
       rows: 30,
       cols: 120,
       initialCommand: command,
+      contaGithub: workspace.contaGithub,
     });
     dispatch({ type: "ATTACH_TERMINAL", sessionId: session.id, title: session.name });
     setView("workspace");
@@ -232,6 +238,7 @@ export function App() {
       profileId,
       conversationId: plano.conversation_id,
       externalSessionId: entry.session_id,
+      contaGithub: workspaces.find((item) => item.id === workspaceId)?.contaGithub,
     });
     await attachTerminal(plano.conversation_id, session.id).catch(() => undefined);
     dispatch({ type: "FOCUS_SESSION", workspaceId, projectId, sessionId: session.id, title: session.name });
@@ -240,10 +247,14 @@ export function App() {
 
   const paneAtiva = activeProject ? findPane(activeProject.layout, activeProject.activePaneId) : null;
   const sessaoAtiva = paneAtiva?.tabs.find((tab) => tab.id === paneAtiva.activeTabId)?.resourceId ?? null;
+  // `resourceId` também pode ser um arquivo; e sessão parada não tem CLI para receber o texto.
+  const sessaoVisivel = view === "workspace" && sessaoAtiva ? sessionsById[sessaoAtiva] : undefined;
+  const sessaoDoAgente = sessaoVisivel?.provider && !["crashed", "stopped", "orphan"].includes(sessaoVisivel.state) ? sessaoVisivel : null;
 
   return (
     <SessionProvidersContext.Provider value={sessionsById}>
     <ProjetosContext.Provider value={todosOsProjetos}>
+    <ContaDoWorkspaceContext.Provider value={contaDoWorkspace}>
     <div className="flex h-screen flex-col overflow-hidden">
       <AppBackground settings={settings} />
       <TitleBar
@@ -267,6 +278,7 @@ export function App() {
           {view === "workspace" && activeProject && <LayoutPresetPicker onEscolher={(preset) => dispatch({ type: "APPLY_LAYOUT_PRESET", preset })} />}
         </>}
         onHome={() => setView("workspace")}
+        sessaoDoAgente={sessaoDoAgente}
         onOpenSettings={(section) => {
           setSettingsSection(section);
           if (view !== "settings") setViewBeforeSettings(view);
@@ -466,6 +478,7 @@ export function App() {
       </div>
       </div>
     </div>
+    </ContaDoWorkspaceContext.Provider>
     </ProjetosContext.Provider>
     </SessionProvidersContext.Provider>
   );

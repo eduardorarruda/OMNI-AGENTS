@@ -376,3 +376,34 @@ arquivos tocados e o próximo passo. Quando a pendência for resolvida, risque d
 
 - Trocar de aba na lateral e voltar remontava `AvatarDoProjeto`/`AvatarDoWorkspace` com o `pedido` antigo (contador guardado
   no Sidebar) e o efeito reabria o seletor. `useAbrirAoPedir` ignora o valor da montagem; teste em `iconesDoProjeto.test.tsx`.
+
+### Tarefas de uma API externa (2026-11-05)
+
+- [x] Aba Tarefas ganhou a visão "Externas" (`src/features/tarefas/TarefasExternas.tsx`, dentro de `TarefasNoTopo`): busca,
+  lista, detalhe com comentários e "Usar nesta conversa". O quadro local segue igual e é o padrão.
+- [x] Configurações → Tarefas (`TarefasSettings.tsx`). Tudo nasce vazio; a chave só vive em `<dados>/rag/tarefas.json`
+  (0600) e nunca volta para a tela. Pura em `crates/omni-rag/src/tarefas.rs`, rede em `src-tauri/src/tarefas.rs`.
+- [x] Carga: sem polling. Busca só no clique ou ao abrir com a última tentativa a mais de 15 min; 60 s de bloqueio
+  mesmo depois de falha, gravado em `tarefas-cache.json` antes da requisição. "Testar" conta como busca.
+- [x] "Usar nesta conversa" (`colarNaSessao.ts`): no modo Conversa vai para o campo da tela; no Terminal, bracketed paste
+  sem Enter. O texto é uma linha só e sem controles, para conteúdo de terceiros não apertar teclas na CLI.
+- [x] MCP: `listar_tarefas` e `ler_tarefa`, só do cache.
+- [ ] Não testado contra uma API real nem no app aberto (`npm run dev`). O corte de comentários assume a lista em ordem
+  de criação (não há campo de data na configuração). Entrada no `changelog.ts` fica para a próxima release.
+
+### Botão Parar e conta do GitHub por workspace (2026-11-05, sem release)
+
+- [x] Parar (`interromper`, `mobile.rs`): Esc; no Claude, com a tela ainda ativa depois de ~1,5 s, **um** Ctrl+C e até ~3 s
+  (o Esc não encerra agente em segundo plano, CLI 2.1.318). Resposta `{ok, limpou, parou}`; `parou:false` vira aviso na
+  Conversa e nada é morto. Tela parada nunca recebe Ctrl+C (`ainda_trabalhando`, `interaction.rs`).
+- [x] `working` preso, dois caminhos reproduzidos em teste: (1) "esc to interrupt" na fala do agente, dentro das 4 linhas
+  acima do campo, contava como turno e ainda abria a fila; agora acima do campo só vale a linha de status (`turno_na_tela`).
+  (2) redesenho sem pausa no `❯` zerava o tempo ocioso; com `campo_parado` conta o último quadro com turno.
+- [x] "Waiting for N background agent to finish" é linha da conversa (o `turn_duration` da CLI), não rodapé: fica na tela
+  depois do fim. A linha mais recente decide (`agente_em_segundo_plano`).
+- [x] A suíte `mobile::tests::actions` era só de Windows; os dublês agora compilam e rodam no Linux.
+- [x] Conta do GitHub por workspace: `contaGithub` no workspace, seletor no rodapé (`SeletorDeConta.tsx`), `gh_contas`.
+  Só o nome vai em `OMNI_GH_CONTA` (env da sessão); o engine (`conta_gh.rs`) põe `GH_TOKEN` só no processo.
+- [ ] Capturar no acervo de telas uma tela real com agente em segundo plano (a sonda precisa de rede) e confirmar ao vivo o
+  caso (1): ele foi deduzido do código, porque o aviso de fila só aparece com a frase na área do turno.
+- [ ] Conversa nova pela web/celular abre sem conta do workspace; terminal comum em WSL/SSH não recebe o `GH_TOKEN`.

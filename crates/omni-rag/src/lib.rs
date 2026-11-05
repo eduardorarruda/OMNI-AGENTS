@@ -4,6 +4,7 @@ pub mod extrair;
 pub mod ganchos;
 pub mod mcp;
 pub mod memoria;
+pub mod tarefas;
 
 use regex::Regex;
 use rusqlite::{params, Connection};
@@ -55,7 +56,7 @@ pub fn caminho_padrao() -> Option<PathBuf> {
     Some(dados?.join("com.omni.agents").join("rag").join("base.db"))
 }
 
-fn agora_ms() -> i64 {
+pub fn agora_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |tempo| tempo.as_millis() as i64)
 }
 
@@ -91,6 +92,11 @@ impl Base {
         ").map_err(|erro| erro.to_string())?;
         banco.execute_batch(memoria::ESQUEMA).map_err(|erro| erro.to_string())?;
         Ok(Self { banco })
+    }
+
+    /// O MCP lê as tarefas daqui: mora ao lado do banco, e num teste fica na pasta temporária dele.
+    pub fn cache_de_tarefas(&self) -> Option<PathBuf> {
+        self.banco.path().map(|caminho| tarefas::arquivo_de_cache(Path::new(caminho)))
     }
 
     fn atualizar(&self, id: i64, trechos: i64, estado: &str, tipo: &str, erro: Option<&str>) -> Result<(), String> {
@@ -208,3 +214,5 @@ impl Base {
 mod testes;
 #[cfg(test)]
 mod testes_memoria;
+#[cfg(test)]
+mod testes_tarefas;

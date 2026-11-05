@@ -33,6 +33,16 @@ interface ComposerProps {
   voz?: Voz;
   /** Comandos `/` do agente (embutidos, seus, skills, plugins). Sem isto, `/` é só texto. */
   comandos?: () => Promise<Comando[]>;
+  /** Mensagens já enviadas, da mais antiga para a mais nova: a seta para cima volta nelas. */
+  historico?: readonly string[];
+}
+
+/** Para onde a seta leva: índice na lista, `null` = de volta ao rascunho, `undefined` = fica onde está. */
+export function passoNoHistorico(total: number, posicao: number | null, passo: -1 | 1): number | null | undefined {
+  if (total === 0) return undefined;
+  if (passo === -1) return posicao === null ? total - 1 : Math.max(0, posicao - 1);
+  if (posicao === null) return undefined;
+  return posicao + 1 >= total ? null : posicao + 1;
 }
 
 /** O `/algo` digitado no começo da mensagem, enquanto o cursor ainda está nele. */
@@ -408,11 +418,13 @@ export function Microfone({ texto, onTexto, travado = false }: { texto: string; 
  * é o único jeito que abre o seletor em todo navegador de celular, inclusive o Safari antigo, que
  * ignora clique programático em input escondido. Sem `accept`: qualquer tipo de arquivo vale.
  */
-export function Composer({ texto, onTexto, anexos, onAdicionar, onRemover, onEnviar, podeEnviar, ocupado, placeholder, toolbar, chips, direita, onParar, parando, buscarArquivos, voz, comandos }: ComposerProps) {
+export function Composer({ texto, onTexto, anexos, onAdicionar, onRemover, onEnviar, podeEnviar, ocupado, placeholder, toolbar, chips, direita, onParar, parando, buscarArquivos, voz, comandos, historico = [] }: ComposerProps) {
   const campo = useRef<HTMLTextAreaElement>(null);
   // O texto de agora, não o de quando a gravação começou: dá para digitar enquanto fala.
   const textoAtual = useRef(texto);
   textoAtual.current = texto;
+  // Navegando no histórico: qualquer edição no campo devolve a seta ao cursor.
+  const navegacao = useRef<{ posicao: number; rascunho: string; aplicado: string } | null>(null);
   const ditado = useDitado(textoAtual, onTexto, Boolean(voz) || Boolean(falaDoNavegador()));
   const podeVozDoPc = Boolean(voz) && navegadorGrava();
   const [semServico, setSemServico] = useState(falaSemServico);
@@ -511,6 +523,21 @@ export function Composer({ texto, onTexto, anexos, onAdicionar, onRemover, onEnv
     if (podeEnviar) onEnviar();
   }
 
+  /** Seta com campo vazio ou já navegando. Num texto digitado, ela continua sendo do cursor. */
+  function navegarNoHistorico(event: KeyboardEvent<HTMLTextAreaElement>): boolean {
+    if ((event.key !== "ArrowUp" && event.key !== "ArrowDown") || event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return false;
+    const atual = navegacao.current?.aplicado === texto ? navegacao.current : null;
+    if (!atual && texto !== "") return false;
+    const destino = passoNoHistorico(historico.length, atual?.posicao ?? null, event.key === "ArrowUp" ? -1 : 1);
+    if (destino === undefined) return false;
+    event.preventDefault();
+    const rascunho = atual?.rascunho ?? texto;
+    const valor = destino === null ? rascunho : historico[destino];
+    navegacao.current = destino === null ? null : { posicao: destino, rascunho, aplicado: valor };
+    onTexto(valor);
+    return true;
+  }
+
   function tecla(event: KeyboardEvent<HTMLTextAreaElement>) {
     // Menu de `/` aberto: setas escolhem, Tab completa, Esc fecha. Enter completa — a não ser que o
     // digitado já seja o comando exato: aí envia, como no terminal (`/compact` + Enter).
@@ -552,6 +579,7 @@ export function Composer({ texto, onTexto, anexos, onAdicionar, onRemover, onEnv
         return;
       }
     }
+    if (navegarNoHistorico(event)) return;
     // `isComposing`: Enter que confirma acento/IME não pode disparar o envio.
     if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing || !enterEnvia()) return;
     event.preventDefault();

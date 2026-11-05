@@ -9,6 +9,7 @@ mod servidores;
 mod ssh;
 mod target_files;
 mod conhecimento;
+mod tarefas;
 mod history;
 mod instalacao;
 mod profiles;
@@ -98,6 +99,11 @@ pub fn run() {
             conhecimento::rag_claude_ligar,
             conhecimento::rag_memoria_estado,
             conhecimento::rag_memoria_ligar,
+            tarefas::tarefas_config,
+            tarefas::tarefas_salvar,
+            tarefas::tarefas_estado,
+            tarefas::tarefas_atualizar,
+            tarefas::tarefas_texto,
             history::agent_history,
             history::agent_history_transcript,
             profiles::list_profiles,
@@ -134,6 +140,7 @@ pub fn run() {
             git_client::git_checkout_branch,
             git_client::git_log_graph,
             git_client::git_conta,
+            git_client::gh_contas,
             relatorio::relatorio_ia,
             relatorio::armazenamento,
             agentes::agentes_listar,

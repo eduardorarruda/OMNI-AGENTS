@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-export type SettingsSection = "sobre";
+export type SettingsSection = "sobre" | "tarefas";
 
 export interface Notificacao {
   id: string;

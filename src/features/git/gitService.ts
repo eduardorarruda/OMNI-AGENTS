@@ -39,6 +39,11 @@ export async function gitConta(projectPath: string): Promise<GitConta> {
   return invoke<GitConta>("git_conta", { projectPath });
 }
 
+/** Contas logadas no `gh` para o github.com, só os nomes, a ativa primeiro. */
+export async function ghContas(): Promise<string[]> {
+  return invoke<string[]>("gh_contas");
+}
+
 export const UNTRACKED = "?";
 
 export function isStaged(entry: GitStatusEntry): boolean {

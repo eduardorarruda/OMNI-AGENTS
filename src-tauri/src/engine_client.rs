@@ -99,6 +99,7 @@ pub fn spawn_terminal(
     profile_id: Option<String>,
     conversation_id: Option<String>,
     external_session_id: Option<String>,
+    conta_github: Option<String>,
 ) -> EngineResponse {
     // A CLI pode ter sido instalada depois que o app/engine abriu. Revarre os locais conhecidos e
     // envia o PATH atual ao engine, inclusive quando ele é um processo antigo ainda em execução.
@@ -112,6 +113,10 @@ pub fn spawn_terminal(
     let mut env = profile.as_ref().map(crate::profiles::env_for).unwrap_or_default();
     if let Some(path) = env::var_os("PATH") {
         env.push(("PATH".into(), path.to_string_lossy().into_owned()));
+    }
+    // Só o nome: o token quem busca é o engine, e nunca entra neste `env`, que ele grava em disco.
+    if let Some(conta) = conta_github.filter(|conta| omni_core::conta_gh::nome_valido(conta)) {
+        env.push((omni_core::conta_gh::VARIAVEL_DA_CONTA.into(), conta));
     }
     if let Some(profile) = profile.as_ref() {
         crate::profiles::touch(&profile.id);

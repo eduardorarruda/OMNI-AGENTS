@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { OmniLogo } from "./ui/OmniLogo";
 import { NotificationBell } from "./NotificationBell";
 import { TarefasNoTopo } from "../features/todo/TarefasNoTopo";
+import type { SessaoDoAgente } from "../features/tarefas/TarefasExternas";
 import { useJanelaEmFoco } from "../hooks/useJanelaEmFoco";
 import type { SettingsSection } from "../hooks/useNotifications";
 import { GlifoFechar, GlifoMaximizar, GlifoMinimizar, GlifoRestaurar } from "./ui/PixelGlyph";
@@ -78,6 +79,7 @@ export function TitleBar({
   acoes,
   onHome,
   onOpenSettings,
+  sessaoDoAgente = null,
 }: {
   /** Onde você está — workspace e projeto. Some quando vazio. */
   trilha: string[];
@@ -87,6 +89,8 @@ export function TitleBar({
   acoes?: ReactNode;
   onHome: () => void;
   onOpenSettings: (secao: SettingsSection) => void;
+  /** A aba de agente aberta: é para ela que "Usar nesta conversa" manda a tarefa. */
+  sessaoDoAgente?: SessaoDoAgente | null;
 }) {
   const maximizada = useMaximizada();
   const emFoco = useJanelaEmFoco();
@@ -132,7 +136,7 @@ export function TitleBar({
       {acoes}
 
       <span className="titlebar-sino">
-        <TarefasNoTopo />
+        <TarefasNoTopo sessaoDoAgente={sessaoDoAgente} onConfigurar={() => onOpenSettings("tarefas")} />
       </span>
 
       <span className="titlebar-sino">

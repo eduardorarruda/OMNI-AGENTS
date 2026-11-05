@@ -278,11 +278,36 @@ pub struct GitConta {
 /// Lê o login do `gh auth status`. Versões novas dizem "account X", antigas "as X"; a saída vai para
 /// stdout ou stderr conforme a versão, por isso as duas chegam juntas. Linha com o token é ignorada.
 fn login_do_gh(saida: &str) -> Option<String> {
-    saida.lines().filter(|linha| !linha.contains("Token:")).find_map(|linha| {
-        let resto = linha.split("Logged in to github.com").nth(1)?;
-        let nome = resto.trim().strip_prefix("account ").or_else(|| resto.trim().strip_prefix("as "))?;
-        nome.split_whitespace().next().map(|n| n.trim_end_matches('.').to_string()).filter(|n| !n.is_empty())
-    })
+    logins_do_gh(saida).into_iter().next()
+}
+
+/// Todas as contas do github.com no `gh auth status`, a ativa primeiro (a ordem é a do `gh`).
+fn logins_do_gh(saida: &str) -> Vec<String> {
+    let mut logins: Vec<String> = Vec::new();
+    for linha in saida.lines().filter(|linha| !linha.contains("Token:")) {
+        let Some(resto) = linha.split("Logged in to github.com").nth(1) else { continue };
+        let Some(nome) = resto.trim().strip_prefix("account ").or_else(|| resto.trim().strip_prefix("as ")) else { continue };
+        let login = nome.split_whitespace().next().map(|n| n.trim_end_matches('.').to_string()).filter(|n| !n.is_empty());
+        if let Some(login) = login.filter(|login| !logins.contains(login)) { logins.push(login); }
+    }
+    logins
+}
+
+/// Só o que dá para escolher por workspace: conta com nome que o engine aceita.
+fn contas_para_escolher(saida: &str) -> Vec<String> {
+    logins_do_gh(saida).into_iter().filter(|login| omni_core::conta_gh::nome_valido(login)).collect()
+}
+
+/// Contas logadas no `gh`, só os nomes. Com `GH_TOKEN` no ambiente o `gh` listaria só essa.
+#[tauri::command(async)]
+pub fn gh_contas() -> Vec<String> {
+    omni_core::cli_path::ampliar_path();
+    let saida = hidden(&mut Command::new("gh"))
+        .args(["auth", "status", "--hostname", "github.com"])
+        .env("GH_PROMPT_DISABLED", "1").env_remove("GH_TOKEN").env_remove("GITHUB_TOKEN")
+        .output();
+    saida.map(|saida| contas_para_escolher(&format!("{}\n{}", String::from_utf8_lossy(&saida.stdout), String::from_utf8_lossy(&saida.stderr))))
+        .unwrap_or_default()
 }
 
 #[tauri::command(async)]
@@ -416,6 +441,20 @@ mod tests {
             CommitResumo { em_ms: 1_760_000_000_000, ia: true, linhas: 30, removidas: 4 },
             CommitResumo { em_ms: 1_760_000_100_000, ia: false, linhas: 0, removidas: 1 },
         ]);
+    }
+
+    #[test]
+    fn contas_do_gh_em_ordem_sem_repetir_e_sem_o_token() {
+        let saida = "github.com\n  ✓ Logged in to github.com account conta-a (keyring)\n  - Active account: true\n  - Token: gho_************\n\n  ✓ Logged in to github.com account conta-b (keyring)\n  - Active account: false\n  ✓ Logged in to github.com account conta-a (keyring)\n";
+        assert_eq!(contas_para_escolher(saida), ["conta-a", "conta-b"]);
+        assert_eq!(login_do_gh(saida).as_deref(), Some("conta-a"));
+    }
+
+    #[test]
+    fn conta_que_falhou_ou_com_nome_invalido_nao_vira_opcao() {
+        let saida = "  X Failed to log in to github.com account conta-a (keyring)\n  ✓ Logged in to github.com account conta_b (keyring)\n  ✓ Logged in to github.com account conta-c (keyring)\n";
+        assert_eq!(contas_para_escolher(saida), ["conta-c"]);
+        assert!(contas_para_escolher("You are not logged into any GitHub hosts.").is_empty());
     }
 
     #[test]

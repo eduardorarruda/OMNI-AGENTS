@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { AbaDeAgente } from "../features/conversa/AbaDeAgente";
+import { colarNaSessao } from "../features/conversa/colarNaSessao";
 import { transporteDoEngine } from "../features/conversa/transporteDoEngine";
 import { usarTransporte } from "../mobile/api";
 import { SessionProvidersContext } from "../features/terminal/sessionProviders";
@@ -47,6 +48,17 @@ describe("AbaDeAgente", () => {
     expect(screen.getByText("TERMINAL").parentElement).not.toHaveClass("invisible");
     expect(screen.queryByRole("tab", { name: "Terminal" })).not.toBeInTheDocument();
     expect(screen.queryByRole("tab", { name: "Conversa" })).not.toBeInTheDocument();
+  });
+
+  it("texto de tarefa vai para o campo da conversa, sem enviar e sem tocar no terminal", async () => {
+    render(<AbaDeAgente agentView="conversa" sessionId="s1"><p>TERMINAL</p></AbaDeAgente>);
+    await screen.findByText("Resposta anterior");
+    engine.engineApi.mockClear();
+
+    await act(() => colarNaSessao("s1", "Tarefa #42"));
+
+    expect(await screen.findByDisplayValue("Tarefa #42")).toBeInTheDocument();
+    expect(engine.engineApi.mock.calls.filter(([metodo]) => metodo === "POST")).toHaveLength(0);
   });
 
   it("no modo Conversa mostra o chat por cima do terminal, que continua montado", async () => {

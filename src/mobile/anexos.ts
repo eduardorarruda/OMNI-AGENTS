@@ -14,6 +14,8 @@ const MARCADORES_ANTIGOS = ["[Anexos enviados pelo celular]"];
 export const EVENTO_ANEXAR = "omni:anexar";
 /** `detail: boolean` — arquivo sendo arrastado por cima da conversa (mostra "Solte para anexar"). */
 export const EVENTO_ARRASTANDO = "omni:arrastando";
+/** Texto para o campo da conversa, sem enviar. O `detail` é a string. */
+export const EVENTO_TEXTO = "omni:texto";
 /** `detail: string` — arquivo citado na conversa, como o agente escreveu (relativo ao projeto ou
  *  absoluto, talvez com `:linha`). O app do PC abre num painel. */
 export const EVENTO_ABRIR_ARQUIVO = "omni:abrir-arquivo";

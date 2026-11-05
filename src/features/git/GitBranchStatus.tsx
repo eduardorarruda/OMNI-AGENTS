@@ -4,15 +4,20 @@ import { ChartIcon, GitBranchIcon, GithubIcon } from "../../components/ui/PixelI
 import { GitGraphModal } from "./GitGraphPane";
 import { isRemoteProject } from "../projects/targetState";
 import { gitBranches, gitCheckoutBranch, gitConta, gitPull, gitStatus, type GitBranch, type GitConta } from "./gitService";
+import { useContaDoWorkspace } from "./contaDoWorkspace";
+import { SeletorDeConta } from "./SeletorDeConta";
 
 /** Releitura da conta: muda quase nunca (login/logout), e o `gh auth status` vai à rede. */
 const CONTA_RITMO_MS = 120_000;
 
-/** Conta do git no rodapé, à esquerda da branch: o login do GitHub (ou o `user.name`) e um ponto
- *  verde quando está tudo certo para commitar e dar push — amarelo com o motivo quando não. */
+/** Conta do git no rodapé, à esquerda da branch: a conta do GitHub do workspace (sem escolha, a ativa
+ *  do `gh`, ou o `user.name`) e um ponto verde quando está tudo certo para commitar e dar push —
+ *  amarelo com o motivo quando não. Clicar relê e abre o seletor da conta do workspace. */
 export function GitContaStatus({ projectPath }: { projectPath: string | null }) {
+  const { conta: doWorkspace, escolher } = useContaDoWorkspace();
   const [conta, setConta] = useState<GitConta | null>(null);
   const [lendo, setLendo] = useState(false);
+  const [seletor, setSeletor] = useState<{ left: number; bottom: number } | null>(null);
   // Clique relê na hora: login feito no terminal (`gh auth login`) sem esperar o ciclo nem reabrir o app.
   const [pedido, setPedido] = useState(0);
   useEffect(() => {
@@ -29,25 +34,40 @@ export function GitContaStatus({ projectPath }: { projectPath: string | null }) 
   }, [projectPath, pedido]);
 
   if (!conta) return null;
-  const quem = conta.github ?? conta.nome ?? "sem conta";
+  const github = doWorkspace ?? conta.github;
+  const quem = github ?? conta.nome ?? "sem conta";
   const inicial = (quem.trim()[0] ?? "?").toUpperCase();
   const detalhes = [
     conta.nome ? `Commits como: ${conta.nome}` : "Commits sem nome de autor",
     conta.email_configurado ? "E-mail do git configurado" : "E-mail do git não configurado",
-    conta.gh_instalado ? (conta.github ? `GitHub: ${conta.github}` : "GitHub CLI sem login") : "GitHub CLI não instalado",
+    doWorkspace ? `GitHub deste workspace: ${doWorkspace}`
+      : conta.gh_instalado ? (conta.github ? `GitHub: ${conta.github}` : "GitHub CLI sem login") : "GitHub CLI não instalado",
     conta.problema ?? "Tudo certo para commitar e dar push",
-    "Clique para verificar de novo",
+    escolher ? "Clique para escolher a conta deste workspace" : "Clique para verificar de novo",
   ].join("\n");
+  function abrir(botao: HTMLElement) {
+    setPedido((n) => n + 1);
+    if (!escolher) return;
+    const rect = botao.getBoundingClientRect();
+    setSeletor({ left: rect.left, bottom: window.innerHeight - rect.top + 4 });
+  }
   return (
+    <>
     <button type="button" className={`rodape-conta ${lendo ? "opacity-60" : ""}`} title={detalhes} aria-busy={lendo}
-      onClick={() => setPedido((n) => n + 1)}>
-      <Avatar login={conta.github} inicial={inicial} problema={Boolean(conta.problema)} />
+      aria-haspopup={escolher ? "dialog" : undefined} aria-expanded={escolher ? seletor !== null : undefined}
+      onClick={(event) => abrir(event.currentTarget)}>
+      <Avatar login={github} inicial={inicial} problema={Boolean(conta.problema)} />
       <span className="sr-only">{conta.problema ? `Git com problema: ${conta.problema}.` : "Git ok."}</span>
       <span className={`min-w-0 truncate ${conta.problema ? "text-warning" : "text-text-primary"}`}>{quem}</span>
-      {conta.github
+      {github
         ? <GithubIcon aria-hidden className={`h-3 w-3 shrink-0 ${conta.problema ? "text-warning" : "text-success"}`} />
         : <GitBranchIcon aria-hidden className={`h-3 w-3 shrink-0 ${conta.problema ? "text-warning" : "text-success"}`} />}
     </button>
+    {seletor && escolher && (
+      <SeletorDeConta atual={doWorkspace} ancora={seletor} onFechar={() => setSeletor(null)}
+        onEscolher={(nova) => { escolher(nova); setSeletor(null); }} />
+    )}
+    </>
   );
 }
 

@@ -1,4 +1,5 @@
 mod automatico;
+mod conta_gh;
 mod fluxos;
 mod interaction;
 mod mobile;
@@ -69,11 +70,8 @@ fn screen_tracked(provider: Option<&str>) -> bool {
 /// "esc to cancel" enquanto trabalha — e também enquanto espera você responder uma pergunta dele.
 fn in_turn(screen_text: &str, provider: &str) -> bool {
     if provider == "cursor" { return interaction::cursor_em_turno(screen_text); }
-    let texto = interaction::area_do_turno(screen_text).to_ascii_lowercase();
-    match provider {
-        "antigravity" => texto.contains("esc to cancel"),
-        _ => texto.contains("esc to interrupt"),
-    }
+    if provider == "antigravity" { return interaction::area_do_turno(screen_text).to_ascii_lowercase().contains("esc to cancel"); }
+    interaction::turno_na_tela(screen_text)
 }
 
 /// Novo estado depois de `idle_ms` sem saída, e se isso encerra um turno de verdade (= aviso).
@@ -96,8 +94,12 @@ fn settle(session: &LiveSession) -> TerminalSession {
     let mut interaction = session.interaction.lock().expect("screen poisoned");
     let mut meta = session.meta.lock().expect("session metadata poisoned");
     let tracked = screen_tracked(meta.provider.as_deref());
-    let screen_in_turn = tracked && in_turn(&interaction.parser.screen().contents(), meta.provider.as_deref().unwrap_or(""));
-    let idle_ms = now_ms().saturating_sub(meta.last_activity_at_ms);
+    let provider = meta.provider.as_deref().unwrap_or("");
+    let screen_in_turn = tracked && in_turn(&interaction.parser.screen().contents(), provider);
+    // Parado no campo, redesenho não conta como atividade: um relógio na tela zerava o tempo ocioso a
+    // cada quadro e a sessão nunca saía de "trabalhando". Conta o último quadro com turno.
+    let parado = tracked && !screen_in_turn && interaction::campo_parado(interaction.parser.screen(), provider);
+    let idle_ms = now_ms().saturating_sub(if parado { interaction.turno_visto_em_ms } else { meta.last_activity_at_ms });
     // Shell puro calado mas com filho vivo (dev server) continua rodando. Só consulta os processos
     // quando ia virar `Answered`: shell no prompt sai do `Working` e não paga mais nada.
     let shell_busy = meta.provider.is_none() && meta.state == SessionState::Working && idle_ms > ANSWERED_IDLE_MS
@@ -388,6 +390,7 @@ fn herdou_sessao_do_claude(ambiente: impl Fn(&str) -> bool) -> bool {
 
 fn ambiente_do_terminal(command: &mut CommandBuilder, env: &[(String, String)]) {
     ambiente_do_terminal_com(command, env, herdou_sessao_do_claude(|nome| env::var_os(nome).is_some()));
+    conta_gh::aplicar(command, env, conta_gh::token_da_conta);
     // Autocompactação sempre ligada, no tamanho escolhido em Configurações. A janela vai por env
     // (vale só para quem o OMNI abre); o `autoCompactEnabled` fica no settings da conta.
     command.env_remove("DISABLE_AUTO_COMPACT");
@@ -1322,6 +1325,7 @@ fn append_output(session: &LiveSession, bytes: &[u8], watched_pid: Option<u32>) 
     let notice = if em_turno { None }
         else if tracked_provider.is_some() && limite_no_rodape(&screen_text) { Some("usage_limit".into()) }
         else { notice_since(counts, *base) };
+    if em_turno { interaction.turno_visto_em_ms = now_ms(); }
     if let Ok(mut output) = session.output.lock() {
         let sequence = output.next_seq;
         output.next_seq += 1;

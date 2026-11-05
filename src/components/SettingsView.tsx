@@ -13,9 +13,10 @@ import { AgentConnections } from "../features/terminal/AgentConnections";
 import { CompactacaoCard } from "../features/compactacao/CompactacaoCard";
 import { SkillsManager } from "../features/skills/SkillsManager";
 import { ExtensoesSettings } from "../features/extensoes/ExtensoesSettings";
+import { TarefasSettings } from "../features/tarefas/TarefasSettings";
 import { MobileSettings } from "../features/mobile/MobileSettings";
 import { testarAviso } from "../features/terminal/useAttentionNotifier";
-import { BlocksIcon, BookIcon, BrushIcon, ChartIcon, CloseIcon, DatabaseIcon, SparkleIcon, GearIcon, GlobeIcon, KeyboardIcon, RobotIcon, SlidersIcon, StarIcon } from "./ui/PixelIcon";
+import { BlocksIcon, BookIcon, BrushIcon, ChartIcon, CloseIcon, DatabaseIcon, SparkleIcon, GearIcon, GlobeIcon, KeyboardIcon, ListIcon, RobotIcon, SlidersIcon, StarIcon } from "./ui/PixelIcon";
 import { RelatoriosIa } from "../features/relatorios/RelatoriosIa";
 import { Armazenamento } from "../features/armazenamento/Armazenamento";
 import { ModelosDeAgentes } from "../features/agentes/ModelosDeAgentes";
@@ -24,7 +25,7 @@ import type { EstadoDaVoz } from "../mobile/voz";
 import { VocabularioCard } from "../features/voz/VocabularioCard";
 import { SHORTCUTS, comboFromEvent, setRecordingShortcut, shortcutFor, type ShortcutId } from "../lib/shortcuts";
 
-type SectionId = "geral" | "aparencia" | "agentes" | "modelos" | "extensoes" | "skills" | "mobile" | "relatorios" | "armazenamento" | "atalhos" | "sobre";
+type SectionId = "geral" | "aparencia" | "agentes" | "modelos" | "extensoes" | "skills" | "tarefas" | "mobile" | "relatorios" | "armazenamento" | "atalhos" | "sobre";
 
 type Icone = React.ComponentType<{ className?: string; "aria-hidden"?: boolean }>;
 
@@ -38,6 +39,7 @@ const SECTIONS: { id: SectionId; label: string; desc: string; icon: Icone; grupo
   { id: "modelos", label: "Modelos de agentes", desc: "QA, revisor, orquestrador… criados com IA", icon: SparkleIcon, grupo: "Inteligência artificial" },
   { id: "extensoes", label: "Extensões", desc: "MCPs, plugins e conectores por IA", icon: BlocksIcon, grupo: "Inteligência artificial" },
   { id: "skills", label: "Skills", desc: "Skills do Claude e do projeto", icon: BookIcon, grupo: "Inteligência artificial" },
+  { id: "tarefas", label: "Tarefas", desc: "API externa de tarefas", icon: ListIcon, grupo: "Dados e acesso" },
   { id: "mobile", label: "Acesso remoto", desc: "Celular e outro computador", icon: GlobeIcon, grupo: "Dados e acesso" },
   { id: "relatorios", label: "Relatórios", desc: "Uso de IA por dia, contas e commits", icon: ChartIcon, grupo: "Dados e acesso" },
   { id: "armazenamento", label: "Armazenamento", desc: "Espaço das conversas por IA e conta", icon: DatabaseIcon, grupo: "Dados e acesso" },
@@ -170,6 +172,7 @@ export function SettingsView({ settings, onChange, onReset, initialSection, proj
           {section === "modelos" && <ModelosDeAgentes projectPath={projectPath} />}
           {section === "extensoes" && <ExtensoesSettings projectPath={projectPath} />}
           {section === "skills" && <SkillsManager projectPath={projectPath} />}
+          {section === "tarefas" && <TarefasSettings />}
           {section === "mobile" && <MobileSettings accent={settings.accent} />}
           {section === "relatorios" && <RelatoriosIa projectPaths={projectPaths} />}
           {section === "armazenamento" && <Armazenamento />}
