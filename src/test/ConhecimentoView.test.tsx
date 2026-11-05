@@ -10,7 +10,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 const fonte = { id: 1, nome: "studio.db", caminho: "/x/studio.db", tipo: "banco SQLite", tamanho: 2_000_000, trechos: 1200, estado: "pronto", erro: null, criado_em_ms: 1 };
 
 function backend(extra: Record<string, unknown> = {}) {
-  const respostas: Record<string, unknown> = { rag_listar: [fonte], rag_claude_ligado: false, rag_buscar: [], ...extra };
+  const respostas: Record<string, unknown> = { rag_listar: [fonte], rag_claude_ligado: false, rag_buscar: [], rag_memoria_estado: { ligada: true, notas: 1968 }, ...extra };
   vi.mocked(invoke).mockImplementation(async (comando) => respostas[comando as string]);
 }
 
@@ -30,10 +30,20 @@ describe("Tela Conhecimento", () => {
     render(<ConhecimentoView onClose={() => {}} />);
     fireEvent.click(await screen.findByRole("button", { name: "Remover studio.db" }));
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("rag_remover", { id: 1 }));
-    const caixa = await screen.findByRole("checkbox");
+    const caixa = await screen.findByRole("checkbox", { name: /Deixar o Claude/ });
     await waitFor(() => expect(caixa).toBeEnabled());
     fireEvent.click(caixa);
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("rag_claude_ligar", { ligado: true }));
+  });
+
+  it("mostra as notas e desliga a memória", async () => {
+    backend();
+    render(<ConhecimentoView onClose={() => {}} />);
+    const caixa = await screen.findByRole("checkbox", { name: "Memória compartilhada" });
+    await waitFor(() => expect(caixa).toBeChecked());
+    expect(screen.getByText(/1\.968 notas/)).toBeInTheDocument();
+    fireEvent.click(caixa);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith("rag_memoria_ligar", { ligada: false }));
   });
 
   it("busca enquanto digita", async () => {

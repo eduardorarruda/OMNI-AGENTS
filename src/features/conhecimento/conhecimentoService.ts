@@ -26,6 +26,14 @@ export const buscarConhecimento = (consulta: string) => invoke<ResultadoDeBusca[
 export const claudeUsaABase = () => invoke<boolean>("rag_claude_ligado");
 export const ligarBaseNoClaude = (ligado: boolean) => invoke<void>("rag_claude_ligar", { ligado });
 
+export interface EstadoDaMemoria {
+  ligada: boolean;
+  notas: number;
+}
+
+export const estadoDaMemoria = () => invoke<EstadoDaMemoria>("rag_memoria_estado");
+export const ligarMemoria = (ligada: boolean) => invoke<void>("rag_memoria_ligar", { ligada });
+
 export function tamanhoLegivel(bytes: number): string {
   if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
   if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;

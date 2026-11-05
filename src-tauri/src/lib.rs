@@ -96,6 +96,8 @@ pub fn run() {
             conhecimento::rag_buscar,
             conhecimento::rag_claude_ligado,
             conhecimento::rag_claude_ligar,
+            conhecimento::rag_memoria_estado,
+            conhecimento::rag_memoria_ligar,
             history::agent_history,
             history::agent_history_transcript,
             profiles::list_profiles,

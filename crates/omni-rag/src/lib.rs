@@ -1,7 +1,9 @@
 //! Base de conhecimento local do OMNI: arquivos viram trechos num índice FTS5. A busca devolve só
 //! trechos curtos, e o agente pede o trecho inteiro quando precisa — é isso que economiza tokens.
 pub mod extrair;
+pub mod ganchos;
 pub mod mcp;
+pub mod memoria;
 
 use regex::Regex;
 use rusqlite::{params, Connection};
@@ -87,6 +89,7 @@ impl Base {
             create virtual table if not exists trechos using fts5(
                 texto, titulo, fonte_id unindexed, tokenize = 'unicode61 remove_diacritics 2');
         ").map_err(|erro| erro.to_string())?;
+        banco.execute_batch(memoria::ESQUEMA).map_err(|erro| erro.to_string())?;
         Ok(Self { banco })
     }
 
@@ -203,3 +206,5 @@ impl Base {
 
 #[cfg(test)]
 mod testes;
+#[cfg(test)]
+mod testes_memoria;

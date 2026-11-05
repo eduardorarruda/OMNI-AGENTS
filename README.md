@@ -28,13 +28,61 @@ respondendo **do celular**, de qualquer lugar.
 
 <br><br>
 
-[Instalação](#instalação) · [O que ele faz](#o-que-ele-faz) · [Celular](#no-celular) · [Atalhos](#atalhos) · [Desenvolvimento](#desenvolvimento)
+[Instalação](#instalação) · [Sobre este fork](#sobre-este-fork) · [O que ele faz](#o-que-ele-faz) · [Celular](#no-celular) · [Atalhos](#atalhos) · [Desenvolvimento](#desenvolvimento)
 
 </div>
 
 <br>
 
 ![Tela principal do OMNI AGENTS](docs/screenshots/01-workspace.png)
+
+---
+
+## Sobre este fork
+
+Este repositório é um fork pessoal do [OMNI AGENTS](https://github.com/FelipeCamposM/OMNI-AGENTS),
+criado por Felipe Campos Macedo e distribuído sob a licença MIT (veja [LICENSE](LICENSE)). Todo o
+crédito pelo projeto original é dele. As mudanças deste fork ficam na branch `feat/conversas-por-projeto`.
+
+**Para que existe:** reunir num só lugar o contexto das conversas — conversas por projeto, uma base
+de conhecimento local e uma memória compartilhada entre conversas, tudo no próprio computador.
+
+### Novidades
+
+- **Conversas por projeto:** a lateral lista todas as conversas guardadas do projeto ativo, não só as 6 recentes.
+- **Títulos do Claude Desktop no histórico:** usados quando o transcript não tem título.
+- **Tela Conhecimento (RAG local):** arraste e solte arquivos para indexá-los. Aceita SQLite (mesmo com extensão `.backup`), dump SQL, PDF (precisa do `pdftotext`, do poppler), docx, xlsx, pptx, Markdown, texto, CSV, JSON, HTML, zip e gzip. O índice é SQLite FTS5, a busca ignora acentos, os resumos são curtos para gastar poucos tokens, segredos são removidos antes de indexar e tabelas e colunas sensíveis são ignoradas.
+- **Servidor MCP `omni-rag`:** o Claude consulta a base só quando a pessoa pedir, com as ferramentas `buscar_conhecimento` e `ler_trecho`. Liga-se por uma caixa na tela Conhecimento.
+- **Memória compartilhada entre conversas:** ganchos da CLI do Claude aplicados só nas sessões do OMNI, via `--settings`. `UserPromptSubmit` injeta notas relacionadas, `SessionStart` traz o índice, `PostCompact` guarda o resumo e `Stop` dispara uma passada com modelo rápido que salva até 2 notas por turno. Pode ser desligada na tela; a passada consome um pouco da conta.
+- **Modelos novos na lista:** Opus 5.5, Fable 5.1, Sonnet 5.5 e Haiku 5.5.
+
+### Correções
+
+- A conversa retomada do Histórico agora registra a conversa (a aba Conversa não fica mais vazia).
+- Os terminais recebem `TERM` e `COLORTERM`: aberto pelo menu do sistema, a CLI ficava sem cor e a conversa travava em "Entrada do CLI não reconhecida".
+- O Histórico esconde as sessões automáticas de resumo do Claude Desktop ("Below is a conversation log..."), sem apagar nenhum arquivo.
+
+### Tudo fica local
+
+A base de conhecimento e a memória ficam no seu computador, em `~/.local/share/com.omni.agents/rag/`
+(Linux). Nada disso é enviado a terceiros pelo OMNI.
+
+### Atualizar a partir do original
+
+```bash
+git fetch upstream && git merge upstream/main
+```
+
+### Compilar
+
+```bash
+npm install
+npm run dev              # app completo em desenvolvimento
+cargo test -p omni-rag   # testa só o RAG
+```
+
+> **Atenção:** `npm run build` ainda não empacota o binário `omni-rag`. Gere-o com
+> `cargo build -p omni-rag --release` e deixe-o ao lado do executável do app.
 
 ---
 

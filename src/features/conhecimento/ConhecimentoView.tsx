@@ -6,10 +6,13 @@ import {
   adicionarArquivos,
   buscarConhecimento,
   claudeUsaABase,
+  estadoDaMemoria,
   ligarBaseNoClaude,
+  ligarMemoria,
   listarFontes,
   removerFonte,
   tamanhoLegivel,
+  type EstadoDaMemoria,
   type FonteDeConhecimento,
   type ResultadoDeBusca,
 } from "./conhecimentoService";
@@ -24,6 +27,7 @@ export function ConhecimentoView({ onClose }: { onClose: () => void }) {
   const [arrastando, setArrastando] = useState(false);
   const [claude, setClaude] = useState<boolean | null>(null);
   const [mudandoClaude, setMudandoClaude] = useState(false);
+  const [memoria, setMemoria] = useState<EstadoDaMemoria | null>(null);
   const [consulta, setConsulta] = useState("");
   const [resultados, setResultados] = useState<ResultadoDeBusca[]>([]);
 
@@ -38,6 +42,7 @@ export function ConhecimentoView({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     void recarregar();
     claudeUsaABase().then(setClaude).catch(() => setClaude(false));
+    estadoDaMemoria().then(setMemoria).catch(() => setMemoria(null));
   }, [recarregar]);
 
   // A importação roda em segundo plano, um arquivo por vez: a lista é a fonte do progresso.
@@ -81,6 +86,13 @@ export function ConhecimentoView({ onClose }: { onClose: () => void }) {
     finally { setMudandoClaude(false); }
   }
 
+  async function alternarMemoria() {
+    if (!memoria) return;
+    setErro(null);
+    try { await ligarMemoria(!memoria.ligada); setMemoria({ ...memoria, ligada: !memoria.ligada }); }
+    catch (motivo) { setErro(String(motivo)); }
+  }
+
   const totalDeTrechos = fontes?.reduce((soma, fonte) => soma + fonte.trechos, 0) ?? 0;
 
   return (
@@ -111,6 +123,15 @@ export function ConhecimentoView({ onClose }: { onClose: () => void }) {
         {mudandoClaude && <span className="text-text-muted">aplicando…</span>}
       </label>
       {claude && <p className="text-[11px] text-text-muted">Vale para as conversas novas. As abertas precisam ser reiniciadas.</p>}
+
+      <label className="flex items-center gap-2 text-xs text-text-secondary">
+        <input type="checkbox" aria-label="Memória compartilhada" checked={memoria?.ligada === true} disabled={!memoria} onChange={() => void alternarMemoria()} />
+        Memória compartilhada entre as conversas
+        {memoria && <span className="text-text-muted">{memoria.notas.toLocaleString("pt-BR")} notas</span>}
+      </label>
+      <p className="text-[11px] text-text-muted">
+        Cada conversa nova do Claude recebe as notas ligadas ao pedido e, ao fim do turno, um modelo rápido guarda o que vale lembrar. Isso consome um pouco da sua conta.
+      </p>
 
       {erro && <p role="alert" className="border-l-2 border-danger px-2 py-1 text-[11px] text-danger">{erro}</p>}
 

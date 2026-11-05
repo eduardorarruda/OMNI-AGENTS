@@ -1,6 +1,7 @@
 //! Tela Conhecimento: a base mora no crate `omni-rag`; aqui só ficam a importação em segundo plano
 //! e o registro do MCP no Claude.
-use omni_rag::{caminho_padrao, Base, Fonte, Resultado};
+use omni_rag::{caminho_padrao, ganchos, Base, Fonte, Resultado};
+use serde::Serialize;
 use serde_json::Value;
 use std::{
     path::{Path, PathBuf},
@@ -49,6 +50,25 @@ pub async fn rag_remover(id: i64) -> Result<(), String> {
 #[tauri::command]
 pub async fn rag_buscar(consulta: String) -> Result<Vec<Resultado>, String> {
     bloqueante(move || abrir()?.buscar(&consulta, RESULTADOS_NA_TELA)).await
+}
+
+#[derive(Serialize)]
+pub struct EstadoDaMemoria {
+    ligada: bool,
+    notas: i64,
+}
+
+#[tauri::command]
+pub async fn rag_memoria_estado() -> Result<EstadoDaMemoria, String> {
+    bloqueante(|| {
+        let caminho = caminho_padrao().ok_or("pasta de dados não encontrada")?;
+        Ok(EstadoDaMemoria { ligada: ganchos::memoria_ligada(&caminho), notas: abrir()?.total_de_notas() })
+    }).await
+}
+
+#[tauri::command]
+pub async fn rag_memoria_ligar(ligada: bool) -> Result<(), String> {
+    bloqueante(move || ganchos::ligar_memoria(&caminho_padrao().ok_or("pasta de dados não encontrada")?, ligada)).await
 }
 
 fn configuracao_do_claude() -> Option<PathBuf> {

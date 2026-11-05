@@ -655,9 +655,34 @@ fn sem_aviso_de_update(comando: &str) -> String {
     format!("{binario} -c check_for_update_on_startup=false{}{resto}", if resto.is_empty() { "" } else { " " })
 }
 
+/// Só o `claude` interativo ganha a memória: `claude mcp ...` e afins não têm conversa.
+fn com_ganchos(comando: &str, arquivo: &str) -> String {
+    let mut partes = comando.split_whitespace();
+    let nome = partes.next().unwrap_or("").trim_matches('"').rsplit(['/', '\\']).next().unwrap_or("");
+    let conversa = partes.next().is_none_or(|argumento| argumento.starts_with('-'));
+    if nome != "claude" || !conversa || comando.contains("--settings") || comando.contains(" -p") { return comando.to_owned(); }
+    format!("{comando} --settings '{arquivo}'")
+}
+
+/// Grava os ganchos da memória e devolve o arquivo. `--settings` vale só para esta sessão: o Claude
+/// usado fora do OMNI, como o do Desktop, não muda. Sem o `omni-rag` ao lado, segue sem memória.
+fn arquivo_de_ganchos() -> Option<String> {
+    if cfg!(windows) { return None; }
+    let rag = env::current_exe().ok()?.with_file_name("omni-rag");
+    if !rag.is_file() { return None; }
+    let arquivo = engine_dir().ok()?.join("memoria-ganchos.json");
+    let gancho = |evento: &str, segundos: u32| serde_json::json!([{"hooks": [{"type": "command", "command": format!("'{}' hook {evento}", rag.display()), "timeout": segundos}]}]);
+    let conteudo = serde_json::json!({"hooks": {
+        "UserPromptSubmit": gancho("prompt", 5), "SessionStart": gancho("inicio", 5), "PostCompact": gancho("compactou", 5), "Stop": gancho("fim", 5),
+    }});
+    fs::write(&arquivo, conteudo.to_string()).ok()?;
+    Some(arquivo.to_string_lossy().into_owned())
+}
+
 fn spawn_initial_command_thread(session: Arc<LiveSession>, initial_command: Option<String>) {
     if let Some(initial_command) = initial_command.filter(|command| !command.trim().is_empty()) {
         let initial_command = sem_aviso_de_update(&initial_command);
+        let initial_command = arquivo_de_ganchos().map_or(initial_command.clone(), |arquivo| com_ganchos(&initial_command, &arquivo));
         std::thread::spawn(move || {
             // ConPTY/PowerShell performs a cursor-position handshake during startup.
             // Let xterm answer it before injecting the selected agent command.
@@ -1608,6 +1633,15 @@ mod tests {
         let pronto = sem_aviso_de_update("codex resume abc");
         assert_eq!(sem_aviso_de_update(&pronto), pronto, "reiniciar não repete a opção");
         assert_eq!(sem_aviso_de_update("claude --resume x"), "claude --resume x");
+    }
+
+    #[test]
+    fn memoria_liga_so_nas_conversas_do_claude() {
+        let com = |comando: &str| com_ganchos(comando, "/d/g.json");
+        assert_eq!(com("claude --session-id abc"), "claude --session-id abc --settings '/d/g.json'");
+        assert_eq!(com("claude"), "claude --settings '/d/g.json'");
+        assert_eq!(com("/x/claude --resume 1"), "/x/claude --resume 1 --settings '/d/g.json'");
+        for igual in ["codex resume", "claude mcp list", "claude -p oi", "claude --settings x", "npm run dev"] { assert_eq!(com(igual), igual); }
     }
 
     #[test]
