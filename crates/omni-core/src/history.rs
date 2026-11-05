@@ -87,6 +87,10 @@ fn blank(provider: &str, profile: &Profile, session_id: String, path: &Path) -> 
     }
 }
 
+/// Início do pedido que o Claude Desktop faz sozinho para resumir uma sessão. Grava um transcript
+/// como outro qualquer, mas não é conversa de ninguém: eram a maioria das entradas do Histórico.
+const RESUMO_DO_DESKTOP: &str = "Below is a conversation log from a Claude Code coding session";
+
 /// `<config>/projects/<slug>/<uuid>.jsonl`. Título = último `ai-title` (o Claude reescreve conforme a
 /// conversa anda). Sessão sem nenhum prompt digitado (só hook de inicialização) fica de fora.
 pub fn claude_entry(path: &Path, profile: &Profile) -> Option<HistoryEntry> {
@@ -108,7 +112,7 @@ pub fn claude_entry(path: &Path, profile: &Profile) -> Option<HistoryEntry> {
             entry.started_at_ms = timestamp(&value["timestamp"]);
         }
     }
-    entry.first_prompt.as_ref()?;
+    if entry.first_prompt.as_ref()?.starts_with(RESUMO_DO_DESKTOP) { return None; }
     if entry.title.is_none() { entry.title = summary; }
     Some(entry)
 }
@@ -378,5 +382,18 @@ mod tests {
         let titulos = titulos_do_desktop(raiz.path());
         assert_eq!(titulos.get("s1").map(String::as_str), Some("Sistema de tarefas"));
         assert_eq!(titulos.len(), 1);
+    }
+
+    #[test]
+    fn resumo_automatico_do_claude_desktop_nao_e_conversa() {
+        let pasta = tempfile::tempdir().unwrap();
+        let projeto = pasta.path().join("projects").join("p");
+        fs::create_dir_all(&projeto).unwrap();
+        let linha = |texto: &str| json!({"type": "user", "cwd": "/p", "timestamp": "2026-01-01T00:00:00Z", "message": {"role": "user", "content": texto}}).to_string();
+        fs::write(projeto.join("a.jsonl"), linha("Below is a conversation log from a Claude Code coding session. Create a summary")).unwrap();
+        fs::write(projeto.join("b.jsonl"), linha("Below is a list of bugs, fix them")).unwrap();
+        let conta = profile("claude", pasta.path());
+        assert!(claude_entry(&projeto.join("a.jsonl"), &conta).is_none());
+        assert!(claude_entry(&projeto.join("b.jsonl"), &conta).is_some());
     }
 }

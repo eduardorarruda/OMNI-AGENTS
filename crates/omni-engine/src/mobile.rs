@@ -1758,11 +1758,15 @@ fn execute(state:&Arc<EngineState>, action:&Action) -> Result<()> {
 /// (id, rótulo, dica, seção). Os apelidos seguem a versão mais nova; "Mais modelos" é a lista do
 /// `/model` da CLI (2.1.304), por id fixo.
 // ponytail: lista copiada da CLI, revisar quando o `/model` ganhar ou perder versões.
-const MODELOS_CLAUDE: [(&str, &str, &str, &str); 12] = [
+const MODELOS_CLAUDE: [(&str, &str, &str, &str); 16] = [
     ("opus","Opus","Trabalho complexo e do dia a dia",""),
     ("sonnet","Sonnet","Mais econômico, para tarefas simples",""),
     ("fable","Fable","Para os desafios mais difíceis",""),
     ("haiku","Haiku","O mais rápido, respostas curtas",""),
+    ("claude-fable-5-1","Fable 5.1","Tarefas longas e difíceis","Mais modelos"),
+    ("claude-opus-5-5","Opus 5.5","Trabalho complexo e do dia a dia","Mais modelos"),
+    ("claude-sonnet-5-5","Sonnet 5.5","Tarefas de rotina","Mais modelos"),
+    ("claude-haiku-5-5","Haiku 5.5","O mais rápido, respostas curtas","Mais modelos"),
     ("claude-fable-5","Fable 5","Tarefas longas e difíceis","Mais modelos"),
     ("claude-opus-5","Opus 5","Trabalho complexo e do dia a dia","Mais modelos"),
     ("claude-sonnet-5","Sonnet 5","Tarefas de rotina","Mais modelos"),
@@ -3716,7 +3720,8 @@ quebra"}"#] {
             assert_eq!(opcoes["provider"],"claude");
             let contas: Vec<&str> = opcoes["profiles"].as_array().unwrap().iter().map(|p| p["name"].as_str().unwrap()).collect();
             assert_eq!(contas, ["Padrão","Trabalho"], "conta de outro agente apareceu");
-            assert!(opcoes["models"].as_array().unwrap().iter().any(|m| m["id"] == "opus"));
+            let modelos: Vec<&str> = opcoes["models"].as_array().unwrap().iter().filter_map(|m| m["id"].as_str()).collect();
+            for id in ["opus","claude-opus-5-5","claude-fable-5-1","claude-sonnet-5-5","claude-haiku-5-5"] { assert!(modelos.contains(&id),"faltou {id}"); }
         }
 
         /// Conversa sem sessão aberta (o caso do print: "Histórico") se retoma com conta, modelo e

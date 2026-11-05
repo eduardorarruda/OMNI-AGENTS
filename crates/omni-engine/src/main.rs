@@ -455,6 +455,15 @@ fn garantir_verdadeiro(caminho: &Path, chave: &str) {
     let _ = fs::write(caminho, novo);
 }
 
+/// Aberto pelo menu do sistema, o engine não herda `TERM`. Sem ele a CLI desenha tudo sem cor, a dica
+/// cinza do campo vira texto comum e a conversa trava em "Entrada do CLI não reconhecida".
+fn garantir_terminal_com_cor(command: &mut CommandBuilder) {
+    if cfg!(windows) { return; }
+    let sem_term = command.get_env("TERM").is_none_or(|valor| valor.is_empty() || valor == "dumb");
+    if sem_term { command.env("TERM", "xterm-256color"); }
+    if command.get_env("COLORTERM").is_none() { command.env("COLORTERM", "truecolor"); }
+}
+
 fn ambiente_do_terminal_com(command: &mut CommandBuilder, env: &[(String, String)], dentro_do_claude: bool) {
     for nome in VARIAVEIS_DO_ENGINE {
         command.env_remove(nome);
@@ -468,6 +477,7 @@ fn ambiente_do_terminal_com(command: &mut CommandBuilder, env: &[(String, String
         // conta de cada terminal vem do perfil (`env`, logo abaixo), nunca do pai.
         command.env_remove("CLAUDE_CONFIG_DIR");
     }
+    garantir_terminal_com_cor(command);
     command.env("OMNI_AGENTS", "1");
     // Isolamento de conta: o CLI é digitado no shell, então herda o ambiente daqui.
     for (key, value) in env {
@@ -1598,6 +1608,20 @@ mod tests {
         let pronto = sem_aviso_de_update("codex resume abc");
         assert_eq!(sem_aviso_de_update(&pronto), pronto, "reiniciar não repete a opção");
         assert_eq!(sem_aviso_de_update("claude --resume x"), "claude --resume x");
+    }
+
+    #[test]
+    fn terminal_sem_term_ganha_cor_e_o_configurado_fica() {
+        let mut comando = CommandBuilder::new("x");
+        comando.env_remove("TERM");
+        comando.env_remove("COLORTERM");
+        garantir_terminal_com_cor(&mut comando);
+        assert_eq!(comando.get_env("TERM").and_then(|valor| valor.to_str()), Some("xterm-256color"));
+        assert_eq!(comando.get_env("COLORTERM").and_then(|valor| valor.to_str()), Some("truecolor"));
+        let mut proprio = CommandBuilder::new("x");
+        proprio.env("TERM", "screen-256color");
+        garantir_terminal_com_cor(&mut proprio);
+        assert_eq!(proprio.get_env("TERM").and_then(|valor| valor.to_str()), Some("screen-256color"));
     }
 
     #[test]
