@@ -178,10 +178,38 @@ pub(crate) fn claude_transcripts(config_dir: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Onde o Claude Desktop guarda a metadata das sessões de código, por sistema.
+fn pasta_do_desktop() -> Option<PathBuf> {
+    let home = || std::env::var_os("HOME").map(PathBuf::from);
+    let base = if cfg!(windows) {
+        std::env::var_os("APPDATA").map(PathBuf::from)
+    } else if cfg!(target_os = "macos") {
+        home().map(|pasta| pasta.join("Library/Application Support"))
+    } else {
+        std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).or_else(|| home().map(|pasta| pasta.join(".config")))
+    };
+    Some(base?.join("Claude").join("claude-code-sessions"))
+}
+
+/// `<raiz>/<conta>/<org>/local_*.json` → `cliSessionId` → título. O Desktop dá nome às conversas
+/// fora do transcript: sem isto elas apareciam só com o primeiro prompt.
+fn titulos_do_desktop(raiz: &Path) -> HashMap<String, String> {
+    let subpastas = |pasta: &Path| fs::read_dir(pasta).into_iter().flatten().flatten().map(|item| item.path()).collect::<Vec<_>>();
+    subpastas(raiz).iter().flat_map(|conta| subpastas(conta)).flat_map(|org| subpastas(&org))
+        .filter(|arquivo| arquivo.extension().is_some_and(|extensao| extensao == "json"))
+        .filter_map(|arquivo| serde_json::from_slice::<Value>(&fs::read(arquivo).ok()?).ok())
+        .filter_map(|sessao| {
+            let titulo = sessao["title"].as_str()?.trim();
+            (!titulo.is_empty()).then(|| Some((sessao["cliSessionId"].as_str()?.to_owned(), titulo.to_owned())))?
+        })
+        .collect()
+}
+
 /// Todas as conversas do provider em todas as contas dele, da mais recente pra mais antiga.
 /// Mesma sessão em duas contas (a troca de conta copia o `.jsonl`) aparece uma vez só: a mais nova.
 pub fn scan(provider: &str, profiles: &[Profile], cache: &mut ScanCache) -> Vec<HistoryEntry> {
     let mut by_session: HashMap<String, HistoryEntry> = HashMap::new();
+    let do_desktop = if provider == "claude" { pasta_do_desktop().map(|raiz| titulos_do_desktop(&raiz)).unwrap_or_default() } else { HashMap::new() };
     for profile in profiles.iter().filter(|profile| profile.provider == provider) {
         let root = Path::new(&profile.config_dir);
         let (paths, titles) = match provider {
@@ -209,6 +237,7 @@ pub fn scan(provider: &str, profiles: &[Profile], cache: &mut ScanCache) -> Vec<
             // O título do Codex mora fora do rollout: pode ter mudado sem o arquivo mudar.
             let Some(mut entry) = entry else { continue };
             if provider == "codex" { entry.title = titles.get(&entry.session_id).cloned().or(entry.title); }
+            if entry.title.is_none() { entry.title = do_desktop.get(&entry.session_id).cloned(); }
             let keep = by_session.get(&entry.session_id).is_none_or(|current| current.updated_at_ms < entry.updated_at_ms);
             if keep { by_session.insert(entry.session_id.clone(), entry); }
         }
@@ -336,5 +365,18 @@ mod tests {
         let conversa = transcript(Path::new(&lista[0].path), "cursor", &perfis).unwrap();
         assert_eq!(conversa.messages.iter().map(|m| m.text.as_str()).collect::<Vec<_>>(), ["bom dia", "Bom dia. Vou conferir.", "Em que posso ajudar?"]);
         assert!(transcript(Path::new(&lista[0].path), "claude", &[profile("claude", dir.path())]).is_none(), "store.db não é transcript do Claude");
+    }
+
+    #[test]
+    fn titulos_do_claude_desktop_vem_da_metadata_da_sessao_e_ignoram_lixo() {
+        let raiz = tempfile::tempdir().unwrap();
+        let pasta = raiz.path().join("conta").join("org");
+        fs::create_dir_all(&pasta).unwrap();
+        fs::write(pasta.join("local_a.json"), r#"{"cliSessionId":"s1","title":"Sistema de tarefas"}"#).unwrap();
+        fs::write(pasta.join("local_b.json"), r#"{"cliSessionId":"s2","title":"  "}"#).unwrap();
+        fs::write(pasta.join("local_c.json"), "nao e json").unwrap();
+        let titulos = titulos_do_desktop(raiz.path());
+        assert_eq!(titulos.get("s1").map(String::as_str), Some("Sistema de tarefas"));
+        assert_eq!(titulos.len(), 1);
     }
 }

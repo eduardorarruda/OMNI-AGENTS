@@ -18,7 +18,7 @@ import {
 } from "./ui/PixelIcon";
 import { destaqueDaLinha, EtiquetaDoStatus, haQuantoTempo, IconeDoStatus, ResumoDeAgentes, rotuloDoStatus, statusDaConversa } from "./ConversaStatus";
 import { conversationKey } from "../features/terminal/useAttention";
-import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, useMemo } from "react";
 import gsap from "gsap";
 import { ProjectPicker } from "../features/projects/ProjectPicker";
 import { EditableLabel } from "./ui/EditableLabel";
@@ -121,6 +121,8 @@ interface SidebarProps {
   showFluxos?: boolean;
   onOpenFluxos?: () => void;
   onOpenHistory: () => void;
+  onOpenConhecimento?: () => void;
+  showConhecimento?: boolean;
   /** Retoma uma conversa do Histórico (a seção Recentes da lateral). */
   onResumeHistory?: (entry: HistoryEntry) => Promise<void>;
   /** Antigo clique no logo: o logo mudou para a barra superior (`TitleBar`). */
@@ -171,6 +173,8 @@ export function Sidebar({
   showFluxos = false,
   onOpenFluxos,
   onOpenHistory,
+  onOpenConhecimento,
+  showConhecimento = false,
   onResumeHistory,
   onAddProject,
   onSelectProject,
@@ -244,6 +248,7 @@ export function Sidebar({
     moverIndicador(indicador.current, botoesAba.current[aba] ?? null);
   }, [aba, ordemAbas, largura]);
 
+  const pastasDosProjetos = useMemo(() => projects.map((project) => project.path), [projects]);
   // Avisos na aba das conversas: quantos pedem atenção e se algum agente está trabalhando agora.
   const trabalhando = [...agentSessions, ...terminalSessions].some((session) => session.provider && session.state === "working");
   useEffect(() => {
@@ -486,6 +491,7 @@ Arraste para mudar a ordem`}
                     </SidebarSection>
                     {section === "CHATS" && onResumeHistory && (
                       <RecentesConversas agora={agora} onRetomar={onResumeHistory} onVerTodas={onOpenHistory}
+                        projeto={activeProjectPath} projetos={pastasDosProjetos}
                         abertas={agentSessions.flatMap((sessao) => sessao.external_session_id ? [sessao.external_session_id] : [])} />
                     )}
                     </Fragment>
@@ -527,6 +533,14 @@ Arraste para mudar a ordem`}
             onClick={onOpenFluxos}
             icon={<CircuitIcon className="w-4 h-4" aria-hidden="true" />}
             label="Fluxos de agentes"
+          />
+        )}
+        {onOpenConhecimento && (
+          <NavItem
+            active={showConhecimento}
+            onClick={onOpenConhecimento}
+            icon={<BookIcon className="w-4 h-4" aria-hidden="true" />}
+            label="Conhecimento"
           />
         )}
         <NavItem

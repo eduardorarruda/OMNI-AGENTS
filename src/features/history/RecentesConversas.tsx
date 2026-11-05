@@ -5,7 +5,7 @@ import { haQuantoTempo } from "../../components/ConversaStatus";
 import { ChevronDownIcon, ClockIcon } from "../../components/ui/PixelIcon";
 import { baseName } from "../files/filesService";
 import { useProjetoDaPasta } from "../projects/projetosContext";
-import { filterHistory, listHistory, type HistoryEntry } from "./historyService";
+import { filterHistory, listHistory, pastaDoProjeto, samePath, type HistoryEntry } from "./historyService";
 import { Input } from "../../components/ui/Input";
 
 const QUANTAS = 6;
@@ -19,12 +19,22 @@ export function escolherRecentes(entradas: HistoryEntry[], abertas: ReadonlySet<
     .slice(0, quantas);
 }
 
-export function RecentesConversas({ abertas, agora, onRetomar, onVerTodas }: {
+/** Todas as conversas guardadas de um projeto, da mais recente para a mais antiga. Worktrees e
+ *  subpastas contam como do projeto, a não ser que a subpasta seja um projeto aberto também. */
+export function conversasDoProjeto(entradas: HistoryEntry[], abertas: ReadonlySet<string>, projeto: string, projetos: readonly string[]): HistoryEntry[] {
+  const doProjeto = entradas.filter((entrada) => entrada.cwd && samePath(pastaDoProjeto(entrada.cwd, projetos), projeto));
+  return escolherRecentes(doProjeto, abertas, doProjeto.length);
+}
+
+export function RecentesConversas({ abertas, agora, onRetomar, onVerTodas, projeto = null, projetos = [] }: {
   /** Ids nativos (`external_session_id`) das conversas já abertas: essas não se repetem aqui. */
   abertas: readonly string[];
   agora: number;
   onRetomar: (entrada: HistoryEntry) => Promise<void>;
   onVerTodas: () => void;
+  /** Pasta do projeto ativo: com ela, a lista vira todas as conversas desse projeto. */
+  projeto?: string | null;
+  projetos?: readonly string[];
 }) {
   const [entradas, setEntradas] = useState<HistoryEntry[] | null>(null);
   const [aberto, setAberto] = useState(true);
@@ -42,8 +52,11 @@ export function RecentesConversas({ abertas, agora, onRetomar, onVerTodas }: {
   }, [chave]);
 
   // Com busca, procura no histórico inteiro (título, prompt, pasta) e mostra um pouco mais.
-  const lista = useMemo(() => escolherRecentes(busca.trim() ? filterHistory(entradas ?? [], { query: busca, cwd: "", profileId: "" }) : entradas ?? [],
-    new Set(abertas), busca.trim() ? 10 : undefined), [entradas, chave, busca]); // eslint-disable-line react-hooks/exhaustive-deps
+  const lista = useMemo(() => {
+    const jaAbertas = new Set(abertas);
+    if (busca.trim()) return escolherRecentes(filterHistory(entradas ?? [], { query: busca, cwd: "", profileId: "" }), jaAbertas, 10);
+    return projeto ? conversasDoProjeto(entradas ?? [], jaAbertas, projeto, projetos) : escolherRecentes(entradas ?? [], jaAbertas);
+  }, [entradas, chave, busca, projeto, projetos]); // eslint-disable-line react-hooks/exhaustive-deps
   if (entradas !== null && entradas.length === 0) return null;
 
   async function retomar(entrada: HistoryEntry) {
@@ -59,14 +72,14 @@ export function RecentesConversas({ abertas, agora, onRetomar, onVerTodas }: {
         className="lateral-secao flex w-full items-center gap-2 px-3 pt-1 text-[10px] font-medium uppercase tracking-wider text-text-muted focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">
         <ChevronDownIcon className={`h-3 w-3 shrink-0 transition-transform ${aberto ? "" : "-rotate-90"}`} aria-hidden="true" />
         <ClockIcon className="h-3 w-3 shrink-0" aria-hidden />
-        Recentes
+        {projeto ? `Conversas do projeto (${lista.length})` : "Recentes"}
       </button>
       {aberto && <div className="space-y-1 pt-0.5">
         <Input size="sm" type="search" value={busca} onChange={(evento) => setBusca(evento.target.value)}
           placeholder="Buscar no histórico…" aria-label="Buscar nas conversas recentes" className="lateral-recente-busca"
           onKeyDown={(evento) => { if (evento.key === "Escape") setBusca(""); }} />
         {entradas !== null && lista.length === 0 && (
-          <p className="px-3 py-1.5 text-[11px] text-text-muted">{busca.trim() ? "Nada encontrado." : "Todas as conversas recentes já estão abertas."}</p>
+          <p className="px-3 py-1.5 text-[11px] text-text-muted">{busca.trim() ? "Nada encontrado." : projeto ? "Nenhuma outra conversa neste projeto." : "Todas as conversas recentes já estão abertas."}</p>
         )}
         {entradas === null
           ? <p className="px-6 py-1.5 text-xs text-text-muted">Lendo o histórico…</p>
