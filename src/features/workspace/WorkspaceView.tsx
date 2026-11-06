@@ -1,9 +1,10 @@
-import type { Project, WorkspacesAction } from "../../types/workspace";
+import type { PaneNode, Project, WorkspacesAction } from "../../types/workspace";
 import type { AgentView } from "../../types/settings";
 import type { KanbanAction, KanbanState } from "../../types/kanban";
 import type { AttentionItem } from "../terminal/useAttention";
 import { AgentUsageStatus } from "../terminal/AgentUsageStatus";
 import { GitContaStatus } from "../git/GitBranchStatus";
+import { FaixaDeExecucao } from "../panorama/FaixaDeExecucao";
 import { findPane } from "./workspaceReducer";
 import { PaneTree } from "./PaneTree";
 import { useWorkspaceKeymap } from "./useWorkspaceKeymap";
@@ -51,6 +52,7 @@ export function WorkspaceView({
 
   return (
     <div className="h-full min-h-0 flex flex-col">
+      <FaixaDeExecucao projetoId={project.id} onAbrir={() => abrirPanorama(project, dispatch)} />
       {/* Nome, caminho e layouts do projeto ficam na barra superior (`TitleBar`). */}
       <h1 className="sr-only">{project.name}</h1>
       <div className="flex flex-1 min-h-0 p-2">
@@ -90,6 +92,21 @@ export function RodapeDoProjeto({ projectPath, engineOnline, activeSessionId }: 
       </span>
     </footer>
   );
+}
+
+/** Abre (ou volta para) a aba do panorama do projeto, sem duplicar. */
+function abrirPanorama(project: Project, dispatch: React.Dispatch<WorkspacesAction>) {
+  const existente = allPanes(project.layout).flatMap((pane) => pane.tabs.filter((t) => t.kind === "execucao-projeto").map((tab) => ({ pane, tab })))[0];
+  if (existente) {
+    dispatch({ type: "FOCUS_PANE", paneId: existente.pane.id });
+    dispatch({ type: "SELECT_TAB", paneId: existente.pane.id, tabId: existente.tab.id });
+    return;
+  }
+  dispatch({ type: "CREATE_TAB", paneId: project.activePaneId, kind: "execucao-projeto", title: "O que roda" });
+}
+
+function allPanes(node: Project["layout"]): PaneNode[] {
+  return node.type === "pane" ? [node] : [...allPanes(node.first), ...allPanes(node.second)];
 }
 
 function countPanes(node: Project["layout"]): number {
