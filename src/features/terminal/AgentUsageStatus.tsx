@@ -11,6 +11,7 @@ import { useSession } from "./sessionProviders";
 import { listProfiles, type Profile } from "./terminalService";
 import { AGENTES_COM_USO, NOME_DO_AGENTE } from "../../mobile/api";
 import { DetalheDaConta, GATILHO_DO_DETALHE } from "./DetalheDaConta";
+import { useTokensDaConta } from "./useTokensDaConta";
 
 export function timeAgo(ms: number, now: number) {
   const seconds = Math.max(0, Math.round((now - ms) / 1000));
@@ -99,6 +100,7 @@ export function AgentUsageStatus({ engineOnline, activeSessionId }: AgentUsageSt
     session?.profile_id ?? (provider ? recente(profiles.filter(p => p.provider === provider))?.id ?? null : null);
 
   const conta = profiles.find(p => p.id === profileId && p.name) ?? null;
+  const tokens = useTokensDaConta(profileId, detalheAberto);
 
   // Conta criada depois que o rodapé leu a lista (ou aberta por failover) não tem nome ainda:
   // relê uma vez por id desconhecido, senão o rodapé não diria de quem é o limite exibido.
@@ -245,7 +247,7 @@ export function AgentUsageStatus({ engineOnline, activeSessionId }: AgentUsageSt
         <ReloadIcon aria-hidden="true" className={`w-3.5 h-3.5${busy ? " animate-spin" : ""}`} />
       </button>}
       {detalheAberto && conta && (
-        <DetalheDaConta uso={usage} tokens={null} onFechar={() => setDetalheAberto(false)}
+        <DetalheDaConta uso={usage} tokens={tokens} onFechar={() => setDetalheAberto(false)}
           conta={{ nome: conta.name, email: conta.email, provider: conta.provider }} />
       )}
     </span>

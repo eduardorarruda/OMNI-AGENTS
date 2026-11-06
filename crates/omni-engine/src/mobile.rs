@@ -619,6 +619,7 @@ fn rotas() -> Router<Arc<EngineState>> {
         .route("/atencao",get(attention))
         .route("/sessoes",post(create_session))
         .route("/parear",post(parear))
+        .merge(crate::contas_tokens::rotas())
 }
 
 fn router(state: Arc<EngineState>) -> Router {

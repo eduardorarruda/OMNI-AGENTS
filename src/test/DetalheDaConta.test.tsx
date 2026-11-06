@@ -83,6 +83,24 @@ it("painel do topo usa o mesmo detalhe", async () => {
   expect(screen.getByRole("dialog", { name: "Uso das contas" })).toBeInTheDocument();
 });
 
+it("rodapé busca os tokens da conta no engine e mostra \"não disponível\" onde a fonte não tem", async () => {
+  vi.mocked(invoke).mockReset().mockImplementation(async (command, args) => {
+    if (command === "list_profiles") return [{ id: "a", provider: "claude", name: "Pessoal", last_used_at_ms: 1 }];
+    if (command === "account_usage") return completo;
+    if (command === "engine_api") {
+      expect((args as { path: string }).path).toBe("/contas/a/tokens");
+      const corpo = { hoje: { entrada: 1200, saida: 340, cache: 5000 }, sete_dias: null, motivo: null };
+      return { type: "api", status: 200, body: JSON.stringify(corpo) };
+    }
+    return null;
+  });
+  render(<AgentUsageStatus engineOnline />);
+  await userEvent.click(await screen.findByRole("button", { name: "Ver detalhe da conta Pessoal" }));
+  const detalhe = await screen.findByRole("dialog", { name: "Detalhe da conta Pessoal" });
+  expect(await within(detalhe).findByText(/1\.200 entrada · 340 saída · 5\.000 cache/)).toBeInTheDocument();
+  expect(within(detalhe).getByText("não disponível")).toBeInTheDocument();
+});
+
 // Evita aviso de import não usado quando o contexto de sessão não é preciso.
 void SessionProvidersContext;
 void ({} as TerminalSession);

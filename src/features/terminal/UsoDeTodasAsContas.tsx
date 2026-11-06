@@ -10,6 +10,7 @@ import { listProfiles, type Profile } from "./terminalService";
 import { timeAgo } from "./AgentUsageStatus";
 import { AGENTES_COM_USO, NOME_DO_AGENTE } from "../../mobile/api";
 import { DetalheDaConta, GATILHO_DO_DETALHE } from "./DetalheDaConta";
+import { useTokensDaConta } from "./useTokensDaConta";
 
 /** Medidor de uma janela: rótulo, quando renova e o %, com a barra embaixo na cor da faixa (verde/amarelo/vermelho). */
 export function Medidor({ rotulo, janela }: { rotulo: string; janela: UsageWindow | null }) {
@@ -132,6 +133,7 @@ export function UsoDeTodasAsContas({ engineOnline, contaAtiva }: { engineOnline:
     }
   }
 
+  const tokens = useTokensDaConta(detalhe, aberto);
   const detalheDaConta = contas.find((conta) => conta.id === detalhe) ?? null;
   const ias = ordenar(contas);
   // Posição de cada grupo e cartão na cascata de entrada.
@@ -224,7 +226,7 @@ export function UsoDeTodasAsContas({ engineOnline, contaAtiva }: { engineOnline:
         document.body,
       )}
       {aberto && detalheDaConta && (
-        <DetalheDaConta uso={usos[detalheDaConta.id] ?? null} tokens={null} onFechar={() => setDetalhe(null)}
+        <DetalheDaConta uso={usos[detalheDaConta.id] ?? null} tokens={tokens} onFechar={() => setDetalhe(null)}
           conta={{ nome: detalheDaConta.name, email: detalheDaConta.email, provider: detalheDaConta.provider }} />
       )}
     </>
