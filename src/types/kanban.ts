@@ -31,9 +31,27 @@ export interface KanbanTask {
   externa?: { origem: string; id: string; sumiu: boolean };
 }
 
+/** Tarefa externa ainda sem projeto. Vira cartão quando o usuário escolhe o projeto. */
+export interface KanbanExterna {
+  origem: string;
+  id: string;
+  titulo: string;
+  descricao: string;
+  sumiu: boolean;
+}
+
+export interface ResumoDaImportacao {
+  novas: number;
+  atualizadas: number;
+  jaNoQuadro: number;
+  sumiram: number;
+}
+
 export interface KanbanState {
   version: 1;
   tasks: KanbanTask[];
+  /** Caixa de triagem: fora dos projetos, e por isso fora do alcance do dispatcher. O engine é o dono. */
+  triagem?: KanbanExterna[];
   /** Qual CLI o dispatcher usa em cada projeto — default é o primeiro agente disponível. */
   agentByProject: Record<string, AgentCliId>;
   /** Desligado por padrão — capacidade adicional, não substitui o fluxo manual existente. */

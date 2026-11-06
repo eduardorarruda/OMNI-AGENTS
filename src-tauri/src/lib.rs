@@ -107,6 +107,7 @@ pub fn run() {
             tarefas::tarefas_salvar,
             tarefas::tarefas_estado,
             tarefas::tarefas_atualizar,
+            tarefas::kanban_atualizar_externas,
             tarefas::tarefas_texto,
             history::agent_history,
             history::agent_history_transcript,

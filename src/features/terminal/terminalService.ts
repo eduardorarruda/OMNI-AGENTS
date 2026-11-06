@@ -254,8 +254,10 @@ export async function spawnTerminal(input: {
   externalSessionId?: string;
   /** Conta do `gh` do workspace: só o nome, o token quem resolve é o engine. */
   contaGithub?: string | null;
+  /** Sessão aberta para tarefa externa: o MCP dela nasce marcado e o que ela iniciar para nas Aprovações. */
+  veioDeFora?: boolean;
 }) {
-  const { initialCommand, provider, profileId, conversationId, externalSessionId, contaGithub, ...terminal } = input;
+  const { initialCommand, provider, profileId, conversationId, externalSessionId, contaGithub, veioDeFora, ...terminal } = input;
   const response = await invoke<EngineResponse>("spawn_terminal", {
     ...terminal,
     shell: null,
@@ -265,6 +267,7 @@ export async function spawnTerminal(input: {
     conversationId: conversationId ?? null,
     externalSessionId: externalSessionId ?? null,
     contaGithub: contaGithub ?? null,
+    veioDeFora: veioDeFora ?? null,
   });
   return expect(response, "session").session;
 }

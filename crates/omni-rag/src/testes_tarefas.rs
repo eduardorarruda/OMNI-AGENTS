@@ -406,3 +406,33 @@ fn mcp_limita_a_lista() {
     assert!(texto.contains("#19") && !texto.contains("#20"));
     assert!(texto.contains("mais 30"));
 }
+
+#[test]
+fn bloqueio_de_intervalo_devolve_quanto_falta() {
+    let cache = Cache { tentado_em_ms: 1_000_000, ..Cache::default() };
+    assert_eq!(conferir_bloqueio(&cache, 1_000_000 + 18_500).expect_err("bloqueado"), "Aguarde 42 s para buscar de novo.");
+    assert!(conferir_bloqueio(&cache, 1_000_000 + INTERVALO_MINIMO_MS).is_ok());
+    assert!(conferir_bloqueio(&Cache::default(), 1_000_000).is_ok());
+}
+
+#[test]
+fn busca_vira_importacao_em_uma_linha_sem_segredo() {
+    let tarefa = Tarefa {
+        id: "7".into(), titulo: "Corrigir\r\nrelatório".into(), descricao: "Linha um\nLinha dois\x1b[31m ghp_abc123def456ghi789jkl012".into(),
+        comentarios: vec!["Primeiro comentário".into()], ..Tarefa::default()
+    };
+    let importacao = importacao_da_busca("api.exemplo.test", &[tarefa]);
+    assert_eq!(importacao.origem, "api.exemplo.test");
+    let cartao = &importacao.tarefas[0];
+    assert_eq!((cartao.id.as_str(), cartao.titulo.as_str()), ("7", "Corrigir relatório"));
+    assert!(cartao.descricao.starts_with("Linha um Linha dois"), "{}", cartao.descricao);
+    assert!(cartao.descricao.contains("Primeiro comentário"), "{}", cartao.descricao);
+    assert!(!cartao.descricao.contains("abc123def456"), "{}", cartao.descricao);
+    assert!(!cartao.descricao.chars().any(char::is_control), "{}", cartao.descricao);
+}
+
+#[test]
+fn origem_da_api_e_so_o_endereco() {
+    assert_eq!(origem_da_url("https://API.exemplo.test:8443/dados?chave=segredo"), "api.exemplo.test");
+    assert_eq!(origem_da_url("http://localhost:3000/x"), "localhost");
+}

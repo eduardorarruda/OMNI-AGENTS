@@ -23,6 +23,7 @@ export function emptyKanban(): KanbanState {
   return {
     version: 1,
     tasks: [],
+    triagem: [],
     agentByProject: {},
     dispatcherEnabled: false,
     failureTimestamps: [],

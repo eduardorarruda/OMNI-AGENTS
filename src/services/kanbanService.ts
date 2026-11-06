@@ -1,4 +1,5 @@
-import { KANBAN_STATUSES, type KanbanState, type KanbanTask } from "../types/kanban";
+import { invoke } from "@tauri-apps/api/core";
+import { KANBAN_STATUSES, type KanbanExterna, type KanbanState, type KanbanTask, type ResumoDaImportacao } from "../types/kanban";
 import { emptyKanban } from "../features/kanban/kanbanReducer";
 import { definirAvisoDoKanban, limparAvisoDoKanban } from "../features/kanban/kanbanAviso";
 import { engineApi } from "../features/terminal/terminalService";
@@ -12,6 +13,8 @@ export const AVISO_MIGRACAO_FALHOU =
   "Não foi possível levar o Kanban deste computador para o engine. Mostrando a cópia local; novas mudanças só serão aceitas depois que a migração passar.";
 export const AVISO_GRAVACAO_FALHOU =
   "Não foi possível gravar no Kanban. As mudanças que não foram gravadas foram desfeitas.";
+export const AVISO_SEM_MIGRACAO =
+  "O Kanban deste computador ainda não subiu para o engine. Tente de novo quando o engine voltar.";
 
 function isTask(value: unknown): value is KanbanTask {
   if (!value || typeof value !== "object") return false;
@@ -37,6 +40,7 @@ function normalize(raw: unknown): KanbanState | null {
     version: 1,
     // Task individualmente inválida é descartada sozinha, não o board inteiro.
     tasks: candidate.tasks.filter(isTask),
+    triagem: Array.isArray(candidate.triagem) ? candidate.triagem : [],
     agentByProject:
       candidate.agentByProject && typeof candidate.agentByProject === "object" ? candidate.agentByProject : {},
     dispatcherEnabled: candidate.dispatcherEnabled === true,
@@ -74,7 +78,7 @@ async function chamar<T>(metodo: string, caminho: string, corpo?: unknown): Prom
 }
 
 function quadroParaEstado(quadro: QuadroDoEngine): KanbanState {
-  return normalize({ version: 1, tasks: quadro.tarefas, ...(quadro.ajustes ?? {}) }) ?? emptyKanban();
+  return normalize({ version: 1, tasks: quadro.tarefas, triagem: quadro.triagem, ...(quadro.ajustes ?? {}) }) ?? emptyKanban();
 }
 
 const AJUSTES = ["agentByProject", "dispatcherEnabled", "failureTimestamps", "pausedUntil"] as const;
@@ -132,6 +136,26 @@ async function migrarSeVazio(quadro: QuadroDoEngine): Promise<"migrou" | "nada" 
   } catch {
     return "falhou";
   }
+}
+
+/** Só chamada pelo clique em Atualizar. A migração vem antes: triagem no engine impediria o quadro
+ * antigo de subir depois. */
+export async function atualizarExternas(): Promise<ResumoDaImportacao> {
+  if ((await migrarSePreciso()) === "falhou") throw new Error(AVISO_SEM_MIGRACAO);
+  return invoke<ResumoDaImportacao>("kanban_atualizar_externas");
+}
+
+export function escolherProjetoDaExterna(tarefa: KanbanExterna, projectId: string): Promise<KanbanTask> {
+  return chamar<KanbanTask>("POST", `/kanban/externas/${encodeURIComponent(tarefa.id)}/projeto`, { projectId, origem: tarefa.origem });
+}
+
+export interface ProjetoDoEngine {
+  id: string;
+  name: string;
+}
+
+export async function listarProjetosDoEngine(): Promise<ProjetoDoEngine[]> {
+  return (await chamar<{ projects: ProjetoDoEngine[] }>("GET", "/projetos")).projects;
 }
 
 export type OrigemDoKanban = "engine" | "local";

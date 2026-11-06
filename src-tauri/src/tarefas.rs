@@ -1,7 +1,9 @@
 //! Busca as tarefas na API externa. As regras moram em `omni_rag::tarefas`; aqui só ficam a requisição
 //! e a ordem das coisas. A API pode ser um servidor frágil: nada aqui roda sozinho, toda busca nasce de
 //! um gesto na tela e passa pelo bloqueio gravado no cache.
-use crate::conhecimento::bloqueante;
+use crate::{conhecimento::bloqueante, engine_client};
+use omni_core::kanban::{ImportacaoExterna, ResumoDaImportacao};
+use omni_protocol::EngineResponse;
 use omni_rag::{
     agora_ms, caminho_padrao,
     tarefas::{self, Cache, ConfigEmDisco, ConfigNaTela, Configuracao, EstadoDaTela},
@@ -87,8 +89,7 @@ fn preparar_busca() -> Result<(ConfigEmDisco, i64), String> {
     let caminho = arquivo_de_cache()?;
     let cache = tarefas::ler_cache(&caminho);
     let agora = agora_ms();
-    let espera = tarefas::espera_ms(&cache, agora);
-    if espera > 0 { return Err(format!("Aguarde {} s para buscar de novo.", (espera + 999) / 1000)); }
+    tarefas::conferir_bloqueio(&cache, agora)?;
     tarefas::gravar_cache(&caminho, &Cache { tentado_em_ms: agora, ..cache })?;
     Ok((arquivo, agora))
 }
@@ -150,6 +151,31 @@ pub async fn tarefas_atualizar() -> Result<EstadoDaTela, String> {
     let (arquivo, tentado_em_ms) = bloqueante(preparar_busca).await?;
     let resposta = buscar_json(&arquivo).await?;
     bloqueante(move || concluir_busca(&arquivo.configuracao, &resposta, tentado_em_ms)).await
+}
+
+/// Manda o resultado da busca ao engine, que é quem guarda o Kanban.
+fn enviar_ao_kanban(importacao: &ImportacaoExterna) -> Result<ResumoDaImportacao, String> {
+    let corpo = serde_json::to_string(importacao).map_err(|erro| erro.to_string())?;
+    match engine_client::engine_api("POST".into(), "/kanban/externas".into(), Some(corpo), None, None) {
+        EngineResponse::Api { status, body } if status < 400 => serde_json::from_str(&body).map_err(|_| "O OMNI respondeu fora do formato.".to_string()),
+        EngineResponse::Api { body, .. } => {
+            let erro: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            Err(erro["error"].as_str().unwrap_or("O Kanban recusou as tarefas.").to_owned())
+        }
+        _ => Err("O OMNI não respondeu. As tarefas ficaram no painel Tarefas.".into()),
+    }
+}
+
+/// Botão Atualizar do Kanban: a mesma busca e o mesmo bloqueio de `tarefas_atualizar`.
+#[tauri::command]
+pub async fn kanban_atualizar_externas() -> Result<ResumoDaImportacao, String> {
+    let _busca = BuscaEmAndamento::tomar()?;
+    let (arquivo, tentado_em_ms) = bloqueante(preparar_busca).await?;
+    let resposta = buscar_json(&arquivo).await?;
+    bloqueante(move || {
+        let estado = concluir_busca(&arquivo.configuracao, &resposta, tentado_em_ms)?;
+        enviar_ao_kanban(&tarefas::importacao_da_busca(&tarefas::origem_da_url(&arquivo.configuracao.url), &estado.tarefas))
+    }).await
 }
 
 #[tauri::command]

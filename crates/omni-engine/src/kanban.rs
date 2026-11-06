@@ -4,7 +4,7 @@
 
 use super::*;
 use axum::{extract::{DefaultBodyLimit, Path as RoutePath, State}, http::StatusCode, routing::{get, patch, post}, Json, Router};
-use omni_core::kanban::{self as regras, Cartao, ErroKanban, Quadro};
+use omni_core::kanban::{self as regras, Cartao, ErroKanban, ImportacaoExterna, Quadro, ResumoDaImportacao};
 use serde_json::{json, Value};
 use std::{fs, io, path::{Path, PathBuf}};
 
@@ -104,6 +104,28 @@ async fn migrar(State(state): State<Arc<EngineState>>, Json(origem): Json<Quadro
     Ok(Json(json!({"migrou": migrou, "quadro": quadro})))
 }
 
+/// O desktop manda o resultado de uma busca que nasceu de um clique. O engine nunca busca sozinho.
+async fn externas_importar(State(state): State<Arc<EngineState>>, Json(importacao): Json<ImportacaoExterna>) -> Result<Json<ResumoDaImportacao>, ApiError> {
+    alterar(&arquivo_do_kanban(&state), |q| regras::importar_externas(q, importacao)).map(Json)
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EscolhaDeProjeto {
+    project_id: String,
+    #[serde(default)]
+    origem: Option<String>,
+}
+
+async fn externa_escolher_projeto(
+    State(state): State<Arc<EngineState>>,
+    RoutePath(id): RoutePath<String>,
+    Json(escolha): Json<EscolhaDeProjeto>,
+) -> Result<Json<Cartao>, ApiError> {
+    let agora = regras::instante_agora();
+    alterar(&arquivo_do_kanban(&state), |q| regras::escolher_projeto(q, &id, escolha.origem.as_deref(), &escolha.project_id, &agora)).map(Json)
+}
+
 /// Só entra no servidor HTTP (celular e web), nunca no `local` do desktop: o token de dispositivo lê o
 /// Kanban, mas quem escreve é o desktop. Web e celular não usam o Kanban.
 pub(crate) async fn somente_leitura_no_http(request: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
@@ -126,6 +148,8 @@ pub(crate) fn rotas() -> Router<Arc<EngineState>> {
         )
         .route("/kanban/ajustes", patch(ajustes_editar).layer(DefaultBodyLimit::max(CARTAO_MAX_BYTES)))
         .route("/kanban/migrar", post(migrar).layer(DefaultBodyLimit::max(MIGRAR_MAX_BYTES)))
+        .route("/kanban/externas", post(externas_importar).layer(DefaultBodyLimit::max(MIGRAR_MAX_BYTES)))
+        .route("/kanban/externas/{id}/projeto", post(externa_escolher_projeto).layer(DefaultBodyLimit::max(CARTAO_MAX_BYTES)))
 }
 
 #[cfg(test)]
@@ -325,6 +349,145 @@ mod tests {
         assert_eq!(quadro["tarefas"].as_array().unwrap().len(), 0);
     }
 
+    fn importacao(tarefas: Value) -> String {
+        json!({"origem":"central.exemplo","tarefas":tarefas}).to_string()
+    }
+
+    async fn atualizar(app: &Router, tarefas: Value) -> Value {
+        let (status, resumo) = chamar(app, "POST", "/kanban/externas", &importacao(tarefas)).await;
+        assert_eq!(status, StatusCode::OK, "{resumo}");
+        resumo
+    }
+
+    #[tokio::test]
+    async fn atualizar_nao_duplica() {
+        let (_dir, state) = fixture();
+        let app = app_local(state);
+        let lista = json!([{"id":"7","titulo":"Corrigir","descricao":"Detalhe"},{"id":"7","titulo":"Repetida na resposta"},{"id":"8","titulo":"Outra"}]);
+        let resumo = atualizar(&app, lista.clone()).await;
+        assert_eq!(resumo["novas"], 2);
+        let resumo = atualizar(&app, json!([{"id":"7","titulo":"Título novo"},{"id":"8","titulo":"Outra"}])).await;
+        assert_eq!((&resumo["novas"], &resumo["atualizadas"]), (&json!(0), &json!(2)));
+        let (_, quadro) = chamar(&app, "GET", "/kanban", "").await;
+        let triagem = quadro["triagem"].as_array().unwrap();
+        assert_eq!(triagem.len(), 2);
+        assert_eq!(triagem[0]["titulo"], "Título novo");
+        assert_eq!(triagem[0]["origem"], "central.exemplo");
+        // mesmo id em outra origem é outra tarefa
+        let corpo = json!({"origem":"outra.exemplo","tarefas":[{"id":"7","titulo":"De outra API"}]}).to_string();
+        chamar(&app, "POST", "/kanban/externas", &corpo).await;
+        let (_, quadro) = chamar(&app, "GET", "/kanban", "").await;
+        assert_eq!(quadro["triagem"].as_array().unwrap().len(), 3);
+        assert_eq!(quadro["tarefas"].as_array().unwrap().len(), 0, "triagem não é cartão de projeto");
+    }
+
+    #[tokio::test]
+    async fn tarefa_que_sumiu_fica_marcada() {
+        let (_dir, state) = fixture();
+        let app = app_local(state);
+        atualizar(&app, json!([{"id":"7","titulo":"Fica"},{"id":"8","titulo":"Vai sumir"},{"id":"9","titulo":"No projeto"}])).await;
+        chamar(&app, "POST", "/kanban/externas/9/projeto", r#"{"projectId":"p"}"#).await;
+        // outra origem não é afetada por esta lista
+        let outra = json!({"origem":"outra.exemplo","tarefas":[{"id":"1","titulo":"De outra API"}]}).to_string();
+        chamar(&app, "POST", "/kanban/externas", &outra).await;
+
+        let resumo = atualizar(&app, json!([{"id":"7","titulo":"Fica"}])).await;
+        assert_eq!(resumo["sumiram"], 2);
+        let (_, quadro) = chamar(&app, "GET", "/kanban", "").await;
+        let sumiu = |id: &str| quadro["triagem"].as_array().unwrap().iter().find(|t| t["id"] == id).unwrap()["sumiu"].clone();
+        assert_eq!((sumiu("7"), sumiu("8"), sumiu("1")), (json!(false), json!(true), json!(false)));
+        assert_eq!(quadro["tarefas"][0]["externa"]["sumiu"], true, "o cartão fica no quadro, marcado");
+
+        // a lista vazia também é uma resposta: tudo o que era desta origem saiu
+        atualizar(&app, json!([])).await;
+        let (_, quadro) = chamar(&app, "GET", "/kanban", "").await;
+        assert_eq!(quadro["triagem"][0]["sumiu"], true);
+
+        // e quem volta perde a marca
+        let resumo = atualizar(&app, json!([{"id":"8","titulo":"Voltou"},{"id":"9","titulo":"No projeto"}])).await;
+        assert_eq!(resumo["sumiram"], 0);
+        let (_, quadro) = chamar(&app, "GET", "/kanban", "").await;
+        assert_eq!(quadro["triagem"][1]["sumiu"], false);
+        assert_eq!(quadro["tarefas"][0]["externa"]["sumiu"], false);
+    }
+
+    #[tokio::test]
+    async fn escolher_projeto_vira_backlog() {
+        let (_dir, state) = fixture();
+        let app = app_local(state);
+        chamar(&app, "POST", "/kanban/cartoes", &cartao("a").to_string()).await;
+        atualizar(&app, json!([{"id":"7/x","titulo":"Corrigir","descricao":"Detalhe"},{"id":"8","titulo":""}])).await;
+        let (status, novo) = chamar(&app, "POST", "/kanban/externas/7%2Fx/projeto", r#"{"projectId":"proj-1","origem":"central.exemplo"}"#).await;
+        assert_eq!(status, StatusCode::OK, "{novo}");
+        assert_eq!((&novo["projectId"], &novo["status"], &novo["title"]), (&json!("proj-1"), &json!("backlog"), &json!("Corrigir")));
+        assert_eq!(novo["description"], "Detalhe");
+        assert_eq!(novo["externa"], json!({"origem":"central.exemplo","id":"7/x","sumiu":false}));
+        assert!(novo["position"].as_i64().unwrap() > 1, "vai para o fim da coluna");
+        let (_, quadro) = chamar(&app, "GET", "/kanban", "").await;
+        assert_eq!(quadro["triagem"].as_array().unwrap().len(), 1);
+        assert_eq!(quadro["tarefas"].as_array().unwrap().len(), 2);
+        // tarefa sem título ainda vira cartão válido
+        let (status, novo) = chamar(&app, "POST", "/kanban/externas/8/projeto", r#"{"projectId":"proj-1"}"#).await;
+        assert_eq!(status, StatusCode::OK, "{novo}");
+        assert_eq!(novo["title"], "Tarefa 8");
+        let (status, _) = chamar(&app, "POST", "/kanban/externas/nao-existe/projeto", r#"{"projectId":"p"}"#).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn escolher_projeto_com_id_igual_em_duas_origens_pede_a_origem() {
+        let (_dir, state) = fixture();
+        let app = app_local(state);
+        atualizar(&app, json!([{"id":"7","titulo":"Daqui"}])).await;
+        let outra = json!({"origem":"outra.exemplo","tarefas":[{"id":"7","titulo":"De lá"}]}).to_string();
+        chamar(&app, "POST", "/kanban/externas", &outra).await;
+        let (status, _) = chamar(&app, "POST", "/kanban/externas/7/projeto", r#"{"projectId":"p"}"#).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        let (status, novo) = chamar(&app, "POST", "/kanban/externas/7/projeto", r#"{"projectId":"p","origem":"outra.exemplo"}"#).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(novo["title"], "De lá");
+    }
+
+    #[tokio::test]
+    async fn cartao_ja_em_projeto_nao_volta_para_triagem() {
+        let (_dir, state) = fixture();
+        let app = app_local(state);
+        let lista = json!([{"id":"7","titulo":"Original"}]);
+        atualizar(&app, lista.clone()).await;
+        let (_, novo) = chamar(&app, "POST", "/kanban/externas/7/projeto", r#"{"projectId":"p"}"#).await;
+        let id = novo["id"].as_str().unwrap().to_owned();
+        chamar(&app, "PATCH", &format!("/kanban/cartoes/{id}"), r#"{"title":"Editado por mim","status":"ready"}"#).await;
+        let resumo = atualizar(&app, json!([{"id":"7","titulo":"Mudou na origem"}])).await;
+        assert_eq!((&resumo["novas"], &resumo["jaNoQuadro"]), (&json!(0), &json!(1)));
+        let (_, quadro) = chamar(&app, "GET", "/kanban", "").await;
+        assert_eq!(quadro["triagem"].as_array().unwrap().len(), 0);
+        assert_eq!(quadro["tarefas"][0]["title"], "Editado por mim", "o que o usuário editou não é sobrescrito");
+        assert_eq!(quadro["tarefas"][0]["status"], "ready");
+    }
+
+    #[tokio::test]
+    async fn lista_externa_grande_passa_pelo_limite_global_de_32kb() {
+        let (_dir, state) = fixture();
+        let app = app_local(state);
+        let lista: Vec<Value> = (0..60).map(|n| json!({"id":n.to_string(),"titulo":"T","descricao":"ç".repeat(1000)})).collect();
+        let corpo = importacao(json!(lista));
+        assert!(corpo.len() > 100 * 1024);
+        let (status, r) = chamar(&app, "POST", "/kanban/externas", &corpo).await;
+        assert_eq!(status, StatusCode::OK, "{r}");
+    }
+
+    #[tokio::test]
+    async fn triagem_cheia_recusa_sem_gravar_pela_metade() {
+        let (_dir, state) = fixture();
+        let app = app_local(state);
+        let lista: Vec<Value> = (0..=regras::TRIAGEM_MAX).map(|n| json!({"id":n.to_string(),"titulo":"T"})).collect();
+        let (status, r) = chamar(&app, "POST", "/kanban/externas", &importacao(json!(lista))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(r["error"].as_str().unwrap().contains("Filtre"), "{r}");
+        let (_, quadro) = chamar(&app, "GET", "/kanban", "").await;
+        assert_eq!(quadro["triagem"].as_array().unwrap().len(), 0);
+    }
+
     #[tokio::test]
     async fn token_do_celular_so_le_o_kanban() {
         let (_dir, state) = fixture();
@@ -338,6 +501,8 @@ mod tests {
             ("DELETE", "/kanban/cartoes/x", String::new()),
             ("PATCH", "/kanban/ajustes", r#"{"dispatcherEnabled":true}"#.to_string()),
             ("POST", "/kanban/migrar", r#"{"versao":1}"#.to_string()),
+            ("POST", "/kanban/externas", importacao(json!([{"id":"7","titulo":"x"}]))),
+            ("POST", "/kanban/externas/7/projeto", r#"{"projectId":"p"}"#.to_string()),
         ] {
             let r = app.clone().oneshot(pedido(metodo, uri, &corpo, Some("segredo"))).await.unwrap();
             assert_eq!(r.status(), StatusCode::FORBIDDEN, "{metodo} {uri} com token de dispositivo");
@@ -359,6 +524,8 @@ mod tests {
             ("DELETE", "/kanban/cartoes/a", ""),
             ("PATCH", "/kanban/ajustes", r#"{}"#),
             ("POST", "/kanban/migrar", r#"{"versao":1}"#),
+            ("POST", "/kanban/externas", r#"{}"#),
+            ("POST", "/kanban/externas/7/projeto", r#"{}"#),
         ] {
             let r = app.clone().oneshot(pedido(metodo, uri, corpo, None)).await.unwrap();
             assert_eq!(r.status(), StatusCode::UNAUTHORIZED, "{metodo} {uri} sem token");

@@ -4,13 +4,18 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
+use std::collections::HashSet;
 
 pub const STATUS_VALIDOS: [&str; 5] = ["backlog", "ready", "doing", "done", "failed"];
 /// Chaves de `ajustes` que a tela conhece; qualquer outra é recusada.
 pub const AJUSTES_VALIDOS: [&str; 4] = ["agentByProject", "dispatcherEnabled", "failureTimestamps", "pausedUntil"];
+/// Teto da caixa de triagem. O quadro inteiro volta numa resposta só, que o engine corta em 4 MB.
+pub const TRIAGEM_MAX: usize = 500;
 const ID_MAX: usize = 80;
 const TITULO_MAX: usize = 500;
 const TEXTO_MAX: usize = 20_000;
+const ORIGEM_MAX: usize = 200;
+const ID_EXTERNO_MAX: usize = 200;
 
 /// De onde veio um cartão de fora. `sumiu`: a origem não devolve mais a tarefa; o cartão fica, marcado.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -55,6 +60,36 @@ pub struct CartaoExterno {
     pub descricao: String,
     #[serde(default)]
     pub sumiu: bool,
+}
+
+/// Uma tarefa como a busca a devolveu. A origem vem uma vez só, em `ImportacaoExterna`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TarefaDeFora {
+    pub id: String,
+    #[serde(default)]
+    pub titulo: String,
+    #[serde(default)]
+    pub descricao: String,
+}
+
+/// O resultado inteiro de uma busca numa origem. A origem vem à parte porque lista vazia também é
+/// resposta: tudo o que era daquela origem saiu.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ImportacaoExterna {
+    pub origem: String,
+    pub tarefas: Vec<TarefaDeFora>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResumoDaImportacao {
+    pub novas: usize,
+    /// Já estavam na triagem: título e descrição acompanham a origem.
+    pub atualizadas: usize,
+    /// Já viraram cartão de projeto: ficam como o usuário deixou.
+    pub ja_no_quadro: usize,
+    /// Saíram da origem nesta busca.
+    pub sumiram: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -175,6 +210,101 @@ pub fn ajustar(quadro: &mut Quadro, mudancas: &Value) -> Result<(), ErroKanban> 
         }
     }
     Ok(())
+}
+
+fn validar_importacao(importacao: &ImportacaoExterna) -> Result<(), ErroKanban> {
+    if importacao.origem.is_empty() || importacao.origem.len() > ORIGEM_MAX {
+        return Err(ErroKanban::Invalido("Origem da tarefa inválida".into()));
+    }
+    let invalida = |t: &TarefaDeFora| {
+        t.id.is_empty() || t.id.len() > ID_EXTERNO_MAX || t.titulo.chars().count() > TITULO_MAX || t.descricao.chars().count() > TEXTO_MAX
+    };
+    if importacao.tarefas.iter().any(invalida) {
+        return Err(ErroKanban::Invalido("Tarefa externa inválida".into()));
+    }
+    Ok(())
+}
+
+/// Confere o resultado de uma busca com o quadro. Chave: origem + id. Quem já virou cartão não volta
+/// para a triagem e não é sobrescrito; o que saiu da origem fica, marcado, e perde a marca se voltar.
+pub fn importar_externas(quadro: &mut Quadro, importacao: ImportacaoExterna) -> Result<ResumoDaImportacao, ErroKanban> {
+    validar_importacao(&importacao)?;
+    let ImportacaoExterna { origem, tarefas } = importacao;
+    let mut vistas = HashSet::new();
+    let mut resumo = ResumoDaImportacao::default();
+    for tarefa in tarefas {
+        if !vistas.insert(tarefa.id.clone()) {
+            continue;
+        }
+        if let Some(cartao) = quadro.tarefas.iter_mut().find(|c| c.externa.as_ref().is_some_and(|e| e.origem == origem && e.id == tarefa.id)) {
+            if let Some(externa) = cartao.externa.as_mut() {
+                externa.sumiu = false;
+            }
+            resumo.ja_no_quadro += 1;
+        } else if let Some(atual) = quadro.triagem.iter_mut().find(|t| t.origem == origem && t.id == tarefa.id) {
+            atual.titulo = tarefa.titulo;
+            atual.descricao = tarefa.descricao;
+            atual.sumiu = false;
+            resumo.atualizadas += 1;
+        } else {
+            quadro.triagem.push(CartaoExterno { origem: origem.clone(), id: tarefa.id, titulo: tarefa.titulo, descricao: tarefa.descricao, sumiu: false });
+            resumo.novas += 1;
+        }
+    }
+    if quadro.triagem.len() > TRIAGEM_MAX {
+        return Err(ErroKanban::Invalido(format!("A triagem guarda até {TRIAGEM_MAX} tarefas. Filtre o que vem da API na configuração de Tarefas.")));
+    }
+    let saiu = |id: &str, sumiu: &mut bool, sumiram: &mut usize| {
+        if !vistas.contains(id) && !*sumiu {
+            *sumiu = true;
+            *sumiram += 1;
+        }
+    };
+    for tarefa in quadro.triagem.iter_mut().filter(|t| t.origem == origem) {
+        saiu(&tarefa.id, &mut tarefa.sumiu, &mut resumo.sumiram);
+    }
+    for externa in quadro.tarefas.iter_mut().filter_map(|c| c.externa.as_mut()).filter(|e| e.origem == origem) {
+        saiu(&externa.id, &mut externa.sumiu, &mut resumo.sumiram);
+    }
+    Ok(resumo)
+}
+
+/// Id de cartão vindo de fora: o id externo pode ter qualquer tamanho e caractere, e o do cartão vai
+/// no caminho das rotas. FNV-1a basta: a mesma tarefa dá o mesmo id, e colisão cai em `Conflito`.
+fn id_do_cartao_externo(origem: &str, id: &str) -> String {
+    let hash = format!("{origem}\0{id}").bytes().fold(0xcbf2_9ce4_8422_2325_u64, |acumulado, byte| (acumulado ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3));
+    format!("externa-{hash:016x}")
+}
+
+/// O ISO que a tela também grava em `createdAt`/`updatedAt`.
+pub fn instante_agora() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+/// O usuário escolheu o projeto: a tarefa sai da triagem e vira cartão no fim do Backlog. `origem` só é
+/// obrigatória quando o mesmo id existe em duas origens.
+pub fn escolher_projeto(quadro: &mut Quadro, id: &str, origem: Option<&str>, project_id: &str, agora: &str) -> Result<Cartao, ErroKanban> {
+    let achadas: Vec<usize> = quadro.triagem.iter().enumerate()
+        .filter(|(_, t)| t.id == id && origem.is_none_or(|o| o == t.origem))
+        .map(|(indice, _)| indice)
+        .collect();
+    let indice = match achadas[..] {
+        [] => return Err(ErroKanban::NaoEncontrado("Tarefa não encontrada na triagem".into())),
+        [indice] => indice,
+        _ => return Err(ErroKanban::Conflito("Esse id existe em mais de uma origem: informe a origem".into())),
+    };
+    let tarefa = quadro.triagem[indice].clone();
+    let titulo = if tarefa.titulo.trim().is_empty() { format!("Tarefa {}", tarefa.id) } else { tarefa.titulo };
+    let position = quadro.tarefas.iter().map(|c| c.position).max().unwrap_or(0) + 1;
+    let cartao = Cartao {
+        id: id_do_cartao_externo(&tarefa.origem, &tarefa.id), project_id: project_id.to_owned(), title: titulo, description: tarefa.descricao,
+        status: "backlog".into(), position, loop_total: None, loop_remaining: None, result_note: None,
+        created_at: agora.to_owned(), updated_at: agora.to_owned(),
+        externa: Some(RefExterna { origem: tarefa.origem, id: tarefa.id, sumiu: tarefa.sumiu }),
+    };
+    let criado = criar(quadro, cartao)?;
+    quadro.triagem.remove(indice);
+    Ok(criado)
 }
 
 /// Migração única do `localStorage`: só escreve se o quadro do engine estiver vazio. Cartão inválido

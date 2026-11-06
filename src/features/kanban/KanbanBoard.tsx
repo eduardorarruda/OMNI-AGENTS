@@ -3,6 +3,7 @@ import { Button } from "../../components/ui";
 import { KANBAN_STATUS_LABEL, KANBAN_STATUSES, type KanbanAction, type KanbanState, type KanbanStatus, type KanbanTask } from "../../types/kanban";
 import { listAgentClis, type AgentCliId, type AgentCliStatus } from "../terminal/terminalService";
 import { KANBAN_CARD_DRAG_TYPE, readDraggedCard } from "./kanbanDrag";
+import { SeloExterna, SeloSumiu, TriagemExterna } from "./TriagemExterna";
 import { useAvisoDoKanban } from "./kanbanAviso";
 
 interface KanbanBoardProps {
@@ -81,6 +82,8 @@ export function KanbanBoard({ projectId, kanban, dispatch }: KanbanBoardProps) {
         </Button>
       </div>
 
+      <TriagemExterna projectId={projectId} kanban={kanban} dispatch={dispatch} />
+
       {creating && (
         <div className="shrink-0 border-b-2 border-border-subtle p-3">
           <TaskForm
@@ -158,6 +161,12 @@ function TaskCard({ task, onEdit, onRemove }: { task: KanbanTask; onEdit: () => 
           </button>
         </div>
       </div>
+      {task.externa && (
+        <div className="mt-1 flex flex-wrap gap-1">
+          <SeloExterna />
+          {task.externa.sumiu && <SeloSumiu />}
+        </div>
+      )}
       {task.description && <p className="mt-1 line-clamp-2 text-text-muted">{task.description}</p>}
       {task.loopTotal !== null && (
         <p className="mt-1 text-[10px] text-accent">

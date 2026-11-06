@@ -1,6 +1,7 @@
 //! Tarefas de uma API HTTP externa. Aqui fica só o que não precisa de rede: configuração, leitura da
 //! resposta e o cache local. A requisição mora em `src-tauri/src/tarefas.rs`, e o MCP lê só o cache.
 use crate::{sem_dados_pessoais, sem_segredos};
+use omni_core::kanban::{ImportacaoExterna, TarefaDeFora};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -375,6 +376,13 @@ pub fn espera_ms(cache: &Cache, agora: i64) -> i64 {
     (cache.tentado_em_ms.min(agora) + INTERVALO_MINIMO_MS - agora).max(0)
 }
 
+/// O que a tela mostra quando pede antes da hora: quanto falta, arredondado para cima.
+pub fn conferir_bloqueio(cache: &Cache, agora: i64) -> Result<(), String> {
+    let espera = espera_ms(cache, agora);
+    if espera > 0 { return Err(format!("Aguarde {} s para buscar de novo.", (espera + 999) / 1000)); }
+    Ok(())
+}
+
 /// Conta a partir da última tentativa, não do último sucesso: servidor caído não apanha a cada
 /// reabertura da tela. Depois de uma falha, quem pede de novo é a pessoa, no "Atualizar".
 pub fn estado_da_tela(configurada: bool, cache: Cache, agora: i64) -> EstadoDaTela {
@@ -463,6 +471,27 @@ pub fn texto_para_conversa(tarefa: &Tarefa, limite: usize) -> String {
 pub fn texto_da_tarefa(tarefa: &Tarefa) -> String {
     let fim = format!(" {FIM_DOS_DADOS}");
     format!("{}{fim}", dados_da_tarefa(tarefa, LIMITE_DO_TEXTO.saturating_sub(tamanho(&fim))))
+}
+
+/// Chave da origem no Kanban: só o endereço. O resto da URL pode levar parâmetro, e isto vai para a tela.
+pub fn origem_da_url(url: &str) -> String {
+    let resto = url.split_once("://").map_or(url, |(_, resto)| resto);
+    host_da_autoridade(resto.split(['/', '?', '#']).next().unwrap_or_default()).to_ascii_lowercase()
+}
+
+/// O resultado da busca como o Kanban guarda: limpo antes de cortar, e em uma linha, porque o dispatcher
+/// cola este texto no terminal.
+pub fn importacao_da_busca(origem: &str, tarefas: &[Tarefa]) -> ImportacaoExterna {
+    let tarefa_de_fora = |tarefa: &Tarefa| {
+        let descricao = cortar(&uma_linha(&sem_segredos(&tarefa.descricao)), DESCRICAO_MAXIMA);
+        let comentarios = sem_segredos(&comentarios_que_cabem(tarefa, LIMITE_DO_TEXTO.saturating_sub(tamanho(&descricao))));
+        TarefaDeFora {
+            id: tarefa.id.clone(),
+            titulo: cortar(&uma_linha(&sem_segredos(&tarefa.titulo)), TITULO_MAXIMO),
+            descricao: format!("{descricao}{comentarios}").trim().to_owned(),
+        }
+    };
+    ImportacaoExterna { origem: origem.to_owned(), tarefas: tarefas.iter().map(tarefa_de_fora).collect() }
 }
 
 fn combina(tarefa: &Tarefa, busca: &str) -> bool {
