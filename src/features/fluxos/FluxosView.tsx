@@ -20,6 +20,8 @@ import "../../mobile/mobile.css";
 import { ArestaDoFluxo, type ArestaOmni } from "./ArestaDoFluxo";
 import { ICONE, NoDoFluxoView, type NoOmni } from "./NoDoFluxo";
 import { NovoFluxo } from "./NovoFluxo";
+import { nosAtivos } from "./execucaoModel";
+import { LinhaDoTempo } from "./LinhaDoTempo";
 import "./fluxos.css";
 import {
   abrirConversaDoNo, acaoNaExecucao, apagarFluxo, aprovarNo, criarFluxoComIa, etapasDoFluxo, fluxoVazio, historicoDoNo, iniciarExecucao,
@@ -133,12 +135,12 @@ function Fluxos({ projectId, projectPath, onAbrirSessao, onClose }: Props) {
   const agentePorNome = useCallback((nome?: string) => agentes.find((a) => a.name === nome && a.escopo === "projeto") ?? agentes.find((a) => a.name === nome), [agentes]);
 
   // Execução: centraliza no nó que está trabalhando (ou esperando você) quando ele muda.
-  const noVivo = execucao ? Object.entries(execucao.nos).find(([, n]) => n.status === "rodando" || n.status === "aguardando")?.[0] : undefined;
+  const idsVivos = execucao ? nosAtivos(execucao).map((n) => n.id).join(",") : "";
   useEffect(() => {
-    if (!noVivo) return;
-    const t = window.setTimeout(() => fitView({ nodes: [{ id: noVivo }], padding: 1.2, maxZoom: 1, minZoom: 0.85, duration: 400 }), 80);
+    if (!idsVivos) return;
+    const t = window.setTimeout(() => fitView({ nodes: idsVivos.split(",").map((id) => ({ id })), padding: 1.2, maxZoom: 1, minZoom: 0.85, duration: 400 }), 80);
     return () => window.clearTimeout(t);
-  }, [noVivo, execucaoId, fitView]);
+  }, [idsVivos, execucaoId, fitView]);
 
   function mudarRascunho(f: (r: Fluxo) => Fluxo) { setRascunho((r) => (r ? f(r) : r)); setSujo(true); }
 
@@ -511,6 +513,8 @@ function Fluxos({ projectId, projectPath, onAbrirSessao, onClose }: Props) {
           <PainelDoNo no={noSelecionado} agentes={agentes} modelos={modelos} projectPath={projectPath} onAgenteCriado={recarregar} onErro={setErro}
             onMudar={(no) => mudarRascunho((r) => ({ ...r, nos: r.nos.map((n) => (n.id === no.id ? no : n)) }))} />
         ) : null}
+        {execucao && <LinhaDoTempo execucaoId={execucao.id} viva={execucao.status === "rodando" || execucao.status === "pausado" || execucao.status === "aguardando"}
+          titulos={Object.fromEntries(execucao.fluxo.nos.map((n) => [n.id, n.titulo || n.id]))} />}
       </aside>}
 
       {dialogo === "novo" && (
@@ -678,8 +682,7 @@ function PainelDoNo({ no, agentes, modelos, projectPath, onMudar, onAgenteCriado
 function ResumoDaExecucao({ execucao, onSelecionar }: { execucao: Execucao; onSelecionar: (id: string) => void }) {
   const [agora, setAgora] = useState(() => Date.now());
   useEffect(() => { const t = window.setInterval(() => setAgora(Date.now()), 1000); return () => window.clearInterval(t); }, []);
-  const vivo = Object.entries(execucao.nos).find(([, n]) => n.status === "rodando" || n.status === "aguardando");
-  const noVivo = vivo ? execucao.fluxo.nos.find((n) => n.id === vivo[0]) : undefined;
+  const ativos = nosAtivos(execucao);
   const passadas = execucao.fluxo.nos.map((n) => ({ no: n, estado: execucao.nos[n.id] }))
     .filter((x) => x.estado && x.estado.status !== "pendente" && x.no.tipo !== "entrada")
     .sort((a, b) => (a.estado!.inicio_ms || Infinity) - (b.estado!.inicio_ms || Infinity));
@@ -703,12 +706,16 @@ function ResumoDaExecucao({ execucao, onSelecionar }: { execucao: Execucao; onSe
           <dt>Custo</dt><dd>US$ {execucao.custo_usd.toFixed(2)}</dd>
         </dl>
       </div>
-      {noVivo && vivo && (
-        <button type="button" className="fx-agora" onClick={() => onSelecionar(noVivo.id)}>
-          <span className="fx-rotulo">{vivo[1].status === "aguardando" ? "Esperando você" : "Agora"}</span>
-          <b>{noVivo.titulo || noVivo.id}{noVivo.agente ? ` · ${noVivo.agente}` : ""}</b>
-          <span className="fx-agora-atividade">{vivo[1].status === "aguardando" ? "Clique para aprovar ou recusar." : vivo[1].atividade || "Começando…"}</span>
-        </button>
+      {ativos.length > 0 && (
+        <div className="fx-agora-lista">
+          {ativos.map((n) => (
+            <button key={n.id} type="button" className="fx-agora" onClick={() => onSelecionar(n.id)}>
+              <span className="fx-rotulo">{n.status === "aguardando" ? "Esperando você" : "Agora"}</span>
+              <b>{n.rotulo}</b>
+              <span className="fx-agora-atividade">{n.status === "aguardando" ? "Clique para aprovar ou recusar." : n.atividade || "Começando…"}</span>
+            </button>
+          ))}
+        </div>
       )}
       {execucao.erro && <p className="fx-erro">{execucao.erro}</p>}
       {plano && plano.length > 0 && (
@@ -781,8 +788,8 @@ function PainelDaExecucao({ execucao, no, onErro, onAbrirSessao, onVoltar }: { e
       {historico.length === 0 ? <p className="fx-dica">{estado?.status === "rodando" ? "Começando…" : "Sem eventos."}</p> : (
         <ol className="fx-historico">
           {historico.map((h, i) => (
-            <li key={i} className={`fx-h is-${h.kind}`}>
-              {h.kind === "tool" ? <><span className="fx-h-ferramenta">{h.tool}</span><code title={h.text}>{h.text}</code></> : <span>{h.text}</span>}
+            <li key={i} className={`fx-h is-${h.separador ? "separador" : h.kind}`}>
+              {h.separador ? <span>{h.text}</span> : h.kind === "tool" ? <><span className="fx-h-ferramenta">{h.tool}</span><code title={h.text}>{h.text}</code></> : <span>{h.text}</span>}
             </li>
           ))}
           <li ref={fimDaLista} aria-hidden className="fx-h-fim" />

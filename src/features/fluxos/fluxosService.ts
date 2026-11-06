@@ -43,7 +43,9 @@ export interface ResumoDaExecucao {
   id: string; fluxo: string; fluxo_id: string; projeto: string; projeto_id: string; entrada: string;
   status: StatusDaExecucao; criado_ms: number; atualizado_ms: number; pr_url: string | null; custo_usd: number; erro: string | null;
 }
-export interface ItemDoHistorico { kind: "text" | "tool" | "command" | "notice"; role: string; text: string; tool?: string }
+export interface ItemDoHistorico { kind: "text" | "tool" | "command" | "notice"; role: string; text: string; tool?: string; /** "Volta N" ou "<quem> · rodada N": só divide o log. */ separador?: boolean }
+export type TipoDeEvento = "inicio" | "fim" | "falha" | "atividade" | "aprovacao" | "subfluxo" | "aviso";
+export interface EventoDeFluxo { seq: number; ms: number; no: string; tipo: TipoDeEvento; texto: string }
 
 /** Saídas de cada tipo, na ordem em que aparecem no nó ("" = a saída normal). */
 export const SAIDAS: Record<TipoDeNo, string[]> = {
@@ -80,6 +82,8 @@ export const listarExecucoes = () => api<ResumoDaExecucao[]>("GET", "/fluxos/exe
 export const iniciarExecucao = (fluxo: Fluxo, projetoId: string, entrada: string) => api<Execucao>("POST", "/fluxos/execucoes", { fluxo, projeto_id: projetoId, entrada });
 export const obterExecucao = (id: string) => api<Execucao>("GET", `/fluxos/execucoes/${e(id)}`);
 export const acaoNaExecucao = (id: string, acao: "pausar" | "retomar" | "cancelar") => api<{ ok: boolean }>("POST", `/fluxos/execucoes/${e(id)}/${acao}`);
+/** Linha do tempo da execução: só os eventos com `seq` maior que `desde` (no máximo 500). */
+export const lerEventos = (id: string, desde: number) => api<EventoDeFluxo[]>("GET", `/fluxos/execucoes/${e(id)}/eventos?desde=${desde}`);
 export const historicoDoNo = (id: string, no: string) => api<ItemDoHistorico[]>("GET", `/fluxos/execucoes/${e(id)}/nos/${e(no)}/historico`);
 export const aprovarNo = (id: string, no: string, sim: boolean) => api<{ ok: boolean }>("POST", `/fluxos/execucoes/${e(id)}/nos/${e(no)}/aprovar`, { sim });
 export const abrirConversaDoNo = (id: string, no: string) => api<{ session_id: string; name: string }>("POST", `/fluxos/execucoes/${e(id)}/nos/${e(no)}/conversa`);

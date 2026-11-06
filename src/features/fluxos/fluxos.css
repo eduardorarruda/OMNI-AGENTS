@@ -213,3 +213,14 @@
 .fx-caixa .fx-porta.react-flow__handle.is-ligada:is(.is-sim, .is-nao, .is-esgotado) { background: rgb(var(--fx-saida)); }
 .fx-caixa .fx-saida.is-tomada > span { padding: 0 .3rem; color: rgb(var(--c-bg-primary)); background: rgb(var(--fx-saida)); box-shadow: 0 0 10px rgb(var(--fx-saida) / .6); }
 .fx-caixa .fx-porta.react-flow__handle.is-tomada { box-shadow: 0 0 10px rgb(var(--fx-saida, var(--c-accent)) / .9); }
+
+/* Linha do tempo geral e log por nó com separador */
+.fx-tempo { display: flex; flex-direction: column; gap: .35rem; padding: .65rem .85rem; border-top: 1px solid rgb(var(--c-border-subtle)); }
+.fx-tempo-lista { display: flex; flex-direction: column; gap: .2rem; max-height: 14rem; overflow-y: auto; font-size: .6875rem; }
+.fx-tempo-item { display: flex; flex-wrap: wrap; gap: .35rem; align-items: baseline; color: rgb(var(--c-text-secondary)); }
+.fx-tempo-item time { color: rgb(var(--c-text-muted)); font-variant-numeric: tabular-nums; }
+.fx-tempo-item em { font-style: normal; color: rgb(var(--c-text-muted)); }
+.fx-tempo-item.is-falha span { color: rgb(var(--c-danger)); }
+.fx-tempo-item.is-aprovacao b { color: rgb(var(--c-warning)); }
+.fx-h.is-separador { padding-top: .35rem; border-top: 1px dashed rgb(var(--c-border-subtle)); font-size: .625rem; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: rgb(var(--c-text-muted)); }
+.fx-agora-lista { display: flex; flex-direction: column; gap: .4rem; }
