@@ -1031,7 +1031,131 @@ fn processo_aberto_depois_do_cancelar_nao_sobrevive() {
     let id = amb.iniciar(fluxo_de_um_comando());
     ate_parar(&id);
     cancelar(&amb.state, &id).unwrap();
-    let mut filho = Command::new("sleep").arg("60").spawn().unwrap();
-    guardar_processo(&viva(&id).unwrap(), &id, "c", filho.id());
-    assert!(!filho.wait().unwrap().success(), "tinha que morrer");
+    let mut processo = guardar_processo(&viva(&id).unwrap(), &id, "c", Command::new("sleep").arg("60").spawn().unwrap());
+    assert!(!processo.filho.wait().unwrap().success(), "tinha que morrer");
+}
+
+// ---- Correção 1 do subfluxo ----
+
+/// A espera dura horas com a filha parada: sem novidade, nada de reescrever o JSON do pai.
+#[test]
+fn espera_com_filha_parada_nao_regrava_o_pai() {
+    let amb = ambiente();
+    amb.salvar(com_aprovacao("y", "Y"));
+    let id = amb.iniciar(chama("x", "X", "y"));
+    ate("a aprovação chegar em X", || obter(&id).unwrap().nos["s"].atividade.contains("espera aprovação"));
+    let arquivo = pasta_execucoes(&amb.state).join(format!("{id}.json"));
+    let (bytes, modificado, atualizado) = (fs::read(&arquivo).unwrap(), fs::metadata(&arquivo).unwrap().modified().unwrap(), obter(&id).unwrap().atualizado_ms);
+    std::thread::sleep(Duration::from_millis(1700));
+    assert_eq!(obter(&id).unwrap().atualizado_ms, atualizado, "três ciclos sem mudança");
+    assert_eq!(fs::metadata(&arquivo).unwrap().modified().unwrap(), modificado);
+    assert_eq!(fs::read(&arquivo).unwrap(), bytes);
+    cancelar(&amb.state, &id).unwrap();
+}
+
+/// A filha foi cancelada sozinha: morta, ela não conta, e retomar o pai chama de novo no mesmo nó.
+#[test]
+fn retomar_com_filha_cancelada_abre_outra_no_mesmo_lugar() {
+    let amb = ambiente();
+    amb.salvar(com_aprovacao("y", "Y"));
+    let id = amb.iniciar(chama("x", "X", "y"));
+    let velha = filha_de(&id, "s");
+    com_status(&velha, "aguardando");
+    cancelar(&amb.state, &velha).unwrap();
+    let e = ate_parar(&id);
+    assert_eq!((e.status.as_str(), e.nos["s"].erro.as_deref()), ("falhou", Some("“Y” foi cancelada")));
+    retomar(&amb.state, &id).unwrap();
+    ate("filha nova", || obter(&id).unwrap().nos["s"].filha.as_ref().is_some_and(|f| *f != velha && obter(f).is_some()));
+    let nova = filha_de(&id, "s");
+    com_status(&nova, "aguardando");
+    assert_eq!(obter(&nova).unwrap().pai, Some(RefDoPai { execucao: id.clone(), no: "s".into() }));
+    aprovar(&amb.state, &nova, "ap", true).unwrap();
+    let e = ate_parar(&id);
+    assert_eq!(e.status, "concluido", "{:?}", e.erro);
+    assert_eq!(obter(&velha).unwrap().status, "cancelado");
+    assert_eq!((filhas_de(&id).len(), amb.linhas("y.log")), (2, 2));
+}
+
+/// Aprovação num ramo e filha trabalhando no outro: Pausar para a filha sem perder a pergunta. A
+/// etapa interrompida volta para a fila e anda depois da resposta, como em `retomar`.
+#[test]
+fn pausar_com_aprovacao_aberta_desce_a_cadeia_e_guarda_a_pergunta() {
+    let amb = ambiente();
+    amb.salvar(so_comando("y", "Y", "echo x >> y.log; test -f libera || { sleep 60 & echo $! > y.pid; wait; exit 1; }; echo de-y"));
+    let id = amb.iniciar(json!({"id": "x", "nome": "X", "na_pasta_do_projeto": true, "nos": [
+        {"id": "e", "tipo": "entrada"}, {"id": "ap", "tipo": "aprovacao"}, no_subfluxo("s", "y"), {"id": "f", "tipo": "fim"}],
+        "conexoes": [{"de": "e", "para": "ap"}, {"de": "e", "para": "s"}, {"de": "ap", "para": "f", "saida": "sim"}, {"de": "s", "para": "f"}]}));
+    let arquivo = amb.projeto.join("y.pid");
+    ate("Y abrir o sleep", || fs::read_to_string(&arquivo).is_ok_and(|t| t.ends_with('\n')));
+    let pid = fs::read_to_string(&arquivo).unwrap().trim().to_owned();
+    com_status(&id, "aguardando");
+    let y = filha_de(&id, "s");
+    pausar(&amb.state, &id).expect("aguardando também pausa");
+    ate("o sleep de Y sumir", || !processo_vivo(&pid));
+    assert_eq!((obter(&id).unwrap().status.as_str(), obter(&y).unwrap().status.as_str()), ("pausado", "pausado"));
+    ate("as esperas soltarem", || no_em(&id, "s", "pausado") && no_em(&y, "c", "pausado"));
+    assert!(no_em(&id, "ap", "aguardando"), "a pergunta continua de pé");
+    assert!(aprovar(&amb.state, &id, "ap", true).is_err(), "pausada não anda por aprovação");
+    fs::write(amb.projeto.join("libera"), "").unwrap();
+    retomar(&amb.state, &id).unwrap();
+    assert_eq!(obter(&id).unwrap().status, "aguardando", "a pergunta volta");
+    com_status(&y, "concluido");
+    aprovar(&amb.state, &id, "ap", true).unwrap();
+    let e = ate_parar(&id);
+    assert_eq!(e.status, "concluido", "{:?}", e.erro);
+    assert!(e.nos["s"].saida.contains("de-y"), "{}", e.nos["s"].saida);
+    assert_eq!((filhas_de(&id), amb.linhas("y.log")), (vec![y], 2));
+}
+
+fn ate_sair(filho: &mut std::process::Child) {
+    for _ in 0..400 {
+        if filho.try_wait().unwrap().is_some() { return; }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    panic!("o processo não saiu");
+}
+
+fn com_chave(chave: &str) -> bool { processos().lock().unwrap().contains_key(chave) }
+
+/// Processo morto pelo Parar antes de ler o prompt: a etapa para, não vira falha de "Broken pipe".
+#[test]
+fn stdin_fechado_pelo_parar_e_etapa_parada() {
+    let amb = ambiente();
+    let id = amb.iniciar(fluxo_de_um_comando());
+    ate_parar(&id);
+    let v = viva(&id).unwrap();
+    cancelar(&amb.state, &id).unwrap();
+    let filho = Command::new("sleep").arg("60").stdin(Stdio::piped()).spawn().unwrap();
+    let mut processo = guardar_processo(&v, &id, "c", filho);
+    ate_sair(&mut processo.filho);
+    let erro = enviar_prompt(&v, &mut processo.filho, "oi").unwrap_err().to_string();
+    assert_eq!(erro, PAUSADO);
+    drop(processo);
+    assert!(!com_chave(&format!("{id}/c")), "pid morto não fica para o próximo Parar");
+}
+
+/// Sem Parar nenhum, o erro de stdin é erro de verdade.
+#[test]
+fn stdin_fechado_sem_parar_continua_erro() {
+    let amb = ambiente();
+    let id = amb.iniciar(com_aprovacao("a", "A"));
+    com_status(&id, "aguardando");
+    let v = viva(&id).unwrap();
+    let mut processo = guardar_processo(&v, &id, "c", Command::new("true").stdin(Stdio::piped()).spawn().unwrap());
+    ate_sair(&mut processo.filho);
+    assert_ne!(enviar_prompt(&v, &mut processo.filho, "oi").unwrap_err().to_string(), PAUSADO);
+}
+
+/// Saída antecipada da etapa (`?` no meio): o processo não fica solto nem a chave para trás.
+#[test]
+fn saida_antecipada_derruba_o_processo_e_tira_a_chave() {
+    let amb = ambiente();
+    let id = amb.iniciar(com_aprovacao("a", "A"));
+    com_status(&id, "aguardando");
+    let processo = guardar_processo(&viva(&id).unwrap(), &id, "c", Command::new("sleep").arg("60").spawn().unwrap());
+    let pid = processo.filho.id().to_string();
+    assert!(com_chave(&format!("{id}/c")));
+    drop(processo);
+    assert!(!com_chave(&format!("{id}/c")));
+    assert!(!processo_vivo(&pid));
 }

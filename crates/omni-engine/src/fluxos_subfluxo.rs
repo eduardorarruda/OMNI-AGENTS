@@ -28,10 +28,14 @@ pub fn fluxo_salvo(id: &str, global: Option<&Path>, projeto: &str) -> Result<Flu
 }
 
 /// Roda o nó: abre a filha, ou acha a que já existe (engine religado, retomar), e devolve a saída do
-/// `Fim` dela.
+/// `Fim` dela. Filha cancelada conta como inexistente: morta, ela não duplica nada, e sem isto o pai
+/// ficaria sem saída, com `retomar` falhando sempre. Só `retomar` chega aqui com ela: cancelar o pai
+/// não deixa ele voltar, e o loop limpa `filha` em `seguir`.
 pub fn rodar_subfluxo(state: &Arc<EngineState>, v: &Viva, no: &fluxos::No, ctx: &Contexto) -> Result<String> {
-    let existente = v.lock().map_err(|_| anyhow!("execucao"))?.nos.get(&no.id).and_then(|n| n.filha.clone()).filter(|id| obter(id).is_some());
-    let filha = match existente { Some(id) => id, None => abrir_filha(state, v, no, ctx)? };
+    let atual = v.lock().map_err(|_| anyhow!("execucao"))?.nos.get(&no.id).and_then(|n| n.filha.clone());
+    let situacao = atual.as_deref().and_then(obter).map(|f| f.status);
+    if situacao.as_deref() == Some("cancelado") { mexer(state, v, |e| if let Some(n) = e.nos.get_mut(&no.id) { n.filha = None; }); }
+    let filha = match atual.filter(|_| situacao.as_deref().is_some_and(|s| s != "cancelado")) { Some(id) => id, None => abrir_filha(state, v, no, ctx)? };
     esperar(state, v, &no.id, &filha)
 }
 
@@ -58,7 +62,7 @@ fn abrir_filha(state: &Arc<EngineState>, v: &Viva, no: &fluxos::No, ctx: &Contex
         "rodando" | "aguardando" => soltar(state.clone(), id.clone()),
         "cancelado" => cancelar(state, &id)?,
         // Fica pausada na fila: o `retomar` do pai solta.
-        _ => mexer(state, &viva(&id)?, |e| e.status = "pausado".into()),
+        _ => mexer(state, &viva(&id)?, |e| if esta_viva(e) { e.status = "pausado".into(); }),
     }
     Ok(id)
 }
@@ -76,8 +80,10 @@ fn nova_filha(pai: &Execucao, no: &str, id: String, fluxo: Fluxo, entrada: Strin
 }
 
 /// Espera a filha terminar ou o pai parar. Filha pausada ou aguardando não terminou: o pai segue
-/// esperando e mostra a parada no nó.
+/// esperando e mostra a parada no nó. Só toca no pai quando o texto muda: `mexer` regrava o JSON, e
+/// esta espera pode durar horas.
 fn esperar(state: &EngineState, v: &Viva, no: &str, filha: &str) -> Result<String> {
+    let mut mostrado = String::new();
     loop {
         let f = obter(filha).ok_or_else(|| anyhow!("A execução chamada não existe mais"))?;
         if !v.lock().map(|e| esta_viva(&e)).unwrap_or(false) { return Err(anyhow!(PAUSADO)); }
@@ -90,7 +96,10 @@ fn esperar(state: &EngineState, v: &Viva, no: &str, filha: &str) -> Result<Strin
                 return Err(anyhow!(texto));
             }
             "cancelado" => { let texto = format!("“{nome}” foi cancelada"); marcar_fim(state, v, no, &texto); return Err(anyhow!(texto)); }
-            _ => definir_atividade(state, v, no, &andamento(&f)),
+            _ => {
+                let texto = andamento(&f);
+                if texto != mostrado { definir_atividade(state, v, no, &texto); mostrado = texto; }
+            }
         }
         std::thread::sleep(INTERVALO_DA_ESPERA);
     }

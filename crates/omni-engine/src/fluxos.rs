@@ -637,19 +637,16 @@ fn rodar_na_conta(state: &EngineState, v: &Viva, no: &str, modelo: &omni_core::a
     c.env("OMNI_ETAPA_DE_FLUXO", "1");
     c.current_dir(pasta).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     sem_janela(&mut c);
-    let mut filho = c.spawn().with_context(|| format!("não consegui abrir {}", modelo.cli))?;
-    guardar_processo(v, &run_id, no, filho.id());
+    let mut processo = guardar_processo(v, &run_id, no, c.spawn().with_context(|| format!("não consegui abrir {}", modelo.cli))?);
+    let filho = &mut processo.filho;
     mexer(state, v, |e| if let Some(n) = e.nos.get_mut(no) {
         n.cli = Some(modelo.cli.clone()); n.conta = perfil.map(|p| p.id.clone());
         n.modelo = (!modelo.modelo.is_empty()).then(|| modelo.modelo.clone()); n.esforco = (!modelo.esforco.is_empty()).then(|| modelo.esforco.clone());
     });
     definir_atividade(state, v, no, &format!("Abrindo {}…", modelo.cli));
-    {
-        let mut stdin = filho.stdin.take().ok_or_else(|| anyhow!("sem stdin"))?;
-        let texto = if retomar.is_some() { "Continue de onde parou.".to_owned() }
-            else if modelo.cli == "codex" { format!("{}\n\n---\n\n{prompt}", modelo.instrucoes) } else { prompt.to_owned() };
-        stdin.write_all(texto.as_bytes())?;
-    }
+    let texto = if retomar.is_some() { "Continue de onde parou.".to_owned() }
+        else if modelo.cli == "codex" { format!("{}\n\n---\n\n{prompt}", modelo.instrucoes) } else { prompt.to_owned() };
+    enviar_prompt(v, filho, &texto)?;
 
     let _ = fs::create_dir_all(&log);
     let mut arquivo = fs::OpenOptions::new().create(true).append(true).open(log.join(format!("{no}.log")))?;
@@ -675,12 +672,13 @@ fn rodar_na_conta(state: &EngineState, v: &Viva, no: &str, modelo: &omni_core::a
         }
     }
     let status = filho.wait()?;
-    processos().lock().expect("processos").remove(&format!("{run_id}/{no}"));
-    if v.lock().map(|e| !matches!(e.status.as_str(), "rodando" | "aguardando")).unwrap_or(true) { return Err(anyhow!(PAUSADO)); }
+    let stderr = filho.stderr.take();
+    drop(processo);
+    if parou(v) { return Err(anyhow!(PAUSADO)); }
     if let Some(erro) = erro_cli { return Err(anyhow!(erro)); }
     if !status.success() && final_texto.is_empty() {
         let mut erro = String::new();
-        if let Some(mut s) = filho.stderr.take() { let _ = s.read_to_string(&mut erro); }
+        if let Some(mut s) = stderr { let _ = s.read_to_string(&mut erro); }
         return Err(anyhow!("{} saiu com erro: {}", modelo.cli, erro.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("sem detalhe")));
     }
     Ok(final_texto)
@@ -697,9 +695,9 @@ fn rodar_comando(state: &EngineState, v: &Viva, no: &str, comando: &str, pasta: 
     c.current_dir(pasta).env("NO_COLOR", "1").env("FORCE_COLOR", "0").env("CI", "1")
         .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     sem_janela(&mut c);
-    let mut filho = c.spawn().with_context(|| format!("não consegui rodar: {comando}"))?;
     let run_id = v.lock().map_err(|_| anyhow!("execucao"))?.id.clone();
-    guardar_processo(v, &run_id, no, filho.id());
+    let mut processo = guardar_processo(v, &run_id, no, c.spawn().with_context(|| format!("não consegui rodar: {comando}"))?);
+    let filho = &mut processo.filho;
     definir_atividade(state, v, no, &format!("$ {comando}"));
 
     let log = pasta_execucoes(state).join(&run_id);
@@ -729,8 +727,8 @@ fn rodar_comando(state: &EngineState, v: &Viva, no: &str, comando: &str, pasta: 
     }
     for l in leitores { let _ = l.join(); }
     let status = filho.wait()?;
-    processos().lock().expect("processos").remove(&format!("{run_id}/{no}"));
-    if v.lock().map(|e| !matches!(e.status.as_str(), "rodando" | "aguardando")).unwrap_or(true) { return Err(anyhow!(PAUSADO)); }
+    drop(processo);
+    if parou(v) { return Err(anyhow!(PAUSADO)); }
     let fim = format!("{}\n{}", fluxos::cauda(&saida, 12_000).trim_end(), if status.success() { "✓ terminou sem erro".to_owned() } else { format!("✗ saiu com código {}", status.code().unwrap_or(-1)) });
     let _ = writeln!(arquivo, "{}", json!({"type": "comando", "text": fim.lines().last().unwrap_or_default()}));
     Ok((status.success(), fim))
@@ -786,9 +784,34 @@ fn abrir_pr(v: &Viva, no: &fluxos::No) -> Result<String> {
 
 /// Anota o processo e só então olha a execução. Quem para muda o status antes de ler `processos`, então
 /// um dos dois lados sempre vê o outro: processo aberto no meio de um Parar não sobra rodando.
-fn guardar_processo(v: &Viva, execucao: &str, no: &str, pid: u32) {
-    processos().lock().expect("processos").insert(format!("{execucao}/{no}"), pid);
+fn guardar_processo(v: &Viva, execucao: &str, no: &str, filho: std::process::Child) -> Processo {
+    let chave = format!("{execucao}/{no}");
+    processos().lock().expect("processos").insert(chave.clone(), filho.id());
     if v.lock().map(|e| matches!(e.status.as_str(), "pausado" | "cancelado")).unwrap_or(true) { matar_processo(execucao); }
+    Processo { chave, filho }
+}
+
+/// O processo de uma etapa, anotado em `processos`. Sair da etapa por qualquer caminho tira a chave:
+/// pid que fica ali pode ser reciclado, e o próximo Parar mataria a árvore de um processo alheio.
+struct Processo { chave: String, filho: std::process::Child }
+
+impl Drop for Processo {
+    fn drop(&mut self) {
+        // Só sobra vivo em saída antecipada; depois de `wait`, as duas chamadas não fazem nada.
+        if matches!(self.filho.try_wait(), Ok(None)) { let _ = self.filho.kill(); }
+        let _ = self.filho.wait();
+        if let Ok(mut p) = processos().lock() { p.remove(&self.chave); }
+    }
+}
+
+/// Pausar e cancelar deixaram de rodar a execução: o que a etapa viu depois disso não é resultado dela.
+fn parou(v: &Viva) -> bool { v.lock().map(|e| !matches!(e.status.as_str(), "rodando" | "aguardando")).unwrap_or(true) }
+
+/// Manda o prompt pelo stdin. Se o Parar matou o processo antes de ele ler, a etapa parou: o pipe
+/// quebrado é consequência, não falha dela.
+fn enviar_prompt(v: &Viva, filho: &mut std::process::Child, texto: &str) -> Result<()> {
+    let mut stdin = filho.stdin.take().ok_or_else(|| anyhow!("sem stdin"))?;
+    stdin.write_all(texto.as_bytes()).map_err(|erro| if parou(v) { anyhow!(PAUSADO) } else { erro.into() })
 }
 
 fn matar_processo(id: &str) {
@@ -818,7 +841,8 @@ fn descendentes_de(pid: u32) -> Vec<String> {
 
 pub fn pausar(state: &EngineState, id: &str) -> Result<()> {
     let v = viva(id)?;
-    let rodava = mexer(state, &v, |e| { let r = e.status == "rodando"; if r { e.status = "pausado".into(); } r });
+    // `aguardando` também: outro ramo ou uma filha pode estar trabalhando. O nó segue `aguardando`, e `retomar` devolve a pergunta.
+    let rodava = mexer(state, &v, |e| { let r = matches!(e.status.as_str(), "rodando" | "aguardando"); if r { e.status = "pausado".into(); } r });
     if !rodava { return Err(anyhow!("Só dá para pausar uma execução rodando")); }
     matar_processo(id);
     subfluxo::pausar_filhas(state, id);
