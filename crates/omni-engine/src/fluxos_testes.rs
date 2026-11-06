@@ -250,6 +250,51 @@ fn duas_aprovacoes_seguidas_soltam_as_duas() {
     assert_eq!((amb.linhas("c1.log"), amb.linhas("c2.log")), (1, 1));
 }
 
+fn duas_aprovacoes() -> Value {
+    json!({"id": "a", "nome": "A", "na_pasta_do_projeto": true, "nos": [
+        {"id": "e", "tipo": "entrada"}, {"id": "ap1", "tipo": "aprovacao"}, {"id": "ap2", "tipo": "aprovacao"},
+        comando("c1", &conta("c1")), comando("c2", &conta("c2")), {"id": "f", "tipo": "fim"}],
+        "conexoes": [{"de": "e", "para": "ap1"}, {"de": "e", "para": "ap2"}, {"de": "ap1", "para": "c1", "saida": "sim"}, {"de": "ap2", "para": "c2", "saida": "sim"},
+            {"de": "c1", "para": "f", "saida": "sim"}, {"de": "c2", "para": "f", "saida": "sim"}]})
+}
+
+fn esperar_as_duas(id: &str) {
+    for _ in 0..300 {
+        let e = obter(id).unwrap();
+        if e.nos.get("ap1").is_some_and(|n| n.status == "aguardando") && e.nos.get("ap2").is_some_and(|n| n.status == "aguardando") { return; }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    panic!("as duas aprovações não chegaram a aguardar");
+}
+
+/// Execução que já falhou, foi pausada ou cancelada não volta a andar por uma aprovação sobrando.
+#[test]
+fn aprovar_nao_ressuscita_execucao_que_nao_esta_viva() {
+    for parada in ["falhou", "pausado", "cancelado"] {
+        let amb = ambiente();
+        let id = amb.iniciar(duas_aprovacoes());
+        esperar_as_duas(&id);
+        let v = viva(&id).unwrap();
+        mexer(&amb.state, &v, |e| { e.status = parada.into(); e.erro = Some("falha do outro ramo".into()); });
+        assert!(aprovar(&amb.state, &id, "ap1", true).is_err(), "{parada}: devia recusar");
+        let e = obter(&id).unwrap();
+        assert_eq!((e.status.as_str(), e.nos["ap1"].status.as_str()), (parada, "aguardando"), "{parada}: nada muda");
+        assert_eq!(amb.linhas("c1.log"), 0);
+    }
+}
+
+/// Recusar a primeira (caminho `nao`) e aprovar a segunda soltam as duas.
+#[test]
+fn recusar_a_primeira_e_aprovar_a_segunda_soltam_as_duas() {
+    let amb = ambiente();
+    let id = amb.iniciar(duas_aprovacoes());
+    esperar_as_duas(&id);
+    aprovar(&amb.state, &id, "ap1", false).unwrap();
+    aprovar(&amb.state, &id, "ap2", true).expect("a segunda não pode ficar presa");
+    assert_eq!(ate_parar(&id).status, "concluido");
+    assert_eq!((amb.linhas("c1.log"), amb.linhas("c2.log")), (0, 1));
+}
+
 /// entrada → (a, b, c) → juntar → revisor → condição, com `nao` ligado nos três ramos. O revisor é um
 /// comando que imprime o veredito guardado em `veredito.txt`.
 fn com_revisor(ramos: Value, nos_extra: Vec<Value>, conexoes_extra: Vec<Value>) -> Value {

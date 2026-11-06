@@ -818,8 +818,10 @@ pub fn cancelar(state: &EngineState, id: &str) -> Result<()> {
 pub fn aprovar(state: &Arc<EngineState>, id: &str, no: &str, sim: bool) -> Result<()> {
     let v = viva(id)?;
     let ok = mexer(state, &v, |e| {
-        // Só o estado do nó vale: com duas aprovações abertas, a execução já voltou a `rodando` quando a segunda chega.
-        let aguardando = e.nos.get(no).is_some_and(|n| n.status == "aguardando");
+        // O nó precisa esperar e a execução estar viva: com duas aprovações abertas ela já voltou a `rodando` quando a segunda
+        // chega, mas `falhou`, `pausado` e `cancelado` só andam por `retomar`.
+        let viva = matches!(e.status.as_str(), "rodando" | "aguardando");
+        let aguardando = viva && e.nos.get(no).is_some_and(|n| n.status == "aguardando");
         if aguardando {
             if let Some(n) = e.nos.get_mut(no) { n.status = "concluido".into(); n.fim_ms = now_ms(); }
             if !e.nos.values().any(|n| n.status == "aguardando") { e.status = "rodando".into(); }
