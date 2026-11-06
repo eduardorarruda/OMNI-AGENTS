@@ -1,5 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
-import { resolverCitado } from "../features/files/resolverCitado";
+import { mensagemNaoAchei, resolverCitado } from "../features/files/resolverCitado";
 
 function deps(o: { achados?: string[]; existem?: string[] } = {}) {
   return {
@@ -37,12 +37,33 @@ describe("resolverCitado", () => {
     expect(await resolverCitado("~/x.md", ["/p"], d)).toEqual({ tipo: "um", caminho: "/home/u/x.md" });
     expect(d.localizar).not.toHaveBeenCalled();
   });
-  test("relativo com pasta inexistente busca só pelo nome final", async () => {
+  test("citação parcial sem achado que termine no trecho devolve a lista, mesmo com um só", async () => {
     const d = deps({ achados: ["/p/outra/x.md"] });
-    expect(await resolverCitado("naoexiste/x.md", ["/p"], d)).toEqual({ tipo: "um", caminho: "/p/outra/x.md" });
+    expect(await resolverCitado("naoexiste/x.md", ["/p"], d)).toEqual({ tipo: "varios", caminhos: ["/p/outra/x.md"] });
     expect(d.localizar).toHaveBeenCalledWith("/p", "x.md");
+  });
+  test("citação parcial sem nenhum casamento lista todos os achados pelo nome", async () => {
+    const r = await resolverCitado("naoexiste/x.md", ["/p"], deps({ achados: ["/p/a/x.md", "/p/b/x.md"] }));
+    expect(r).toEqual({ tipo: "varios", caminhos: ["/p/a/x.md", "/p/b/x.md"] });
+  });
+  test("absoluto ou ~ que não existe termina em nenhum, sem buscar", async () => {
+    const d = deps({ achados: ["/p/a.conf"] });
+    expect(await resolverCitado("/etc/a.conf", ["/p"], d)).toEqual({ tipo: "nenhum", nome: "a.conf", raiz: "/p" });
+    expect(await resolverCitado("~/a.conf", ["/p"], d)).toEqual({ tipo: "nenhum", nome: "a.conf", raiz: "/p" });
+    expect(d.localizar).not.toHaveBeenCalled();
   });
   test("nada encontrado informa nome e raiz", async () => {
     expect(await resolverCitado("a/b.md", ["/p/sub", "/p"], deps())).toEqual({ tipo: "nenhum", nome: "b.md", raiz: "/p" });
+  });
+});
+
+describe("mensagemNaoAchei", () => {
+  test.each([
+    ["/home/x/EBPOS_360", "EBPOS_360"],
+    ["C:\\dev\\EBPOS_360", "EBPOS_360"],
+    ["/home/x/EBPOS_360/", "EBPOS_360"],
+    ["C:\\dev\\EBPOS_360\\", "EBPOS_360"],
+  ])("raiz %s vira %s", (raiz, esperado) => {
+    expect(mensagemNaoAchei("analise.md", raiz)).toBe(`Não achei analise.md em ${esperado}`);
   });
 });

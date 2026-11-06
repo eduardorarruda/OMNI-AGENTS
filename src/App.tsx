@@ -10,7 +10,7 @@ import { semLocal } from "./mobile/api";
 import { exists } from "@tauri-apps/plugin-fs";
 import { homeDir } from "@tauri-apps/api/path";
 import { invoke } from "@tauri-apps/api/core";
-import { resolverCitado } from "./features/files/resolverCitado";
+import { mensagemNaoAchei, resolverCitado } from "./features/files/resolverCitado";
 import { EVENTO_ABRIR_ARQUIVO } from "./mobile/anexos";
 import { QuickOpen } from "./features/files/QuickOpen";
 import { useWorkspace } from "./features/workspace/useWorkspace";
@@ -191,7 +191,7 @@ export function App() {
         exists, homeDir,
         localizar: (raiz, nome) => invoke<string[]>("localizar_arquivo", { raiz, nome }),
       }).then((achado) => {
-        if (achado.tipo === "nenhum") return falha(new Error(`Não achei ${achado.nome} em ${achado.raiz.split(/[\\/]/).filter(Boolean).pop() ?? achado.raiz}`));
+        if (achado.tipo === "nenhum") return falha(new Error(mensagemNaoAchei(achado.nome, achado.raiz)));
         if (achado.tipo === "varios") return ok(achado.caminhos);
         abrirCitado.current(achado.caminho, fileKind(achado.caminho));
         ok();

@@ -27,7 +27,9 @@ export async function resolverCitado(citado: string, bases: string[], deps: Deps
 
   const direto = /^~[\\/]/.test(limpo) ? joinPath(await deps.homeDir(), limpo.slice(2)) : ABSOLUTO.test(limpo) ? limpo : null;
   if (direto !== null) {
+    // Absoluto que não existe não vira busca: o usuário apontou um lugar exato.
     if (await deps.exists(direto)) return { tipo: "um", caminho: direto };
+    return { tipo: "nenhum", nome, raiz };
   } else {
     for (const base of bases) {
       const candidato = joinPath(base, limpo);
@@ -41,8 +43,15 @@ export async function resolverCitado(citado: string, bases: string[], deps: Deps
   const casados = partes.length > 1
     ? achados.filter((a) => a.split(PARTIR).filter(Boolean).join("/").endsWith(`/${terminaEm}`))
     : achados;
-  const finais = casados.length > 0 ? casados : achados;
-  if (finais.length === 1) return { tipo: "um", caminho: finais[0] };
-  if (finais.length > 1) return { tipo: "varios", caminhos: finais };
-  return { tipo: "nenhum", nome, raiz };
+  if (achados.length === 0) return { tipo: "nenhum", nome, raiz };
+  // Citação com pastas que nenhum achado confirma nunca abre sozinha: o usuário escolhe.
+  if (casados.length === 0) return { tipo: "varios", caminhos: achados };
+  if (casados.length === 1) return { tipo: "um", caminho: casados[0] };
+  return { tipo: "varios", caminhos: casados };
+}
+
+/** Texto do aviso quando nada foi achado: só o último nome da pasta, com `/`, `\` ou barra final. */
+export function mensagemNaoAchei(nome: string, raiz: string): string {
+  const pasta = raiz.split(PARTIR).filter(Boolean).pop() ?? raiz;
+  return `Não achei ${nome} em ${pasta}`;
 }
