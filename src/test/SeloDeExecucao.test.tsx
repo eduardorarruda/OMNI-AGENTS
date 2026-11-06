@@ -104,3 +104,14 @@ it("erro de consulta mantém a última leitura e registra o erro", async () => {
   expect(armazem.leitura().erro).toBeNull();
   parar();
 });
+
+it("detalhe que falha (execução removida) não derruba as outras nem mostra erro", async () => {
+  const boa = exec("e1", "Release", "rodando", { titulo: "Testar", status: "rodando" });
+  listarExecucoes.mockImplementation(async () => [{ id: "e1", status: "rodando" }, { id: "sumiu", status: "rodando" }]);
+  obterExecucao.mockImplementation(async (id: string) => { if (id === "sumiu") throw new Error("Execução não encontrada"); return boa; });
+  function Espia() { const { erro } = useExecucoesAtivas(); return <i data-testid="erro">{erro ?? ""}</i>; }
+  render(<><SeloDeExecucao onAbrir={abrir} /><Espia /></>);
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  expect(screen.getByRole("button", { name: /Fluxo Release: Testar/ })).toBeInTheDocument();
+  expect(screen.getByTestId("erro")).toBeEmptyDOMElement();
+});

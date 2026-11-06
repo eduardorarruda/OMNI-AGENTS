@@ -2,16 +2,17 @@ import { useSyncExternalStore } from "react";
 import { criarArmazem } from "../features/fluxos/armazemDeExecucoes";
 import { nosAtivos } from "../features/fluxos/execucaoModel";
 import type { Execucao } from "../features/fluxos/fluxosService";
-import { request, requestSeMudou } from "./api";
+import { request } from "./api";
 
 const EM_ANDAMENTO = new Set(["rodando", "aguardando"]);
 
-/** A lista usa ETag: sem mudança vem 304 (`null`) e a tela fica como está. */
+/** Sem ETag: `GET /fluxos/execucoes` não o devolve, então toda consulta lê a lista inteira (pequena, em loopback). */
 const armazem = criarArmazem(async () => {
-  const lista = await requestSeMudou<{ id: string; status: string }[]>("/fluxos/execucoes");
-  if (lista === null) return null;
-  return Promise.all(lista.filter((x) => EM_ANDAMENTO.has(x.status))
+  const lista = await request<{ id: string; status: string }[]>("/fluxos/execucoes");
+  // allSettled: uma execução removida entre a lista e o detalhe não derruba o ciclo.
+  const detalhes = await Promise.allSettled(lista.filter((x) => EM_ANDAMENTO.has(x.status))
     .map((x) => request<Execucao>(`/fluxos/execucoes/${encodeURIComponent(x.id)}`)));
+  return detalhes.flatMap((d) => (d.status === "fulfilled" ? [d.value] : []));
 });
 
 /** Os fluxos rodando agora (a mesma lista do selo do desktop), com o que cada um está fazendo. */
