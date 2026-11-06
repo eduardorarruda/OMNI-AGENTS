@@ -85,7 +85,7 @@ export function novosAvisos(lista: readonly Conversation[], vistos: Set<string>,
 export interface AvisoDeFluxo { id: string; fluxo?: string; aviso_seq?: number; aviso?: string | null }
 
 const TITULO_DO_AVISO: Record<string, string> = {
-  aprovacao: "Fluxo pede aprovação", falhou: "Fluxo falhou", concluido: "Fluxo concluído", custo: "Fluxo parou no limite de custo",
+  aprovacao: "Fluxo pede aprovação", falhou: "Fluxo falhou", concluido: "Fluxo concluído",
 };
 
 /** Cada evento sobe o `aviso_seq` da execução. Na primeira leitura só anota: o que já aconteceu não é novidade. */

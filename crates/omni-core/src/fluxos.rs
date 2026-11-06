@@ -95,16 +95,12 @@ pub struct Fluxo {
     /// commitado (uma release, por exemplo) — e que por isso mexem nos seus arquivos de verdade.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub na_pasta_do_projeto: bool,
-    /// Quantas etapas rodam ao mesmo tempo. Ausente: `MAX_PARALELO_PADRAO`.
+    /// Quantas etapas rodam ao mesmo tempo. Ausente: sem teto.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_paralelo: Option<u32>,
     /// Pastas fora do projeto que os agentes alcançam, com caminho relativo ao projeto.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pastas_extras: Vec<String>,
-    /// Pausa a execução quando o custo acumulado chega aqui (US$). O custo de uma etapa só existe
-    /// quando ela termina, então o total pode passar um pouco.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub custo_maximo: Option<f64>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -175,8 +171,7 @@ pub fn validar(f: &Fluxo) -> Result<(), String> {
 }
 
 fn validar_limites(f: &Fluxo) -> Result<(), String> {
-    if f.max_paralelo.is_some_and(|n| n == 0 || n > MAX_PARALELO_TETO) { return Err(format!("`max_paralelo` vai de 1 a {MAX_PARALELO_TETO}")); }
-    if f.custo_maximo.is_some_and(|c| !c.is_finite() || c <= 0.0) { return Err("`custo_maximo` precisa ser maior que zero".into()); }
+    if f.max_paralelo == Some(0) { return Err("`max_paralelo` precisa ser pelo menos 1".into()); }
     for pasta in &f.pastas_extras { validar_pasta_extra(pasta)?; }
     for n in &f.nos {
         let com_limite = !n.proibidas.is_empty() || n.escrita.is_some();
@@ -504,10 +499,17 @@ mod tests {
     fn campos_novos_sao_opcionais_e_nao_aparecem_quando_ausentes() {
         let antigo = r#"{"id":"a","nome":"A","nos":[{"id":"e","tipo":"entrada"}],"conexoes":[]}"#;
         let f: Fluxo = serde_json::from_str(antigo).unwrap();
-        assert_eq!((f.max_paralelo, f.custo_maximo, f.pastas_extras.len(), f.nos[0].escrita.is_none()), (None, None, 0, true));
-        assert_eq!(limite_paralelo(&f), 3);
+        assert_eq!((f.max_paralelo, f.pastas_extras.len(), f.nos[0].escrita.is_none()), (None, 0, true));
         let texto = serde_json::to_string(&f).unwrap();
-        for campo in ["max_paralelo", "custo_maximo", "pastas_extras", "escrita", "proibidas"] { assert!(!texto.contains(campo), "{texto}"); }
+        for campo in ["max_paralelo", "pastas_extras", "escrita", "proibidas"] { assert!(!texto.contains(campo), "{texto}"); }
+    }
+
+    #[test]
+    fn fluxo_antigo_com_custo_maximo_abre_e_ignora() {
+        let antigo = r#"{"id":"a","nome":"A","custo_maximo":0,"nos":[{"id":"e","tipo":"entrada"},{"id":"f","tipo":"fim"}],"conexoes":[{"de":"e","para":"f"}]}"#;
+        let f: Fluxo = serde_json::from_str(antigo).unwrap();
+        validar(&f).unwrap();
+        assert!(!serde_json::to_string(&f).unwrap().contains("custo_maximo"), "salvar de novo limpa o campo");
     }
 
     #[test]
@@ -518,10 +520,6 @@ mod tests {
         validar(&base()).unwrap();
         let recusa = |muda: &dyn Fn(&mut Fluxo), trecho: &str| { let mut f = base(); muda(&mut f); assert!(validar(&f).unwrap_err().contains(trecho), "{trecho}"); };
         recusa(&|f| f.max_paralelo = Some(0), "max_paralelo");
-        recusa(&|f| f.max_paralelo = Some(11), "max_paralelo");
-        recusa(&|f| f.custo_maximo = Some(0.0), "custo_maximo");
-        recusa(&|f| f.custo_maximo = Some(f64::NAN), "custo_maximo");
-        recusa(&|f| f.pastas_extras = vec!["/".into()], "raiz");
         recusa(&|f| f.pastas_extras = vec!["~".into()], "Pasta extra");
         recusa(&|f| f.nos[1].proibidas = vec!["--x".into()], "proibida");
         recusa(&|f| f.nos[1].escrita = Some(vec!["../fora".into()]), "escrita");

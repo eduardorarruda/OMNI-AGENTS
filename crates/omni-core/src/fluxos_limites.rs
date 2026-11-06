@@ -1,6 +1,6 @@
-//! O que restringe uma etapa de fluxo: teto de ramos, ferramentas proibidas, caminhos de escrita e
-//! pastas extras. Tudo aqui só aperta o que a etapa já faria. Quem aplica é o engine; a regra de cada
-//! texto que vira argumento de linha de comando mora aqui para ser testada sem abrir CLI.
+//! O que o autor de um fluxo pode pedir para restringir: ramos ao mesmo tempo, voltas, ferramentas
+//! proibidas e caminhos de escrita. Nada aqui é imposto: ausente é sem limite. Quem aplica é o engine;
+//! a regra de cada texto que vira argumento de linha de comando mora aqui para ser testada sem abrir CLI.
 //!
 //! Medido no `claude -p` 2.1.318: `acceptEdits` ignora regra de caminho, então escrita limitada exige
 //! `--permission-mode default` com `Edit(./caminho)` (`Write(caminho)` sozinho nega tudo). Uma regra
@@ -8,22 +8,28 @@
 //! bloqueio do shell: o sandbox da CLI não abre exceção dentro da pasta de trabalho.
 use super::{No, TipoDeNo};
 use serde_json::{json, Map, Value};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
-/// Ausente no fluxo: o quanto a máquina aguenta sem o usuário ter pedido nada.
-pub const MAX_PARALELO_PADRAO: u32 = 3;
-pub const MAX_PARALELO_TETO: u32 = 10;
 /// Ferramentas que gravam arquivo. O limite de caminho vale para elas.
 pub const FERRAMENTAS_DE_ESCRITA: [&str; 4] = ["Write", "Edit", "MultiEdit", "NotebookEdit"];
 /// Escrevem em qualquer lugar sem passar pelas regras de caminho.
 pub const FERRAMENTAS_DE_SHELL: [&str; 2] = ["Bash", "PowerShell"];
-/// Pastas que mudam o que a CLI ou o OMNI executam: liberar escrita nelas alarga o que a etapa alcança.
-const PASTAS_PROTEGIDAS: [&str; 3] = [".git", ".claude", ".omni"];
-const PASTAS_DO_SISTEMA: [&str; 16] = ["bin", "boot", "dev", "etc", "lib", "lib64", "opt", "proc", "root", "run", "sbin", "sys", "usr", "var", "Windows", "Program Files"];
 const TAMANHO_MAXIMO: usize = 300;
 
+/// Quantas etapas rodam ao mesmo tempo: o que o autor definiu; sem isso, todas.
 pub fn limite_paralelo(f: &super::Fluxo) -> usize {
-    f.max_paralelo.unwrap_or(MAX_PARALELO_PADRAO).max(1) as usize
+    f.max_paralelo.map_or(usize::MAX, |n| n.max(1) as usize)
+}
+
+/// Quantas reprovações ou falhas o nó aguenta antes de sair por `esgotado`. Ausente: sem limite, e a
+/// parada é o botão Parar.
+pub fn max_voltas(no: &No) -> u32 {
+    no.config["max_voltas"].as_u64().map_or(u32::MAX, |n| u32::try_from(n.max(1)).unwrap_or(u32::MAX))
+}
+
+/// Rodadas da Sala. Ausente: 3.
+pub fn rodadas_da_sala(no: &No) -> u32 {
+    u32::try_from(no.config["rodadas"].as_u64().unwrap_or(3).max(1)).unwrap_or(u32::MAX)
 }
 
 /// Vira argumento de `--disallowedTools`: nome de ferramenta, com padrão opcional (`Bash(rm:*)`).
@@ -46,7 +52,6 @@ pub fn validar_escrita(caminho: &str) -> Result<(), String> {
     if !caminho.chars().all(|c| c.is_alphanumeric() || "._-/*".contains(c)) { return erro("use só letras, números e . _ - / *"); }
     let partes: Vec<&str> = sem_ponto_inicial(caminho).split('/').collect();
     if partes.contains(&"..") { return erro("não pode sair da pasta do projeto"); }
-    if partes.first().is_some_and(|p| PASTAS_PROTEGIDAS.contains(p)) { return erro("essa pasta não pode ser liberada"); }
     Ok(())
 }
 
@@ -91,17 +96,13 @@ pub fn escreve_sem_limite(no: &No) -> bool {
         && !FERRAMENTAS_DE_ESCRITA.iter().all(|f| no.proibidas.iter().any(|p| p == f))
 }
 
-/// Confere o que dá para saber sem o projeto. O resto fica para `resolver_pasta_extra`.
+/// Só o que impediria achar a pasta: `~` e variável não são expandidos. Onde ela fica é com o autor.
 pub fn validar_pasta_extra(pasta: &str) -> Result<(), String> {
     let erro = |motivo: &str| Err(format!("Pasta extra “{pasta}”: {motivo}"));
     if pasta.trim().is_empty() || pasta.len() > TAMANHO_MAXIMO || pasta.chars().any(char::is_control) { return erro("vazia ou inválida"); }
     if pasta.starts_with('~') || pasta.contains(['$', '%', '*', '?']) { return erro("escreva o caminho sem ~, variável ou curinga"); }
-    let caminho = Path::new(pasta);
-    if caminho.is_absolute() && caminho.components().all(|c| matches!(c, Component::RootDir | Component::Prefix(_))) { return erro("não pode ser a raiz do disco"); }
     Ok(())
 }
-
-fn real(caminho: &Path) -> Option<PathBuf> { caminho.canonicalize().ok() }
 
 /// Sem o `\\?\` do Windows, que a CLI não entende.
 pub fn texto_do_caminho(caminho: &Path) -> String {
@@ -109,30 +110,11 @@ pub fn texto_do_caminho(caminho: &Path) -> String {
     texto.strip_prefix(r"\\?\").unwrap_or(&texto).to_owned()
 }
 
-fn pasta_do_sistema(caminho: &Path) -> bool {
-    caminho.components().find_map(|c| match c { Component::Normal(nome) => Some(nome), _ => None })
-        .is_some_and(|nome| PASTAS_DO_SISTEMA.iter().any(|sistema| nome == *sistema))
-}
-
-/// O caminho real de uma pasta extra, relativo ao projeto. Resolve symlink antes de julgar: um link
-/// para a home não passa. Recusa o que contém o projeto ou a home e as pastas de configuração.
-pub fn resolver_pasta_extra(projeto: &Path, pasta: &str, home: Option<&Path>) -> Result<PathBuf, String> {
+/// O caminho real de uma pasta extra, relativo ao projeto. Precisa existir: `--add-dir` de pasta que
+/// não existe só falharia lá na frente.
+pub fn resolver_pasta_extra(projeto: &Path, pasta: &str) -> Result<PathBuf, String> {
     validar_pasta_extra(pasta)?;
-    let erro = |motivo: &str| Err(format!("Pasta extra “{pasta}”: {motivo}"));
-    let Some(alvo) = real(&projeto.join(pasta)).filter(|alvo| alvo.is_dir()) else { return erro("não existe neste PC") };
-    let Some(raiz_do_projeto) = real(projeto) else { return erro("o projeto não existe neste PC") };
-    if alvo.parent().is_none() { return erro("não pode ser a raiz do disco"); }
-    if raiz_do_projeto.starts_with(&alvo) { return erro("não pode conter o próprio projeto"); }
-    let home = home.and_then(real);
-    if let Some(home) = &home {
-        if home.starts_with(&alvo) { return erro("não pode ser a pasta do usuário nem conter ela"); }
-        if let Ok(dentro) = alvo.strip_prefix(home) {
-            let oculta = dentro.components().next().is_some_and(|c| c.as_os_str().to_string_lossy().starts_with('.'));
-            return if oculta { erro("pasta de configuração do usuário não pode ser liberada") } else { Ok(alvo) };
-        }
-    }
-    if pasta_do_sistema(&alvo) { return erro("pasta do sistema não pode ser liberada"); }
-    Ok(alvo)
+    projeto.join(pasta).canonicalize().ok().filter(|alvo| alvo.is_dir()).ok_or_else(|| format!("Pasta extra “{pasta}”: não existe neste PC"))
 }
 
 pub fn pasta_do_usuario() -> Option<PathBuf> {
@@ -153,9 +135,9 @@ mod tests {
     fn lista(itens: &[&str]) -> Vec<String> { itens.iter().map(|i| (*i).to_owned()).collect() }
 
     #[test]
-    fn caminho_de_escrita_nao_sai_da_pasta_nem_libera_pasta_protegida() {
+    fn caminho_de_escrita_nao_sai_da_pasta() {
         for bom in ["src", "src/", "./docs/a.md", "src/**", "*.md", ".", "ação/x"] { validar_escrita(bom).unwrap_or_else(|e| panic!("{e}")); }
-        for ruim in ["", "/etc", "~/x", "../fora", "a/../../b", "C:/x", "a b", "a,b", "a)", "-x", ".git/hooks", "./.claude/settings.json", ".omni/fluxos/x.json", "a\\b"] {
+        for ruim in ["", "/etc", "~/x", "../fora", "a/../../b", "C:/x", "a b", "a,b", "a)", "-x", "a\\b"] {
             assert!(validar_escrita(ruim).is_err(), "{ruim}");
         }
     }
@@ -184,6 +166,47 @@ mod tests {
         assert!(mcp_das_ferramentas(&["mcp__omni-rag__x".to_owned()], &serde_json::json!({})).is_none());
     }
 
+    fn com_config(config: Value) -> No { No { config, ..agente(None, &[]) } }
+
+    #[test]
+    fn sala_aceita_20_rodadas() {
+        assert_eq!(rodadas_da_sala(&com_config(json!({"rodadas": 20}))), 20);
+        assert_eq!(rodadas_da_sala(&com_config(json!({}))), 3, "ausente segue 3: a Sala para no consenso ou nas rodadas");
+        assert_eq!(rodadas_da_sala(&com_config(json!({"rodadas": 0}))), 1);
+    }
+
+    #[test]
+    fn max_voltas_ausente_nao_tem_limite() {
+        assert_eq!(max_voltas(&com_config(json!({}))), u32::MAX);
+        assert_eq!(max_voltas(&com_config(json!({"max_voltas": 50}))), 50);
+        assert_eq!(max_voltas(&com_config(json!({"max_voltas": 0}))), 1);
+        assert_eq!(max_voltas(&com_config(json!({"max_voltas": u64::MAX}))), u32::MAX, "número grande não dá a volta");
+    }
+
+    #[test]
+    fn escrita_aceita_git_e_claude() {
+        for caminho in [".git/hooks", ".claude/settings.json", "./.omni/fluxos/x.json", ".git"] { validar_escrita(caminho).unwrap_or_else(|e| panic!("{e}")); }
+    }
+
+    #[test]
+    fn paralelo_ausente_nao_tem_teto() {
+        let mut f: super::super::Fluxo = serde_json::from_value(json!({"id": "a", "nome": "A", "nos": [], "conexoes": []})).unwrap();
+        assert_eq!(limite_paralelo(&f), usize::MAX);
+        f.max_paralelo = Some(50);
+        assert_eq!(limite_paralelo(&f), 50);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pasta_extra_aceita_pasta_do_sistema() {
+        let raiz = tempfile::tempdir().unwrap();
+        let projeto = raiz.path().join("casa/trabalho/proj");
+        std::fs::create_dir_all(raiz.path().join("casa/.ssh")).unwrap();
+        std::fs::create_dir_all(&projeto).unwrap();
+        for pasta in ["/etc", "/usr/share", "/", "..", "../..", "../../.ssh"] { resolver_pasta_extra(&projeto, pasta).unwrap_or_else(|e| panic!("{e}")); }
+        validar_pasta_extra("/").unwrap();
+    }
+
     #[test]
     fn proibida_nao_vira_flag_da_cli() {
         for boa in ["Bash", "Bash(rm:*)", "mcp__x__y", "WebFetch"] { validar_proibida(boa).unwrap(); }
@@ -205,28 +228,12 @@ mod tests {
     }
 
     #[test]
-    fn pasta_extra_e_resolvida_e_nao_alarga_para_home_nem_raiz() {
+    fn pasta_extra_e_resolvida_e_precisa_existir() {
         let raiz = tempfile::tempdir().unwrap();
-        let home = raiz.path().join("casa");
-        let projeto = home.join("trabalho/proj");
-        for pasta in [projeto.join("sub"), home.join("trabalho/irmao"), home.join(".ssh")] { std::fs::create_dir_all(pasta).unwrap(); }
-        let resolver = |pasta: &str| resolver_pasta_extra(&projeto, pasta, Some(&home));
-        assert_eq!(resolver("../irmao").unwrap(), home.join("trabalho/irmao").canonicalize().unwrap());
-        assert_eq!(resolver("sub").unwrap(), projeto.join("sub").canonicalize().unwrap());
-        for ruim in [".", "..", "../..", "../../..", "/", "~", "~/x", "$HOME/x", "../../.ssh", "nao-existe", "/etc", "/usr/share"] {
-            assert!(resolver(ruim).is_err(), "{ruim}");
-        }
-        assert!(resolver(&home.to_string_lossy()).is_err(), "home pelo caminho absoluto");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn link_para_a_home_nao_passa_como_pasta_extra() {
-        let raiz = tempfile::tempdir().unwrap();
-        let home = raiz.path().join("casa");
-        let projeto = home.join("proj");
-        std::fs::create_dir_all(&projeto).unwrap();
-        std::os::unix::fs::symlink(&home, projeto.join("atalho")).unwrap();
-        assert!(resolver_pasta_extra(&projeto, "atalho", Some(&home)).is_err());
+        let projeto = raiz.path().join("trabalho/proj");
+        for pasta in [projeto.join("sub"), raiz.path().join("trabalho/irmao")] { std::fs::create_dir_all(pasta).unwrap(); }
+        assert_eq!(resolver_pasta_extra(&projeto, "../irmao").unwrap(), raiz.path().join("trabalho/irmao").canonicalize().unwrap());
+        assert_eq!(resolver_pasta_extra(&projeto, "sub").unwrap(), projeto.join("sub").canonicalize().unwrap());
+        for ruim in ["nao-existe", "~", "~/x", "$HOME/x", "sub/*"] { assert!(resolver_pasta_extra(&projeto, ruim).is_err(), "{ruim}"); }
     }
 }

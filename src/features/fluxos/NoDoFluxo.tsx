@@ -38,7 +38,7 @@ export const NoDoFluxoView = memo(function NoDoFluxoView({ data, selected }: Nod
   const saidas = SAIDAS[no.tipo];
   const subtitulo = no.tipo === "agente" ? [no.agente || "escolha um agente", modelo, esforco && (ROTULO_ESFORCO[esforco] ?? esforco).toLowerCase()].filter(Boolean).join(" · ")
     : no.tipo === "sala" ? (Array.isArray(no.config.participantes) ? (no.config.participantes as string[]).join(", ") : "")
-    : no.tipo === "condicao" ? `lê o veredito · até ${String(no.config.max_voltas ?? 3)} voltas`
+    : no.tipo === "condicao" ? `lê o veredito · ${no.config.max_voltas ? `até ${String(no.config.max_voltas)} voltas` : "sem limite de voltas"}`
     : no.tipo === "aprovacao" ? "espera você aprovar"
     : no.tipo === "entrada" ? "a tarefa que você digita"
     : no.tipo === "juntar" ? "espera todos os ramos"

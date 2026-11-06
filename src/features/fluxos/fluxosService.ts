@@ -21,8 +21,6 @@ export interface Fluxo {
   max_paralelo?: number;
   /** Pastas fora do projeto que os agentes alcançam. */
   pastas_extras?: string[];
-  /** Pausa a execução quando o custo em dólares passa disto. */
-  custo_maximo?: number;
 }
 export interface FluxoSalvo extends Fluxo { escopo: "global" | "projeto"; caminho: string }
 
@@ -63,7 +61,7 @@ export const SAIDAS: Record<TipoDeNo, string[]> = {
 
 export const TIPOS: { tipo: TipoDeNo; nome: string; dica: string }[] = [
   { tipo: "agente", nome: "Agente", dica: "Um modelo de agente trabalhando sem tela" },
-  { tipo: "condicao", nome: "Condição", dica: "Desvia pelo veredito da etapa anterior (aprovado/reprovado), com limite de voltas" },
+  { tipo: "condicao", nome: "Condição", dica: "Desvia pelo veredito da etapa anterior (aprovado/reprovado), com limite de voltas opcional" },
   { tipo: "aprovacao", nome: "Aprovação", dica: "Para e espera você aprovar — no PC, na web ou no celular" },
   { tipo: "sala", nome: "Time", dica: "Agentes conversando em rodadas até o consenso; sai uma ata" },
   { tipo: "pr", nome: "Pull request", dica: "Commit, push e gh pr create no branch da execução" },
@@ -72,6 +70,12 @@ export const TIPOS: { tipo: TipoDeNo; nome: string; dica: string }[] = [
   { tipo: "subfluxo", nome: "Subfluxo", dica: "Chama outro fluxo na mesma pasta e espera; o resultado dele vira a saída desta etapa" },
   { tipo: "fim", nome: "Fim", dica: "Termina o fluxo" },
 ];
+
+/** Campo de limite: vazio é sem limite; o número vale como está, nunca abaixo de 1. */
+export const limiteDoCampo = (texto: string): number | undefined => {
+  const numero = Math.floor(Number(texto));
+  return texto.trim() && Number.isFinite(numero) ? Math.max(1, numero) : undefined;
+};
 
 export const listarFluxos = (projectPath: string | null) => invoke<FluxoSalvo[]>("fluxos_listar", { projectPath });
 export const salvarFluxo = (escopo: "global" | "projeto", projectPath: string | null, fluxo: Fluxo, idAnterior?: string) =>

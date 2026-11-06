@@ -96,6 +96,10 @@ Instruções do agente (system prompt)...
 - [x] `config` ausente/null no JSON vira `{}` no Rust (a tela quebrava com fluxo sem `config`).
 - [ ] Engine precisa ser recompilado (`npm run build:engine`) para o executor novo valer no app instalado/dev.
 
+### Sem limites (2026-11-06, plano das oito melhorias)
+- [x] Fluxos rodam sem teto de custo, voltas, paralelo, execuções ou pastas; limite só se o autor definir (Tarefa 11,
+      `crates/omni-core/src/fluxos_limites.rs`). A parada é manual, pelo Parar.
+
 ### Subfluxos (2026-11-06, plano das oito melhorias)
 - [x] Fluxo chama fluxo em cadeia (X → Y → Z): execução filha na pasta do pai, Pausar/Parar/Retomar valem para a cadeia,
       ciclo roda até você cancelar (`crates/omni-engine/src/fluxos_subfluxo.rs`).

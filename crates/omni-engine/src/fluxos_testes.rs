@@ -1,4 +1,4 @@
-//! Limites do executor com comandos de verdade no shell: retomada, teto de ramos, custo e volta seletiva.
+//! O executor com comandos de verdade no shell: retomada, ramos em paralelo e volta seletiva.
 use super::*;
 use std::time::Duration;
 
@@ -135,7 +135,7 @@ fn max_paralelo_limita_quantos_ramos_rodam_juntos() {
 
     let amb = ambiente();
     let id = amb.iniciar(paralelo(&pares));
-    assert_eq!(abertos_no_pico(&id, &amb), 3, "sem o campo, o teto é 3");
+    assert_eq!(abertos_no_pico(&id, &amb), 5, "sem o campo, não há teto");
 }
 
 /// O `{{anterior}}` volta para a etapa pendente que ficou fora do primeiro lote.
@@ -150,48 +150,6 @@ fn etapa_que_esperou_vaga_roda_depois_com_a_origem_certa() {
     assert_eq!((e.status.as_str(), e.fila[0].de.as_deref()), ("rodando", Some("e")));
     e.nos.get_mut("a").unwrap().status = "concluido".into();
     assert_eq!(proximo_lote(&mut e).unwrap()[0].no, "b");
-}
-
-fn com_custo(custo: f64, maximo: f64) -> Execucao {
-    let mut e: Execucao = serde_json::from_value(json!({"id": "x", "projeto": "p", "projeto_id": "p", "entrada": "x", "pasta": ".", "status": "rodando", "criado_ms": 0, "atualizado_ms": 0,
-        "fluxo": paralelo(&[("a", conta("a")), ("b", conta("b"))]), "nos": {"a": {"status": "pendente"}}, "fila": [{"no": "a", "de": "e"}], "custo_usd": custo})).unwrap();
-    e.fluxo.custo_maximo = Some(maximo);
-    e
-}
-
-#[test]
-fn custo_que_chega_no_limite_pausa_antes_da_proxima_etapa_e_explica() {
-    let mut abaixo = com_custo(0.99, 1.0);
-    assert!(proximo_lote(&mut abaixo).is_some());
-    let mut chegou = com_custo(1.0, 1.0);
-    assert!(proximo_lote(&mut chegou).is_none());
-    assert_eq!((chegou.status.as_str(), chegou.parou_por_custo, chegou.fila.len()), ("pausado", true, 1));
-    let erro = chegou.erro.unwrap();
-    assert!(erro.contains("US$ 1.00") && erro.contains("só é conhecido quando ela termina"), "{erro}");
-    // Etapa ainda rodando pode custar mais: espera ela acabar, sem abrir outra.
-    let mut outro_ramo = com_custo(2.0, 1.0);
-    outro_ramo.nos.insert("b".into(), EstadoDoNo { status: "rodando".into(), ..Default::default() });
-    assert!(proximo_lote(&mut outro_ramo).is_none());
-    assert_eq!(outro_ramo.status, "rodando");
-}
-
-/// Retomar é aceitar o gasto: libera mais um `custo_maximo`, sem pausar de novo na mesma hora.
-#[test]
-fn retomar_depois_do_limite_vale_mais_um_limite() {
-    let amb = ambiente();
-    let mut fluxo = paralelo(&[("a", conta("a")), ("b", conta("b"))]);
-    fluxo["custo_maximo"] = json!(0.5);
-    let id = amb.iniciar(fluxo);
-    assert_eq!(ate_parar(&id).status, "concluido", "comando não custa nada");
-    let v = viva(&id).unwrap();
-    mexer(&amb.state, &v, |e| { e.status = "rodando".into(); e.custo_usd = 0.6; e.fila.push(Passo { no: "f".into(), de: Some("depois".into()) }); });
-    soltar(amb.state.clone(), id.clone());
-    let pausada = ate_parar(&id);
-    assert_eq!((pausada.status.as_str(), pausada.aviso.as_deref()), ("pausado", Some("custo")));
-    retomar(&amb.state, &id).unwrap();
-    let e = ate_parar(&id);
-    assert_eq!((e.status.as_str(), e.parou_por_custo, e.erro), ("concluido", false, None));
-    assert!((e.custo_aceito - 0.6).abs() < f64::EPSILON);
 }
 
 #[test]
@@ -359,9 +317,9 @@ fn reprovado_sem_refazer_ou_com_ids_invalidos_roda_todos_os_ramos() {
 /// O id que o revisor manda só escolhe entre as conexões do `nao`: `j` existe mas não está ligado.
 #[test]
 fn refazer_nao_abre_caminho_que_nao_existe() {
-    let e = com_custo(0.0, 1.0);
-    let mut e = Execucao { nos: HashMap::from([("cond".to_owned(), EstadoDoNo { saida: r#"{"veredito":"reprovado","refazer":["j"]}"#.into(), ..Default::default() })]), ..e };
-    e.fluxo = serde_json::from_value(com_revisor(json!(["a", "b"]), ramos_simples(&["a", "b"]).0, ramos_simples(&["a", "b"]).1)).unwrap();
+    let (nos, conexoes) = ramos_simples(&["a", "b"]);
+    let e: Execucao = serde_json::from_value(json!({"id": "x", "projeto": "p", "projeto_id": "p", "entrada": "x", "pasta": ".", "status": "rodando", "criado_ms": 0, "atualizado_ms": 0,
+        "fluxo": com_revisor(json!(["a", "b"]), nos, conexoes), "nos": {"cond": {"status": "concluido", "saida": r#"{"veredito":"reprovado","refazer":["j"]}"#}}, "fila": []})).unwrap();
     assert_eq!(proximos_da_saida(&e, "cond", "nao"), ["a", "b"]);
     assert_eq!(proximos_da_saida(&e, "cond", "sim"), ["f"]);
 }
@@ -378,6 +336,79 @@ fn volta_por_ramo_longo_espera_o_fim_dele_no_juntar() {
     assert_eq!(e.status, "concluido", "{:?}", e.erro);
     assert_eq!((amb.linhas("a2.log"), amb.linhas("b.log"), amb.linhas("rev.log")), (2, 2, 2), "o revisor roda uma vez por volta");
     assert!(e.nos["j"].saida.contains("fim-a-2"), "{}", e.nos["j"].saida);
+}
+
+#[test]
+fn custo_alto_nao_pausa() {
+    let mut e: Execucao = serde_json::from_value(json!({"id": "x", "projeto": "p", "projeto_id": "p", "entrada": "x", "pasta": ".", "status": "rodando", "criado_ms": 0, "atualizado_ms": 0,
+        "fluxo": {"id": "a", "nome": "A", "custo_maximo": 1.0, "nos": [comando("a", "true")], "conexoes": []},
+        "nos": {"a": {"status": "pendente"}}, "fila": [{"no": "a", "de": "e"}], "custo_usd": 500.0})).unwrap();
+    assert!(proximo_lote(&mut e).is_some());
+    assert_eq!(e.status, "rodando");
+}
+
+/// Execução que parou pelo custo antes da mudança: o disco ainda tem a marca, e ela não pode prender nada.
+#[test]
+fn execucao_antiga_pausada_por_custo_retoma() {
+    let amb = ambiente();
+    let id = format!("antiga-{}", novo_id());
+    let e: Execucao = serde_json::from_value(json!({"id": id, "projeto": amb.projeto, "projeto_id": "p", "entrada": "x", "pasta": amb.projeto, "status": "pausado", "criado_ms": 0, "atualizado_ms": 0,
+        "fluxo": {"id": "a", "nome": "A", "custo_maximo": 0.5, "nos": [{"id": "e", "tipo": "entrada"}, comando("c", &conta("c")), {"id": "f", "tipo": "fim"}],
+            "conexoes": [{"de": "e", "para": "c"}, {"de": "c", "para": "f", "saida": "sim"}]},
+        "nos": {"e": {"status": "concluido"}, "c": {"status": "pendente"}, "f": {"status": "pendente"}}, "fila": [{"no": "c", "de": "e"}],
+        "custo_usd": 9.0, "custo_aceito": 0.0, "parou_por_custo": true, "erro": "Pausado pelo limite de custo"})).unwrap();
+    assert!(!serde_json::to_string(&e).unwrap().contains("parou_por_custo"), "a marca morre na leitura");
+    execucoes().lock().unwrap().insert(id.clone(), Arc::new(Mutex::new(e)));
+    retomar(&amb.state, &id).unwrap();
+    let fim = ate_parar(&id);
+    assert_eq!((fim.status.as_str(), fim.erro), ("concluido", None));
+    assert_eq!(amb.linhas("c.log"), 1);
+}
+
+/// Cada ramo só sai quando os 20 chegaram: se algum ficasse esperando vaga, ninguém terminaria.
+#[test]
+fn vinte_ramos_rodam_juntos() {
+    let amb = ambiente();
+    let barreira = "echo x >> chegou.log; for i in $(seq 1 200); do [ $(wc -l < chegou.log) -ge 20 ] && exit 0; sleep 0.05; done; exit 1";
+    let ramos: Vec<String> = (0..20).map(|i| format!("r{i}")).collect();
+    let pares: Vec<(&str, String)> = ramos.iter().map(|id| (id.as_str(), barreira.to_owned())).collect();
+    let e = ate_parar(&amb.iniciar(paralelo(&pares)));
+    assert_eq!(e.status, "concluido", "{:?}", e.erro);
+}
+
+#[test]
+fn max_paralelo_definido_ainda_vale() {
+    let mut e: Execucao = serde_json::from_value(json!({"id": "x", "projeto": "p", "projeto_id": "p", "entrada": "x", "pasta": ".", "status": "rodando", "criado_ms": 0, "atualizado_ms": 0,
+        "fluxo": paralelo(&[("a", conta("a")), ("b", conta("b")), ("c", conta("c"))]), "nos": {}, "fila": [{"no": "a", "de": "e"}, {"no": "b", "de": "e"}, {"no": "c", "de": "e"}]})).unwrap();
+    e.fluxo.max_paralelo = Some(2);
+    assert_eq!(proximo_lote(&mut e).unwrap().len(), 2);
+}
+
+/// entrada → rev → cond, com `nao` voltando para `rev`. Aprova na `passada`.
+fn laco_de_condicao(amb: &Ambiente, config: Value, passada: usize) -> Value {
+    let reprovado = r#"{"veredito":"reprovado"}"#;
+    let vereditos: Vec<&str> = (1..=passada).map(|i| if i == passada { r#"{"veredito":"aprovado"}"# } else { reprovado }).collect();
+    escrever_vereditos(amb, &vereditos);
+    json!({"id": "l", "nome": "L", "na_pasta_do_projeto": true, "nos": [{"id": "e", "tipo": "entrada"},
+        comando("rev", "echo x >> rev.log; cat veredito-$(wc -l < rev.log | tr -d ' ').txt"), {"id": "cond", "tipo": "condicao", "config": config},
+        {"id": "f", "tipo": "fim"}, {"id": "desistiu", "tipo": "fim"}],
+        "conexoes": [{"de": "e", "para": "rev"}, {"de": "rev", "para": "cond", "saida": "sim"}, {"de": "cond", "para": "f", "saida": "sim"},
+            {"de": "cond", "para": "rev", "saida": "nao"}, {"de": "cond", "para": "desistiu", "saida": "esgotado"}]})
+}
+
+#[test]
+fn condicao_sem_max_voltas_nao_esgota_em_3() {
+    let amb = ambiente();
+    let e = ate_parar(&amb.iniciar(laco_de_condicao(&amb, json!({}), 6)));
+    assert_eq!(e.status, "concluido", "{:?}", e.erro);
+    assert_eq!((amb.linhas("rev.log"), e.nos["cond"].caminho.as_deref(), e.nos["desistiu"].status.as_str()), (6, Some("sim"), "pendente"));
+}
+
+#[test]
+fn max_voltas_definido_ainda_esgota() {
+    let amb = ambiente();
+    let e = ate_parar(&amb.iniciar(laco_de_condicao(&amb, json!({"max_voltas": 2}), 6)));
+    assert_eq!((amb.linhas("rev.log"), e.nos["cond"].caminho.as_deref(), e.nos["desistiu"].status.as_str()), (2, Some("esgotado"), "concluido"));
 }
 
 /// `max_voltas` conta passadas: 3 são 3 reprovações, ou seja, 2 voltas e `esgotado` na terceira.
@@ -454,7 +485,7 @@ fn codex_faz_o_que_da_ou_falha_com_motivo() {
 fn pasta_extra_invalida_nao_chega_a_iniciar() {
     let amb = ambiente();
     let mut fluxo: Fluxo = serde_json::from_value(paralelo(&[("a", conta("a")), ("b", conta("b"))])).unwrap();
-    fluxo.pastas_extras = vec!["..".into()];
+    fluxo.pastas_extras = vec!["nao-existe".into()];
     let erro = iniciar(&amb.state, fluxo.clone(), amb.projeto.to_string_lossy().into(), "p".into(), "x".into()).unwrap_err().to_string();
     assert!(erro.contains("Pasta extra"), "{erro}");
     fs::create_dir_all(amb.projeto.parent().unwrap().join("irmao")).unwrap();

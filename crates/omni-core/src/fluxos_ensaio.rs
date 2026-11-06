@@ -209,7 +209,7 @@ mod tests {
         conexoes.extend((0..5).map(|i| json!({"de": format!("r{i}"), "para": "f"})));
         let mut f = fluxo(json!({"id": "c", "nome": "C", "nos": nos, "conexoes": conexoes}));
         let padrao = ensaiar(&f, &[agente("dev", "claude", &[])]);
-        assert_eq!((padrao.agentes, padrao.aprovacoes, padrao.maior_lote), (5, 1, 3), "sem max_paralelo, o teto é 3");
+        assert_eq!((padrao.agentes, padrao.aprovacoes, padrao.maior_lote), (5, 1, 5), "sem max_paralelo, todos juntos");
         f.max_paralelo = Some(4);
         assert_eq!(ensaiar(&f, &[agente("dev", "claude", &[])]).maior_lote, 4);
     }

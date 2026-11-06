@@ -91,12 +91,6 @@ pub struct Execucao {
     /// `pastas_extras` do fluxo já resolvidas contra o projeto: o que vira `--add-dir`.
     #[serde(default)]
     pub pastas_extras: Vec<String>,
-    /// Custo que você já aceitou ao retomar depois do limite: `custo_maximo` conta a partir daqui.
-    #[serde(default)]
-    pub custo_aceito: f64,
-    /// Pausada pelo `custo_maximo`. Só o usuário retoma: o MCP recusa.
-    #[serde(default)]
-    pub parou_por_custo: bool,
     /// Sobe a cada evento que merece aviso, como o `attention_seq` das sessões; `aviso` diz qual foi.
     #[serde(default)]
     pub aviso_seq: u32,
@@ -174,9 +168,8 @@ fn sem_janela(c: &mut Command) {
 }
 
 fn resolver_pastas(fluxo: &Fluxo, projeto: &str) -> Result<Vec<String>> {
-    let home = fluxos::pasta_do_usuario();
     fluxo.pastas_extras.iter().map(|pasta| {
-        fluxos::resolver_pasta_extra(Path::new(projeto), pasta, home.as_deref()).map(|real| fluxos::texto_do_caminho(&real)).map_err(|erro| anyhow!(erro))
+        fluxos::resolver_pasta_extra(Path::new(projeto), pasta).map(|real| fluxos::texto_do_caminho(&real)).map_err(|erro| anyhow!(erro))
     }).collect()
 }
 
@@ -210,7 +203,7 @@ pub fn iniciar(state: &Arc<EngineState>, fluxo: Fluxo, projeto: String, projeto_
     let pilha = vec![fluxo.nome.clone()];
     let e = Execucao { id: id.clone(), fluxo, projeto, projeto_id, entrada, pasta, branch, base, status: "rodando".into(), erro: None,
         criado_ms: agora, atualizado_ms: agora, nos, fila: vec![Passo { no: inicio, de: None }], pr_url: None, custo_usd: 0.0,
-        pastas_extras, custo_aceito: 0.0, parou_por_custo: false, aviso_seq: 0, aviso: None, evento_seq: 0, pai: None, pilha };
+        pastas_extras, aviso_seq: 0, aviso: None, evento_seq: 0, pai: None, pilha };
     gravar(state, &e);
     execucoes().lock().map_err(|_| anyhow!("execucoes"))?.insert(id.clone(), Arc::new(Mutex::new(e.clone())));
     soltar(state.clone(), id);
@@ -252,22 +245,10 @@ fn registrar_aviso(e: &mut Execucao) {
         "aguardando" => "aprovacao",
         "falhou" => "falhou",
         "concluido" => "concluido",
-        "pausado" if e.parou_por_custo => "custo",
         _ => return,
     };
     e.aviso = Some(aviso.into());
     e.aviso_seq += 1;
-}
-
-fn estourou_o_custo(e: &Execucao) -> bool {
-    e.fluxo.custo_maximo.is_some_and(|maximo| e.custo_usd - e.custo_aceito >= maximo)
-}
-
-fn pausar_por_custo(e: &mut Execucao) {
-    let maximo = e.fluxo.custo_maximo.unwrap_or_default();
-    e.parou_por_custo = true;
-    e.status = "pausado".into();
-    e.erro = Some(format!("Pausado pelo limite de custo: US$ {:.2} gastos, limite de US$ {maximo:.2}. O custo de uma etapa só é conhecido quando ela termina, então o total pode passar do limite. Ao retomar, vale mais US$ {maximo:.2}.", e.custo_usd));
 }
 
 /// Tira da fila o que pode rodar agora. Conta o que já está rodando porque `aprovar` solta outro
@@ -278,10 +259,6 @@ fn proximo_lote(e: &mut Execucao) -> Option<Vec<Passo>> {
     let rodando = e.nos.values().filter(|n| n.status == "rodando").count();
     if e.fila.is_empty() {
         if rodando == 0 { e.status = "concluido".into(); }
-        return None;
-    }
-    if estourou_o_custo(e) {
-        if rodando == 0 { pausar_por_custo(e); }
         return None;
     }
     let vagas = fluxos::limite_paralelo(&e.fluxo).saturating_sub(rodando).min(e.fila.len());
@@ -357,7 +334,7 @@ fn processar(state: &Arc<EngineState>, v: &Viva, passo: &Passo) -> Result<()> {
             String::new()
         }
         TipoDeNo::Condicao => {
-            let max = no.config["max_voltas"].as_u64().unwrap_or(3) as u32;
+            let max = fluxos::max_voltas(&no);
             let ok = fluxos::veredito(&ctx.anterior).unwrap_or(false);
             let saida = mexer(state, v, |e| {
                 let n = e.nos.get_mut(&no.id).expect("no");
@@ -381,7 +358,7 @@ fn processar(state: &Arc<EngineState>, v: &Viva, passo: &Passo) -> Result<()> {
         TipoDeNo::Comando => {
             let comando = no.config["comando"].as_str().unwrap_or_default().to_owned();
             let (ok, saida) = rodar_comando(state, v, &no.id, &comando, &pasta)?;
-            let max = no.config["max_voltas"].as_u64().unwrap_or(3).max(1) as u32;
+            let max = fluxos::max_voltas(&no);
             let caminho = mexer(state, v, |e| {
                 let n = e.nos.get_mut(&no.id).expect("no");
                 if ok { "sim" } else { n.voltas += 1; if n.voltas >= max { "esgotado" } else { "nao" } }
@@ -738,7 +715,7 @@ fn rodar_comando(state: &EngineState, v: &Viva, no: &str, comando: &str, pasta: 
 /// numa rodada ou acabar o limite. O primeiro participante escreve a ata.
 fn rodar_sala(state: &Arc<EngineState>, v: &Viva, no: &fluxos::No, ctx: &Contexto, pasta: &str, projeto: &str) -> Result<String> {
     let participantes = fluxos::participantes(no);
-    let rodadas = no.config["rodadas"].as_u64().unwrap_or(3).clamp(1, 10) as u32;
+    let rodadas = fluxos::rodadas_da_sala(no);
     let objetivo = no.config["objetivo"].as_str().unwrap_or("{{entrada}}").replace("{{entrada}}", &ctx.entrada).replace("{{anterior}}", &ctx.anterior);
     let mut conversa: Vec<(String, String)> = Vec::new();
     for rodada in 1..=rodadas {
@@ -866,7 +843,6 @@ pub fn retomar(state: &Arc<EngineState>, id: &str) -> Result<()> {
         if e.status != "pausado" && e.status != "falhou" { return Err(anyhow!("Só dá para retomar uma execução pausada ou que falhou")); }
         devolver_para_a_fila(e);
         for n in e.nos.values_mut().filter(|n| n.status == "pausado" || n.status == "falhou") { n.status = "pendente".into(); n.erro = None; }
-        if std::mem::take(&mut e.parou_por_custo) { e.custo_aceito = e.custo_usd; }
         // Um ramo falhou enquanto outro esperava aprovação: a pergunta continua de pé, e a fila anda depois da resposta.
         e.status = if e.nos.values().any(|n| n.status == "aguardando") { "aguardando".into() } else { "rodando".into() };
         e.erro = None;

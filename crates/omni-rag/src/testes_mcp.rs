@@ -195,9 +195,8 @@ fn substituir_nao_alcanca_fluxo_do_usuario() {
     assert_eq!(fs::read(pasta.join("tarefa-pr.json")).expect("pronto"), original);
 }
 
-fn rotas_para_rodar(caminho: &Path, ativas: usize) -> Vec<(&'static str, u16, Value)> {
+fn rotas_para_rodar(caminho: &Path) -> Vec<(&'static str, u16, Value)> {
     vec![
-        ("GET /fluxos/execucoes", 200, Value::Array(vec![json!({"status": "rodando"}); ativas])),
         ("GET /projetos", 200, json!({"projects": [
             {"id": "raiz", "name": "Raiz", "path": caminho.parent().expect("pai").to_string_lossy()},
             {"id": "proj", "name": "Projeto", "path": caminho.to_string_lossy()}
@@ -210,7 +209,7 @@ fn rotas_para_rodar(caminho: &Path, ativas: usize) -> Vec<(&'static str, u16, Va
 fn rodar_fluxo_usa_o_projeto_mais_especifico_da_pasta_atual() {
     let semente = ambiente(1);
     let pasta = semente.contexto.pasta_atual.clone().expect("pasta");
-    let (porta, pedidos) = engine_falso(rotas_para_rodar(&pasta, 0));
+    let (porta, pedidos) = engine_falso(rotas_para_rodar(&pasta));
     let contexto = Contexto { porta, ..semente.contexto };
     fluxo(&contexto, "criar_fluxo", json!({"fluxo": fluxo_de_comando()})).expect("salvou");
     let resposta = fluxo(&contexto, "rodar_fluxo", json!({"id": "agente-teste-mcp", "entrada": "faça"})).expect("rodou");
@@ -223,35 +222,10 @@ fn rodar_fluxo_usa_o_projeto_mais_especifico_da_pasta_atual() {
 }
 
 #[test]
-fn rodar_fluxo_para_no_teto_de_execucoes_ativas() {
-    let semente = ambiente(1);
-    let pasta = semente.contexto.pasta_atual.clone().expect("pasta");
-    let (porta, pedidos) = engine_falso(rotas_para_rodar(&pasta, mcp_fluxos::EXECUCOES_SIMULTANEAS));
-    let contexto = Contexto { porta, ..semente.contexto };
-    let erro = fluxo(&contexto, "rodar_fluxo", json!({"id": "teste-mcp", "entrada": "faça"})).expect_err("teto");
-    assert!(erro.contains("execuções ativas"));
-    assert!(!pedidos.lock().expect("pedidos").iter().any(|pedido| pedido["method"] == "POST"));
-}
-
-#[test]
-fn rodar_fluxo_conta_pausada_no_teto_e_falha_fechado() {
-    let semente = ambiente(1);
-    let pasta = semente.contexto.pasta_atual.clone().expect("pasta");
-    let mut rotas = rotas_para_rodar(&pasta, 0);
-    rotas[0].2 = Value::Array(vec![json!({"status": "pausado"}); mcp_fluxos::EXECUCOES_SIMULTANEAS]);
-    let (porta, _) = engine_falso(rotas);
-    let contexto = Contexto { porta, ..semente.contexto };
-    assert!(fluxo(&contexto, "rodar_fluxo", json!({"id": "x", "entrada": "faça"})).expect_err("teto").contains("ativas"));
-    let (porta, _) = engine_falso(vec![("GET /fluxos/execucoes", 200, json!({"inesperado": true}))]);
-    let contexto = Contexto { porta, ..contexto };
-    assert!(fluxo(&contexto, "rodar_fluxo", json!({"id": "x", "entrada": "faça"})).is_err());
-}
-
-#[test]
 fn rodar_fluxo_barra_fluxo_do_projeto_sem_aprovacao() {
     let semente = ambiente(1);
     let pasta = semente.contexto.pasta_atual.clone().expect("pasta");
-    let (porta, pedidos) = engine_falso(rotas_para_rodar(&pasta, 0));
+    let (porta, pedidos) = engine_falso(rotas_para_rodar(&pasta));
     let contexto = Contexto { porta, ..semente.contexto };
     let destino = omni_core::fluxos::pasta_do_projeto(&pasta);
     fs::create_dir_all(&destino).expect("pasta");
@@ -265,7 +239,7 @@ fn rodar_fluxo_barra_fluxo_do_projeto_sem_aprovacao() {
 fn rodar_fluxo_aceita_fluxo_global_feito_pelo_usuario() {
     let semente = ambiente(1);
     let pasta = semente.contexto.pasta_atual.clone().expect("pasta");
-    let (porta, _) = engine_falso(rotas_para_rodar(&pasta, 0));
+    let (porta, _) = engine_falso(rotas_para_rodar(&pasta));
     let contexto = Contexto { porta, ..semente.contexto };
     let destino = contexto.fluxos_globais.clone().expect("global");
     fs::create_dir_all(&destino).expect("pasta");

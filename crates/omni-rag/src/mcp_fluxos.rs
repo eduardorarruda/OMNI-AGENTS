@@ -17,8 +17,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// Um agente dentro de um fluxo também alcança estas ferramentas: o teto impede fluxo disparando fluxo.
-pub const EXECUCOES_SIMULTANEAS: usize = 3;
 /// Marca o que o agente criou: só isso ele pode sobrescrever.
 pub const PREFIXO_DO_AGENTE: &str = "agente-";
 /// Ferramentas de agente que alcançam o shell ou disparam outros fluxos.
@@ -193,10 +191,6 @@ fn escolher_projeto(lista: &[Value], pedido: Option<&str>, pasta: Option<&Path>)
     achado.cloned().ok_or_else(|| "Projeto não encontrado. Use listar_projetos e informe `projeto`.".into())
 }
 
-fn ativa(execucao: &Value) -> bool {
-    matches!(execucao["status"].as_str(), Some("rodando" | "aguardando" | "pausado"))
-}
-
 /// Fluxo global sem o prefixo foi o usuário quem fez na tela. Os outros podem ter vindo do agente ou
 /// de um repositório clonado.
 fn exige_aprovacao(salvo: &fluxos::FluxoSalvo) -> bool {
@@ -206,11 +200,6 @@ fn exige_aprovacao(salvo: &fluxos::FluxoSalvo) -> bool {
 fn rodar(contexto: &Contexto, argumentos: &Value) -> Result<String, String> {
     let id = argumentos["id"].as_str().ok_or("informe o id do fluxo")?;
     let entrada = argumentos["entrada"].as_str().filter(|texto| !texto.trim().is_empty()).ok_or("informe a entrada")?;
-    let lista = api(contexto, "GET", "/fluxos/execucoes", None)?;
-    let ativas = lista.as_array().ok_or("O OMNI não informou as execuções ativas.")?.iter().filter(|item| ativa(item)).count();
-    if ativas >= EXECUCOES_SIMULTANEAS {
-        return Err(format!("Já há {ativas} execuções ativas. Espere uma terminar ou cancele antes de iniciar outra."));
-    }
     let projeto = escolher_projeto(&projetos(contexto)?, argumentos["projeto"].as_str(), contexto.pasta_atual.as_deref())?;
     let caminho = projeto["path"].as_str().unwrap_or_default();
     let salvos = fluxos::listar(contexto.fluxos_globais.as_deref(), Some(Path::new(caminho)));
@@ -330,9 +319,8 @@ fn conferir_mcp(contexto: &Contexto) -> Result<(), String> {
 }
 
 fn conferir_pastas(fluxo: &fluxos::Fluxo, projeto: &Path, problemas: &mut Vec<String>) {
-    let home = fluxos::pasta_do_usuario();
     for pasta in &fluxo.pastas_extras {
-        let aberta = fluxos::resolver_pasta_extra(projeto, pasta, home.as_deref())
+        let aberta = fluxos::resolver_pasta_extra(projeto, pasta)
             .and_then(|real| fs::read_dir(real).map_err(|erro| format!("Pasta extra “{pasta}”: não abre ({erro})")));
         if let Err(erro) = aberta { problemas.push(erro); }
     }

@@ -28,7 +28,7 @@ import { SeletorDeSubfluxo, TrilhaDeSubfluxo } from "./TrilhaDeSubfluxo";
 import "./fluxos.css";
 import {
   abrirConversaDoNo, acaoNaExecucao, apagarFluxo, aprovarNo, avisosDoFluxo, criarFluxoComIa, etapasDoFluxo, fluxoVazio, historicoDoNo, iniciarExecucao,
-  lerJsonDeFluxo, listarConversasParaFluxo, listarExecucoes, listarFluxos, obterExecucao, pedidoComConversa, SAIDAS, salvarFluxo, TIPOS, validarFluxo,
+  lerJsonDeFluxo, limiteDoCampo, listarConversasParaFluxo, listarExecucoes, listarFluxos, obterExecucao, pedidoComConversa, SAIDAS, salvarFluxo, TIPOS, validarFluxo,
   type Execucao, type Fluxo, type FluxoGerado, type FluxoSalvo, type ItemDoHistorico, type NoDoFluxo, type ResumoDaExecucao, type TipoDeNo,
 } from "./fluxosService";
 
@@ -228,7 +228,7 @@ function Fluxos({ projectId, projectPath, onAbrirSessao, onClose }: Props) {
   }, [emExecucao]);
 
   function abrirFluxo(f: Fluxo | null, info?: { escopo: "global" | "projeto"; id?: string }) {
-    const base = f ? { id: f.id, nome: f.nome, descricao: f.descricao, nos: f.nos, conexoes: f.conexoes, na_pasta_do_projeto: f.na_pasta_do_projeto, max_paralelo: f.max_paralelo, pastas_extras: f.pastas_extras, custo_maximo: f.custo_maximo } : fluxoVazio();
+    const base = f ? { id: f.id, nome: f.nome, descricao: f.descricao, nos: f.nos, conexoes: f.conexoes, na_pasta_do_projeto: f.na_pasta_do_projeto, max_paralelo: f.max_paralelo, pastas_extras: f.pastas_extras } : fluxoVazio();
     setRascunho(structuredClone(base));
     setOrigem(info ?? null);
     setEscopo(info?.escopo ?? "global");
@@ -246,7 +246,7 @@ function Fluxos({ projectId, projectPath, onAbrirSessao, onClose }: Props) {
     const novo: NoDoFluxo = {
       id: `${tipo}-${n}`, tipo, titulo: NOME_TIPO[tipo], x: Math.round(centro.x - 110), y: Math.round(centro.y - 40),
       agente: tipo === "agente" ? nomes[0] ?? "" : undefined,
-      config: tipo === "condicao" ? { max_voltas: 3 } : tipo === "comando" ? { comando: "", max_voltas: 3 } : tipo === "sala" ? { participantes: nomes.slice(0, 3), rodadas: 3, objetivo: "{{entrada}}" } : tipo === "aprovacao" ? { pergunta: "Continuar?" } : {},
+      config: tipo === "comando" ? { comando: "" } : tipo === "sala" ? { participantes: nomes.slice(0, 3), rodadas: 3, objetivo: "{{entrada}}" } : tipo === "aprovacao" ? { pergunta: "Continuar?" } : {},
     };
     mudarRascunho((r) => ({ ...r, nos: [...r.nos, novo] }));
     setSelecionado(novo.id);
@@ -647,8 +647,8 @@ function PainelDoNo({ no, agentes, modelos, projectPath, fluxos, fluxoAtual, onM
       {no.tipo === "condicao" && (
         <>
           <p className="fx-dica">Lê o veredito da etapa anterior (bloco JSON <code>{"{\"veredito\": \"aprovado\"}"}</code>, como o do QA e do revisor). Aprovado → <b className="manual-sim">sim</b>; reprovado → <b className="manual-nao">não</b>; passou do limite → <b className="manual-esgotou">esgotou</b>.</p>
-          <Field label="Limite de voltas" htmlFor="fx-voltas">
-            <Input id="fx-voltas" type="number" min={1} max={10} size="sm" value={Number(no.config.max_voltas ?? 3)} onChange={(e) => cfg({ max_voltas: Math.max(1, Math.min(10, Number(e.target.value) || 1)) })} />
+          <Field label="Limite de voltas" htmlFor="fx-voltas" description="Vazio = sem limite: só para quando aprovar ou no botão Parar.">
+            <Input id="fx-voltas" type="number" min={1} size="sm" placeholder="Sem limite" value={String(no.config.max_voltas ?? "")} onChange={(e) => cfg({ max_voltas: limiteDoCampo(e.target.value) })} />
           </Field>
         </>
       )}
@@ -668,7 +668,7 @@ function PainelDoNo({ no, agentes, modelos, projectPath, fluxos, fluxoAtual, onM
             </div>
           </Field>
           <Field label="Rodadas (máximo)" htmlFor="fx-rodadas">
-            <Input id="fx-rodadas" type="number" min={1} max={10} size="sm" value={Number(no.config.rodadas ?? 3)} onChange={(e) => cfg({ rodadas: Math.max(1, Math.min(10, Number(e.target.value) || 1)) })} />
+            <Input id="fx-rodadas" type="number" min={1} size="sm" value={Number(no.config.rodadas ?? 3)} onChange={(e) => cfg({ rodadas: limiteDoCampo(e.target.value) ?? 1 })} />
           </Field>
           <Field label="Objetivo da reunião" htmlFor="fx-objetivo" description="Use {{entrada}} para a tarefa digitada.">
             <Textarea id="fx-objetivo" rows={4} value={String(no.config.objetivo ?? "{{entrada}}")} onChange={(e) => cfg({ objetivo: e.target.value })} />
@@ -680,8 +680,8 @@ function PainelDoNo({ no, agentes, modelos, projectPath, fluxos, fluxoAtual, onM
           <Field label="Comando" htmlFor="fx-comando" description="Roda na pasta da execução, no shell do sistema (cmd no Windows). Saiu com 0 → sim; deu erro → não. A tarefa digitada não entra no comando.">
             <Textarea id="fx-comando" rows={3} className="font-mono text-xs" placeholder="npm test" value={String(no.config.comando ?? "")} onChange={(e) => cfg({ comando: e.target.value })} />
           </Field>
-          <Field label="Tentativas (máximo)" htmlFor="fx-tentativas" description="Depois de falhar tantas vezes, sai por “esgotou” em vez de “não”.">
-            <Input id="fx-tentativas" type="number" min={1} max={10} size="sm" value={Number(no.config.max_voltas ?? 3)} onChange={(e) => cfg({ max_voltas: Math.max(1, Math.min(10, Number(e.target.value) || 1)) })} />
+          <Field label="Tentativas (máximo)" htmlFor="fx-tentativas" description="Depois de falhar tantas vezes, sai por “esgotou” em vez de “não”. Vazio = sem limite.">
+            <Input id="fx-tentativas" type="number" min={1} size="sm" placeholder="Sem limite" value={String(no.config.max_voltas ?? "")} onChange={(e) => cfg({ max_voltas: limiteDoCampo(e.target.value) })} />
           </Field>
           <p className="fx-dica">Ligue o “não” a um agente que corrige e volte para cá: vira um loop de “testa → corrige → testa”. Sem nada no “não”, uma falha para a execução.</p>
         </>

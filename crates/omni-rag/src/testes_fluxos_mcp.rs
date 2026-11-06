@@ -106,8 +106,15 @@ fn criar_fluxo_recusa_caminho_que_alarga_e_marcador_sem_etapa() {
     let (local, _) = ambiente(vec![]);
     let leitor = || json!([agente("leitor", "claude", json!(["Read"]))]);
     assert!(criar(&local, fluxo_de_agente("a1", "leitor", json!({"escrita": ["../fora"]}), json!({})), leitor()).expect_err("..").contains("escrita"));
-    assert!(criar(&local, fluxo_de_agente("a2", "leitor", json!({"escrita": []}), json!({"pastas_extras": ["/"]})), leitor()).expect_err("/").contains("raiz"));
     assert!(criar(&local, fluxo_de_agente("a3", "leitor", json!({"config": {"prompt": "{{no:nada}}"}}), json!({})), leitor()).expect_err("marcador").contains("nada"));
+}
+
+#[test]
+fn mcp_aceita_quarta_execucao() {
+    let (local, pedidos) = ambiente(vec![json!({"id": "quarta"})]);
+    gravar_fluxo(&local, &json!({"id": "meu", "nome": "M", "nos": [{"id": "e", "tipo": "entrada"}, {"id": "f", "tipo": "fim"}], "conexoes": [{"de": "e", "para": "f"}]}));
+    chamar(&local, "rodar_fluxo", json!({"id": "meu", "entrada": "x"})).expect("sem teto de execuções");
+    assert!(pedidos.lock().expect("pedidos").iter().any(|pedido| pedido == "POST /fluxos/execucoes"));
 }
 
 #[test]

@@ -75,7 +75,7 @@ fn nova_filha(pai: &Execucao, no: &str, id: String, fluxo: Fluxo, entrada: Strin
     Ok(Execucao { id, nos: estados_iniciais(&fluxo), fluxo, projeto: pai.projeto.clone(), projeto_id: pai.projeto_id.clone(), entrada,
         pasta: pai.pasta.clone(), branch: pai.branch.clone(), base: pai.base.clone(), status: "rodando".into(), erro: None,
         criado_ms: agora, atualizado_ms: agora, fila: vec![Passo { no: inicio, de: None }], pr_url: None, custo_usd: 0.0,
-        pastas_extras, custo_aceito: 0.0, parou_por_custo: false, aviso_seq: 0, aviso: None, evento_seq: 0,
+        pastas_extras, aviso_seq: 0, aviso: None, evento_seq: 0,
         pai: Some(RefDoPai { execucao: pai.id.clone(), no: no.to_owned() }), pilha })
 }
 
@@ -144,10 +144,9 @@ pub fn cancelar_filhas(state: &EngineState, id: &str) {
 }
 
 /// Retoma as filhas paradas, antes do pai: a espera dele não pode ver a falha antiga como resposta nova.
-/// Filha parada pelo custo fica para o usuário: o MCP pode retomar o pai, e esse gasto ele não libera.
 pub fn retomar_filhas(state: &Arc<EngineState>, id: &str) {
     for filha in filhas_de(id) {
-        if !obter(&filha).is_some_and(|e| matches!(e.status.as_str(), "pausado" | "falhou") && !e.parou_por_custo) { continue; }
+        if !obter(&filha).is_some_and(|e| matches!(e.status.as_str(), "pausado" | "falhou")) { continue; }
         if let Err(erro) = retomar(state, &filha) { eprintln!("fluxos: não consegui retomar a filha {filha}: {erro:#}"); }
     }
 }
