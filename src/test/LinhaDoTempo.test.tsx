@@ -82,3 +82,20 @@ it("LinhaDoTempo para de consultar ao desmontar", async () => {
   await passa(10000);
   expect(lerEventos.mock.calls.length).toBe(n);
 });
+
+it("LinhaDoTempo terminada com leitura falhando não promete nova tentativa", async () => {
+  lerEventos.mockRejectedValue(new Error("fora"));
+  render(<LinhaDoTempo execucaoId="x" viva={false} />);
+  await passa(0);
+  expect(screen.getByRole("status")).toHaveTextContent("Não foi possível ler a linha do tempo.");
+  expect(screen.getByRole("status")).not.toHaveTextContent("Tentando");
+});
+
+it("LinhaDoTempo para a repetição quando a página cheia só traz eventos já vistos", async () => {
+  const pagina = Array.from({ length: 500 }, (_, i) => ev(i + 1, `e${i + 1}`));
+  lerEventos.mockResolvedValue(pagina);
+  render(<LinhaDoTempo execucaoId="x" viva={false} />);
+  await passa(0);
+  expect(lerEventos).toHaveBeenCalledTimes(2);
+  expect(screen.getAllByText("e1")).toHaveLength(1);
+});

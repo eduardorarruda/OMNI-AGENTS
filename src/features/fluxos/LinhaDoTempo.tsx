@@ -43,7 +43,7 @@ export function LinhaDoTempo({ execucaoId, viva, titulos = {} }: { execucaoId: s
   return (
     <section className="fx-tempo" aria-label="Linha do tempo">
       <p className="fx-rotulo">Linha do tempo</p>
-      {falhou && <p role="status" className="fx-dica">Não foi possível atualizar a linha do tempo. Tentando de novo…</p>}
+      {falhou && <p role="status" className="fx-dica">{viva ? "Não foi possível atualizar a linha do tempo. Tentando de novo…" : "Não foi possível ler a linha do tempo."}</p>}
       {eventos.length === 0 ? <p className="fx-dica">{viva ? "Começando…" : "Sem eventos."}</p> : (
         <ol className="fx-tempo-lista">
           {eventos.map((e) => (
