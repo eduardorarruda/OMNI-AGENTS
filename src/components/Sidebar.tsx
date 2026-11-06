@@ -11,6 +11,7 @@ import {
   ImageIcon,
   GitBranchIcon,
   KanbanIcon,
+  ClockIcon,
   ReloadIcon,
   ServerIcon,
   SlidersIcon as Sliders,
@@ -41,6 +42,9 @@ import { KanbanPanel } from "./KanbanPanel";
 import { SkillsList } from "./SkillsList";
 import { AvatarDoProjeto, SimboloDoProjeto } from "./EscolherIcone";
 import { useProjetoDaPasta } from "../features/projects/projetosContext";
+import { SegundoPlanoPanel } from "../features/segundoPlano/SegundoPlanoPanel";
+import { useSegundoPlano } from "../features/segundoPlano/useSegundoPlano";
+import { pedirExecucao } from "../features/fluxos/pedidoDeExecucao";
 import { RecentesConversas } from "../features/history/RecentesConversas";
 import type { HistoryEntry } from "../features/history/historyService";
 /* O mesmo arquivo que o Tauri usa como ícone do app (tauri.conf.json →
@@ -49,7 +53,7 @@ import type { HistoryEntry } from "../features/history/historyService";
 
 /** Abas da lateral, uma por ícone na fileira do topo. "geral" junta atenção, workspaces, projetos,
  *  conversas e terminais; as outras são uma ferramenta do projeto cada. */
-type Aba = "geral" | "files" | "git" | "docker" | "servidores" | "skills" | "kanban";
+type Aba = "geral" | "files" | "git" | "docker" | "servidores" | "skills" | "kanban" | "segundoPlano";
 const ABAS: Record<Aba, { rotulo: string; icone: React.ComponentType<{ className?: string; "aria-hidden"?: boolean }>; precisaProjeto: boolean }> = {
   geral: { rotulo: "Conversas", icone: ChatIcon, precisaProjeto: false },
   files: { rotulo: "Arquivos", icone: FolderIcon, precisaProjeto: true },
@@ -58,6 +62,7 @@ const ABAS: Record<Aba, { rotulo: string; icone: React.ComponentType<{ className
   servidores: { rotulo: "Servidores locais", icone: ServerIcon, precisaProjeto: false },
   skills: { rotulo: "Skills", icone: BookIcon, precisaProjeto: true },
   kanban: { rotulo: "Kanban", icone: KanbanIcon, precisaProjeto: true },
+  segundoPlano: { rotulo: "Tarefas em segundo plano", icone: ClockIcon, precisaProjeto: false },
 };
 const CHAVE_ABAS = "omni-lateral-abas";
 /** Ordem salva das abas (arrastando os ícones); aba nova de uma versão futura entra no fim. */
@@ -250,6 +255,8 @@ export function Sidebar({
 
   const pastasDosProjetos = useMemo(() => projects.map((project) => project.path), [projects]);
   // Avisos na aba das conversas: quantos pedem atenção e se algum agente está trabalhando agora.
+  const segundoPlano = useSegundoPlano(activeProjectId);
+  const abrirFluxoEmFundo = (id: string) => { pedirExecucao(id); onOpenFluxos?.(); };
   const trabalhando = [...agentSessions, ...terminalSessions].some((session) => session.provider && session.state === "working");
   useEffect(() => {
     try { localStorage.setItem(CHAVE_LARGURA, String(largura)); } catch { /* sem armazenamento: vale só agora */ }
@@ -298,9 +305,10 @@ export function Sidebar({
         <span ref={indicador} aria-hidden className="lateral-abas-marcador" />
         {ordemAbas.map((id) => {
           const { rotulo, icone: Icone } = ABAS[id];
-          const avisos = id === "geral" ? attention.length : 0;
+          const emFundo = id === "segundoPlano" ? segundoPlano.itens.length : 0;
+          const avisos = id === "geral" ? attention.length : emFundo;
           const vivo = id === "geral" && trabalhando;
-          const extra = [avisos > 0 && `${avisos} pedindo atenção`, vivo && "agente trabalhando"].filter(Boolean).join(" · ");
+          const extra = [id === "geral" && avisos > 0 && `${avisos} pedindo atenção`, emFundo > 0 && `${emFundo} em andamento`, vivo && "agente trabalhando"].filter(Boolean).join(" · ");
           return (
             <button key={id} ref={(el) => { botoesAba.current[id] = el; }}
               type="button" aria-pressed={aba === id} aria-controls={`lateral-aba-${id}`}
@@ -514,6 +522,12 @@ Arraste para mudar a ordem`}
                   <ServidoresPanel />
                 ) : id === "skills" ? (
                   <SkillsList projectPath={activeProjectPath} onOpenFile={onOpenFile} />
+                ) : id === "segundoPlano" ? (
+                  <SegundoPlanoPanel projetoId={activeProjectId} onAbrirFluxo={abrirFluxoEmFundo}
+                    onAbrirConversa={(conversaId) => {
+                      const sessao = agentSessions.find((x) => x.conversation_id === conversaId);
+                      if (sessao) onAttachTerminal(sessao.id, sessao.name);
+                    }} />
                 ) : id === "git" ? (
                   <GitPanel projectPath={activeProjectPath} onOpenDiff={onOpenGitDiff} onOpenGraph={onOpenGitGraph} />
                 ) : (
