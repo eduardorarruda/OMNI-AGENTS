@@ -51,10 +51,17 @@ pub struct EstadoDoNo {
     /// Quantas vezes o nó começou a rodar (a segunda em diante é uma volta nova no log).
     #[serde(default)]
     pub corridas: u32,
+    /// Execução filha aberta por um nó Subfluxo. Existindo, o nó espera por ela em vez de abrir outra.
+    #[serde(default)]
+    pub filha: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Passo { pub no: String, #[serde(default)] pub de: Option<String> }
+
+/// De onde uma execução filha foi chamada.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct RefDoPai { pub execucao: String, pub no: String }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Execucao {
@@ -98,6 +105,12 @@ pub struct Execucao {
     /// Número do último evento da linha do tempo (`eventos.jsonl`); o próximo é este + 1.
     #[serde(default)]
     pub evento_seq: u64,
+    /// Só a execução filha tem: quem a chamou.
+    #[serde(default)]
+    pub pai: Option<RefDoPai>,
+    /// Nomes dos fluxos da raiz até esta execução: a trilha `X › Y › Z`.
+    #[serde(default)]
+    pub pilha: Vec<String>,
 }
 
 type Viva = Arc<Mutex<Execucao>>;
@@ -119,15 +132,19 @@ use omni_core::fluxos::id_valido;
 /// da CLI morreu junto com o engine, e retomar é decisão sua.
 pub fn carregar(state: &EngineState) {
     let Ok(entradas) = fs::read_dir(pasta_execucoes(state)) else { return };
-    let mut mapa = execucoes().lock().expect("execucoes");
+    let mut lidas = Vec::new();
     for caminho in entradas.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")) {
         let Ok(mut e) = serde_json::from_slice::<Execucao>(&fs::read(&caminho).unwrap_or_default()) else { continue };
-        if e.status == "rodando" {
+        // `aguardando` com etapa rodando: outro ramo parou na aprovação, e sem executor essa etapa travaria a execução.
+        if e.status == "rodando" || (e.status == "aguardando" && e.nos.values().any(|n| n.status == "rodando")) {
             e.status = "pausado".into();
             for no in e.nos.values_mut().filter(|n| n.status == "rodando") { no.status = "pausado".into(); }
         }
-        mapa.insert(e.id.clone(), Arc::new(Mutex::new(e)));
+        lidas.push(e);
     }
+    subfluxo::pausar_cadeias_carregadas(&mut lidas);
+    let mut mapa = execucoes().lock().expect("execucoes");
+    for e in lidas { mapa.insert(e.id.clone(), Arc::new(Mutex::new(e))); }
 }
 
 pub fn listar() -> Vec<Value> {
@@ -163,13 +180,15 @@ fn resolver_pastas(fluxo: &Fluxo, projeto: &str) -> Result<Vec<String>> {
     }).collect()
 }
 
+fn novo_id() -> String { format!("exec-{}-{:04x}", now_ms(), rand::random::<u16>()) }
+
 /// Começa uma execução: prepara o worktree e solta a thread.
 pub fn iniciar(state: &Arc<EngineState>, fluxo: Fluxo, projeto: String, projeto_id: String, entrada: String) -> Result<Execucao> {
     fluxos::validar(&fluxo).map_err(|e| anyhow!(e))?;
     if entrada.trim().is_empty() { return Err(anyhow!("Escreva a tarefa")); }
     if !Path::new(&projeto).is_dir() { return Err(anyhow!("A pasta do projeto não existe neste PC")); }
     let agora = now_ms();
-    let id = format!("exec-{agora}-{:04x}", rand::random::<u16>());
+    let id = novo_id();
     let tem_git = git(&projeto, &["rev-parse", "--is-inside-work-tree"]).is_ok_and(|s| s == "true");
     let tem_pr = fluxo.nos.iter().any(|n| n.tipo == TipoDeNo::Pr);
     if tem_pr && !tem_git { return Err(anyhow!("Este fluxo abre um PR, mas o projeto não é um repositório git")); }
@@ -187,14 +206,19 @@ pub fn iniciar(state: &Arc<EngineState>, fluxo: Fluxo, projeto: String, projeto_
     };
     let pastas_extras = resolver_pastas(&fluxo, &projeto)?;
     let inicio = fluxos::entrada(&fluxo).ok_or_else(|| anyhow!("sem entrada"))?.id.clone();
-    let nos = fluxo.nos.iter().map(|n| (n.id.clone(), EstadoDoNo { status: "pendente".into(), ..Default::default() })).collect();
+    let nos = estados_iniciais(&fluxo);
+    let pilha = vec![fluxo.nome.clone()];
     let e = Execucao { id: id.clone(), fluxo, projeto, projeto_id, entrada, pasta, branch, base, status: "rodando".into(), erro: None,
         criado_ms: agora, atualizado_ms: agora, nos, fila: vec![Passo { no: inicio, de: None }], pr_url: None, custo_usd: 0.0,
-        pastas_extras, custo_aceito: 0.0, parou_por_custo: false, aviso_seq: 0, aviso: None, evento_seq: 0 };
+        pastas_extras, custo_aceito: 0.0, parou_por_custo: false, aviso_seq: 0, aviso: None, evento_seq: 0, pai: None, pilha };
     gravar(state, &e);
     execucoes().lock().map_err(|_| anyhow!("execucoes"))?.insert(id.clone(), Arc::new(Mutex::new(e.clone())));
     soltar(state.clone(), id);
     Ok(e)
+}
+
+fn estados_iniciais(fluxo: &Fluxo) -> HashMap<String, EstadoDoNo> {
+    fluxo.nos.iter().map(|n| (n.id.clone(), EstadoDoNo { status: "pendente".into(), ..Default::default() })).collect()
 }
 
 /// Muda o que o nó está fazendo; só vira linha na linha do tempo quando o texto muda de verdade.
@@ -353,8 +377,7 @@ fn processar(state: &Arc<EngineState>, v: &Viva, passo: &Passo) -> Result<()> {
         }
         TipoDeNo::Sala => { let ata = rodar_sala(state, v, &no, &ctx, &pasta, &projeto)?; definir_saida(state, v, &no.id, ata); String::new() }
         TipoDeNo::Pr => { let url = abrir_pr(v, &no)?; mexer(state, v, |e| e.pr_url = Some(url.clone())); definir_saida(state, v, &no.id, url); String::new() }
-        // Provisório até a Tarefa 9, que roda a execução filha.
-        TipoDeNo::Subfluxo => return Err(anyhow!("Subfluxo ainda não disponível nesta versão")),
+        TipoDeNo::Subfluxo => { let saida = subfluxo::rodar_subfluxo(state, v, &no, &ctx)?; definir_saida(state, v, &no.id, saida); String::new() }
         TipoDeNo::Comando => {
             let comando = no.config["comando"].as_str().unwrap_or_default().to_owned();
             let (ok, saida) = rodar_comando(state, v, &no.id, &comando, &pasta)?;
@@ -426,7 +449,7 @@ fn seguir(state: &EngineState, v: &Viva, no: &str, saida: &str) {
                 if faltam || e.fila.iter().any(|x| x.no == p) { continue; }
             }
             // Voltar a um nó (loop QA → dev): ele roda de novo do zero, sem retomar a sessão anterior.
-            if let Some(n) = e.nos.get_mut(&p) { n.status = "pendente".into(); n.session_id = None; n.saida.clear(); }
+            if let Some(n) = e.nos.get_mut(&p) { n.status = "pendente".into(); n.session_id = None; n.saida.clear(); n.filha = None; }
             reabrir_ate_o_juntar(e, &p, no);
             e.fila.push(Passo { no: p, de: Some(no.to_owned()) });
         }
@@ -615,7 +638,7 @@ fn rodar_na_conta(state: &EngineState, v: &Viva, no: &str, modelo: &omni_core::a
     c.current_dir(pasta).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     sem_janela(&mut c);
     let mut filho = c.spawn().with_context(|| format!("não consegui abrir {}", modelo.cli))?;
-    processos().lock().expect("processos").insert(format!("{run_id}/{no}"), filho.id());
+    guardar_processo(v, &run_id, no, filho.id());
     mexer(state, v, |e| if let Some(n) = e.nos.get_mut(no) {
         n.cli = Some(modelo.cli.clone()); n.conta = perfil.map(|p| p.id.clone());
         n.modelo = (!modelo.modelo.is_empty()).then(|| modelo.modelo.clone()); n.esforco = (!modelo.esforco.is_empty()).then(|| modelo.esforco.clone());
@@ -676,7 +699,7 @@ fn rodar_comando(state: &EngineState, v: &Viva, no: &str, comando: &str, pasta: 
     sem_janela(&mut c);
     let mut filho = c.spawn().with_context(|| format!("não consegui rodar: {comando}"))?;
     let run_id = v.lock().map_err(|_| anyhow!("execucao"))?.id.clone();
-    processos().lock().expect("processos").insert(format!("{run_id}/{no}"), filho.id());
+    guardar_processo(v, &run_id, no, filho.id());
     definir_atividade(state, v, no, &format!("$ {comando}"));
 
     let log = pasta_execucoes(state).join(&run_id);
@@ -761,14 +784,35 @@ fn abrir_pr(v: &Viva, no: &fluxos::No) -> Result<String> {
     Ok(String::from_utf8_lossy(&saida.stdout).lines().rev().find(|l| l.starts_with("http")).unwrap_or("").to_owned())
 }
 
+/// Anota o processo e só então olha a execução. Quem para muda o status antes de ler `processos`, então
+/// um dos dois lados sempre vê o outro: processo aberto no meio de um Parar não sobra rodando.
+fn guardar_processo(v: &Viva, execucao: &str, no: &str, pid: u32) {
+    processos().lock().expect("processos").insert(format!("{execucao}/{no}"), pid);
+    if v.lock().map(|e| matches!(e.status.as_str(), "pausado" | "cancelado")).unwrap_or(true) { matar_processo(execucao); }
+}
+
 fn matar_processo(id: &str) {
     let prefixo = format!("{id}/");
     let pids: Vec<u32> = processos().lock().map(|p| p.iter().filter(|(k, _)| k.starts_with(&prefixo)).map(|(_, pid)| *pid).collect()).unwrap_or_default();
     for pid in pids {
+        // Lida antes de matar a raiz, que depois deixa de ser pai de ninguém. Sem isto, `a; b` no shell
+        // deixaria `a` vivo, segurando o stdout e prendendo a etapa até ele acabar.
+        #[cfg(not(windows))]
+        let abaixo = descendentes_de(pid);
         let mut c = if cfg!(windows) { let mut c = Command::new("taskkill"); c.args(["/F", "/T", "/PID", &pid.to_string()]); c }
             else { let mut c = Command::new("kill"); c.arg(pid.to_string()); c };
         sem_janela(&mut c);
         let _ = c.stdout(Stdio::null()).stderr(Stdio::null()).status();
+        #[cfg(not(windows))]
+        if !abaixo.is_empty() { let _ = Command::new("kill").arg("-KILL").args(&abaixo).stdout(Stdio::null()).stderr(Stdio::null()).status(); }
+    }
+}
+
+#[cfg(not(windows))]
+fn descendentes_de(pid: u32) -> Vec<String> {
+    match omni_core::processos::pares_do_sistema() {
+        Ok(pares) => omni_core::processos::descendentes(pid, &pares).iter().map(u32::to_string).collect(),
+        Err(erro) => { eprintln!("fluxos: não consegui ler a árvore do processo {pid}: {erro}"); Vec::new() }
     }
 }
 
@@ -777,6 +821,7 @@ pub fn pausar(state: &EngineState, id: &str) -> Result<()> {
     let rodava = mexer(state, &v, |e| { let r = e.status == "rodando"; if r { e.status = "pausado".into(); } r });
     if !rodava { return Err(anyhow!("Só dá para pausar uma execução rodando")); }
     matar_processo(id);
+    subfluxo::pausar_filhas(state, id);
     Ok(())
 }
 
@@ -792,6 +837,7 @@ fn devolver_para_a_fila(e: &mut Execucao) {
 
 pub fn retomar(state: &Arc<EngineState>, id: &str) -> Result<()> {
     let v = viva(id)?;
+    if v.lock().is_ok_and(|e| matches!(e.status.as_str(), "pausado" | "falhou")) { subfluxo::retomar_filhas(state, id); }
     mexer(state, &v, |e| {
         if e.status != "pausado" && e.status != "falhou" { return Err(anyhow!("Só dá para retomar uma execução pausada ou que falhou")); }
         devolver_para_a_fila(e);
@@ -812,6 +858,7 @@ pub fn cancelar(state: &EngineState, id: &str) -> Result<()> {
         eventos::registrar(state, e, None, "aviso", "Execução cancelada");
     });
     matar_processo(id);
+    subfluxo::cancelar_filhas(state, id);
     Ok(())
 }
 
@@ -886,6 +933,11 @@ pub fn abrir_conversa(state: &Arc<EngineState>, id: &str, no: &str) -> Result<Te
 
 #[path = "fluxos_eventos.rs"]
 pub mod eventos;
+
+#[path = "fluxos_subfluxo.rs"]
+pub mod subfluxo;
+#[cfg(test)]
+use subfluxo::filhas_de;
 
 #[cfg(test)]
 #[path = "fluxos_testes.rs"]

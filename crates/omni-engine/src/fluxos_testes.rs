@@ -652,3 +652,386 @@ fn cancelar_entra_na_linha_do_tempo() {
     let ultimo = so_eventos(&amb, &id, 0).pop().unwrap();
     assert_eq!((ultimo.tipo.as_str(), ultimo.texto.as_str(), ultimo.no), ("aviso", "Execução cancelada", None));
 }
+
+// ---- Subfluxos: execução filha ----
+
+fn no_subfluxo(id: &str, alvo: &str) -> Value { json!({"id": id, "tipo": "subfluxo", "titulo": id, "config": {"fluxo": alvo}}) }
+
+/// entrada → s (chama `alvo`) → fim
+fn chama(id: &str, nome: &str, alvo: &str) -> Value {
+    json!({"id": id, "nome": nome, "na_pasta_do_projeto": true, "nos": [{"id": "e", "tipo": "entrada"}, no_subfluxo("s", alvo), {"id": "f", "tipo": "fim"}],
+        "conexoes": [{"de": "e", "para": "s"}, {"de": "s", "para": "f"}]})
+}
+
+/// entrada → c (comando) → fim
+fn so_comando(id: &str, nome: &str, texto: &str) -> Value {
+    json!({"id": id, "nome": nome, "na_pasta_do_projeto": true, "nos": [{"id": "e", "tipo": "entrada"}, comando("c", texto), {"id": "f", "tipo": "fim"}],
+        "conexoes": [{"de": "e", "para": "c"}, {"de": "c", "para": "f", "saida": "sim"}]})
+}
+
+/// entrada → antes (comando) → ap (aprovação) → fim
+fn com_aprovacao(id: &str, nome: &str) -> Value {
+    json!({"id": id, "nome": nome, "na_pasta_do_projeto": true, "nos": [{"id": "e", "tipo": "entrada"}, comando("antes", &conta(id)), {"id": "ap", "tipo": "aprovacao"}, {"id": "f", "tipo": "fim"}],
+        "conexoes": [{"de": "e", "para": "antes"}, {"de": "antes", "para": "ap", "saida": "sim"}, {"de": "ap", "para": "f", "saida": "sim"}]})
+}
+
+impl Ambiente {
+    fn salvar(&self, fluxo: Value) {
+        fluxos::salvar(&fluxos::pasta_do_projeto(&self.projeto), &serde_json::from_value(fluxo).unwrap()).unwrap();
+    }
+    fn git(&self, args: &[&str]) -> String {
+        let saida = Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@t.t"]).args(args).current_dir(&self.projeto).output().unwrap();
+        assert!(saida.status.success(), "{}", String::from_utf8_lossy(&saida.stderr));
+        String::from_utf8_lossy(&saida.stdout).into_owned()
+    }
+    fn com_git(&self) { self.git(&["init", "-q"]); self.git(&["commit", "-q", "--allow-empty", "-m", "inicio"]); }
+}
+
+/// Espera a condição; ficar preso é falha do teste.
+fn ate(oque: &str, condicao: impl Fn() -> bool) {
+    for _ in 0..600 {
+        if condicao() { return; }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    panic!("não aconteceu: {oque}");
+}
+
+fn no_em(id: &str, no: &str, status: &str) -> bool { obter(id).is_some_and(|e| e.nos.get(no).is_some_and(|n| n.status == status)) }
+
+fn com_status(id: &str, status: &str) { ate(&format!("{id} em {status}"), || obter(id).is_some_and(|e| e.status == status)); }
+
+/// A filha do nó, já existindo de verdade.
+fn filha_de(id: &str, no: &str) -> String {
+    ate("filha aberta", || obter(id).and_then(|e| e.nos[no].filha.clone()).is_some_and(|f| obter(&f).is_some()));
+    obter(id).unwrap().nos[no].filha.clone().unwrap()
+}
+
+fn cadeia(id: &str) -> Vec<String> {
+    filhas_de(id).into_iter().flat_map(|f| { let mut abaixo = cadeia(&f); abaixo.insert(0, f); abaixo }).collect()
+}
+
+fn processo_vivo(pid: &str) -> bool { Command::new("kill").args(["-0", pid]).stderr(Stdio::null()).status().is_ok_and(|s| s.success()) }
+
+/// X → Y → Z, com Z rodando `texto`.
+fn x_y_z(amb: &Ambiente, texto: &str) -> String {
+    amb.salvar(so_comando("z", "Z", texto));
+    amb.salvar(chama("y", "Y", "z"));
+    amb.iniciar(chama("x", "X", "y"))
+}
+
+/// Como `carregar` encontra o disco depois de o engine cair com X no meio do nó `s`: o executor de
+/// antes é parado pelo pausar, senão ele seguiria vivo neste processo de teste.
+fn derrubar_engine(amb: &Ambiente, x: &str, y: &str) {
+    pausar(&amb.state, x).unwrap();
+    ate("X largar a espera", || no_em(x, "s", "pausado"));
+    mexer(&amb.state, &viva(x).unwrap(), |e| { e.status = "rodando".into(); e.fila.clear(); e.nos.get_mut("s").unwrap().status = "rodando".into(); });
+    mexer(&amb.state, &viva(y).unwrap(), |e| e.status = "aguardando".into());
+    carregar(&amb.state);
+}
+
+#[test]
+fn pai_recebe_a_saida_da_filha() {
+    let amb = ambiente();
+    amb.salvar(so_comando("y", "Y", "echo resultado-de-y"));
+    let id = amb.iniciar(json!({"id": "x", "nome": "X", "na_pasta_do_projeto": true, "nos": [
+        {"id": "e", "tipo": "entrada"}, comando("c", "echo vindo-de-x"), no_subfluxo("s", "y"), comando("depois", "echo fim"), {"id": "f", "tipo": "fim"}],
+        "conexoes": [{"de": "e", "para": "c"}, {"de": "c", "para": "s", "saida": "sim"}, {"de": "s", "para": "depois"}, {"de": "depois", "para": "f", "saida": "sim"}]}));
+    let e = ate_parar(&id);
+    assert_eq!(e.status, "concluido", "{:?}", e.erro);
+    assert!(e.nos["s"].saida.contains("resultado-de-y"), "{}", e.nos["s"].saida);
+    let filha = obter(e.nos["s"].filha.as_ref().unwrap()).unwrap();
+    assert!(filha.entrada.contains("vindo-de-x"), "a entrada da filha é o `anterior`: {}", filha.entrada);
+    assert_eq!(filha.pai.as_ref().map(|p| (p.execucao.as_str(), p.no.as_str())), Some((id.as_str(), "s")));
+    let marcas: Vec<String> = so_eventos(&amb, &id, 0).into_iter().filter(|ev| ev.tipo == "subfluxo").map(|ev| ev.texto).collect();
+    assert_eq!(marcas, ["Chamou “Y”", "“Y” terminou"]);
+}
+
+#[test]
+fn falha_na_filha_e_falha_no_no() {
+    let amb = ambiente();
+    amb.salvar(so_comando("y", "Y", "echo quebrou-em-y; exit 3"));
+    let e = ate_parar(&amb.iniciar(chama("x", "X", "y")));
+    assert_eq!((e.status.as_str(), e.nos["s"].status.as_str(), e.nos["f"].status.as_str()), ("falhou", "falhou", "pendente"));
+    let erro = e.nos["s"].erro.clone().unwrap();
+    assert!(erro.contains("“Y”") && erro.contains("o comando falhou"), "{erro}");
+    assert!(so_eventos(&amb, &e.id, 0).iter().any(|ev| ev.tipo == "subfluxo" && ev.texto.starts_with("“Y” falhou")));
+}
+
+#[test]
+fn cadeia_x_y_z_termina() {
+    let amb = ambiente();
+    let e = ate_parar(&x_y_z(&amb, "echo saida-de-z"));
+    assert_eq!(e.status, "concluido", "{:?}", e.erro);
+    assert!(e.nos["f"].saida.contains("saida-de-z"), "{}", e.nos["f"].saida);
+    assert_eq!(cadeia(&e.id).len(), 2);
+}
+
+#[test]
+fn filha_usa_a_pasta_do_pai() {
+    let amb = ambiente();
+    amb.com_git();
+    amb.salvar(so_comando("y", "Y", "echo y > de-y.txt"));
+    let mut x = chama("x", "X", "y");
+    x["na_pasta_do_projeto"] = json!(false);
+    x["nos"].as_array_mut().unwrap().push(comando("ve", "test -f de-y.txt"));
+    x["conexoes"] = json!([{"de": "e", "para": "s"}, {"de": "s", "para": "ve"}, {"de": "ve", "para": "f", "saida": "sim"}]);
+    let e = ate_parar(&amb.iniciar(x));
+    assert_eq!(e.status, "concluido", "{:?}", e.erro);
+    let filha = obter(e.nos["s"].filha.as_ref().unwrap()).unwrap();
+    assert_ne!(e.pasta, amb.projeto.to_string_lossy());
+    assert!(e.branch.is_some());
+    assert_eq!((&filha.pasta, &filha.branch, &filha.base), (&e.pasta, &e.branch, &e.base));
+}
+
+#[test]
+fn filha_nao_remove_o_worktree() {
+    let amb = ambiente();
+    amb.com_git();
+    amb.salvar(so_comando("y", "Y", "echo y"));
+    let mut x = chama("x", "X", "y");
+    x["na_pasta_do_projeto"] = json!(false);
+    x["nos"].as_array_mut().unwrap().push(json!({"id": "ap", "tipo": "aprovacao"}));
+    x["conexoes"] = json!([{"de": "e", "para": "s"}, {"de": "s", "para": "ap"}, {"de": "ap", "para": "f", "saida": "sim"}]);
+    let id = amb.iniciar(x);
+    com_status(&id, "aguardando");
+    let e = obter(&id).unwrap();
+    assert_eq!(obter(e.nos["s"].filha.as_ref().unwrap()).unwrap().status, "concluido");
+    assert!(Path::new(&e.pasta).is_dir(), "a filha terminou e a pasta continua de pé");
+    assert_eq!(amb.git(&["worktree", "list"]).lines().count(), 2, "a filha não abre worktree próprio");
+}
+
+#[test]
+fn cancelar_x_mata_o_processo_de_z() {
+    let amb = ambiente();
+    let id = x_y_z(&amb, "sleep 60 & echo $! > z.pid; wait");
+    let arquivo = amb.projeto.join("z.pid");
+    ate("Z abrir o sleep", || fs::read_to_string(&arquivo).is_ok_and(|t| t.ends_with('\n')));
+    let pid = fs::read_to_string(&arquivo).unwrap().trim().to_owned();
+    assert!(processo_vivo(&pid));
+    let (y, z) = { let c = cadeia(&id); (c[0].clone(), c[1].clone()) };
+    cancelar(&amb.state, &id).unwrap();
+    ate("o sleep de Z sumir", || !processo_vivo(&pid));
+    for e in [&id, &y, &z] { assert_eq!(obter(e).unwrap().status, "cancelado"); }
+    ate("nenhuma etapa da cadeia rodando", || [&id, &y, &z].iter().all(|e| obter(e).unwrap().nos.values().all(|n| n.status != "rodando")));
+}
+
+#[test]
+fn pausar_x_pausa_a_cadeia_e_retomar_continua() {
+    let amb = ambiente();
+    let id = x_y_z(&amb, "echo x >> z.log; test -f libera || { sleep 60 & echo $! > z.pid; wait; exit 1; }; echo saida-de-z");
+    let arquivo = amb.projeto.join("z.pid");
+    ate("Z abrir o sleep", || fs::read_to_string(&arquivo).is_ok_and(|t| t.ends_with('\n')));
+    let pid = fs::read_to_string(&arquivo).unwrap().trim().to_owned();
+    let (y, z) = { let c = cadeia(&id); (c[0].clone(), c[1].clone()) };
+    pausar(&amb.state, &id).unwrap();
+    ate("o sleep de Z sumir", || !processo_vivo(&pid));
+    for e in [&id, &y, &z] { assert_eq!(obter(e).unwrap().status, "pausado"); }
+    ate("as esperas soltarem", || no_em(&id, "s", "pausado") && no_em(&y, "s", "pausado") && no_em(&z, "c", "pausado"));
+    fs::write(amb.projeto.join("libera"), "").unwrap();
+    retomar(&amb.state, &id).unwrap();
+    let e = ate_parar(&id);
+    assert_eq!(e.status, "concluido", "{:?}", e.erro);
+    assert!(e.nos["f"].saida.contains("saida-de-z"), "{}", e.nos["f"].saida);
+    assert_eq!((amb.linhas("z.log"), cadeia(&id).len()), (2, 2), "Z refaz a etapa e ninguém abre filha nova");
+}
+
+#[test]
+fn engine_religado_nao_abre_segunda_filha() {
+    let amb = ambiente();
+    amb.salvar(com_aprovacao("y", "Y"));
+    let id = amb.iniciar(chama("x", "X", "y"));
+    let y = filha_de(&id, "s");
+    com_status(&y, "aguardando");
+    derrubar_engine(&amb, &id, &y);
+    assert_eq!((obter(&id).unwrap().status.as_str(), obter(&y).unwrap().status.as_str()), ("pausado", "pausado"), "a cadeia volta pausada");
+    assert!(aprovar(&amb.state, &y, "ap", true).is_err(), "com a cadeia pausada a filha não anda");
+    retomar(&amb.state, &id).unwrap();
+    com_status(&y, "aguardando");
+    std::thread::sleep(Duration::from_millis(700));
+    assert_eq!(filhas_de(&id), [y.clone()], "espera a filha que já existe");
+    aprovar(&amb.state, &y, "ap", true).unwrap();
+    let e = ate_parar(&id);
+    assert_eq!(e.status, "concluido", "{:?}", e.erro);
+    assert_eq!((filhas_de(&id), amb.linhas("y.log")), (vec![y], 1));
+}
+
+/// A filha terminou enquanto o pai estava parado: o pai colhe o resultado, sem rodar nada de novo.
+#[test]
+fn filha_que_terminou_com_o_pai_parado_entrega_a_saida() {
+    let amb = ambiente();
+    amb.salvar(com_aprovacao("y", "Y"));
+    let id = amb.iniciar(chama("x", "X", "y"));
+    let y = filha_de(&id, "s");
+    com_status(&y, "aguardando");
+    pausar(&amb.state, &id).unwrap();
+    ate("X largar a espera", || no_em(&id, "s", "pausado"));
+    retomar(&amb.state, &y).unwrap();
+    aprovar(&amb.state, &y, "ap", true).unwrap();
+    com_status(&y, "concluido");
+    retomar(&amb.state, &id).unwrap();
+    assert_eq!(ate_parar(&id).status, "concluido");
+    assert_eq!((filhas_de(&id), amb.linhas("y.log")), (vec![y], 1));
+}
+
+/// Retomar o pai que falhou refaz a etapa dentro da mesma filha.
+#[test]
+fn retomar_o_pai_refaz_a_filha_que_falhou_sem_abrir_outra() {
+    let amb = ambiente();
+    amb.salvar(so_comando("y", "Y", &conta_e_exige("y", "libera")));
+    let id = amb.iniciar(chama("x", "X", "y"));
+    assert_eq!(ate_parar(&id).status, "falhou");
+    let y = filha_de(&id, "s");
+    fs::write(amb.projeto.join("libera"), "").unwrap();
+    retomar(&amb.state, &id).unwrap();
+    let e = ate_parar(&id);
+    assert_eq!(e.status, "concluido", "{:?}", e.erro);
+    assert_eq!((filhas_de(&id), amb.linhas("y.log")), (vec![y], 2));
+}
+
+/// Passar de novo pelo nó num loop é chamada nova, não retomada da anterior.
+#[test]
+fn volta_do_loop_abre_filha_nova() {
+    let amb = ambiente();
+    amb.salvar(so_comando("y", "Y", &conta("y")));
+    let id = amb.iniciar(json!({"id": "x", "nome": "X", "na_pasta_do_projeto": true, "nos": [
+        {"id": "e", "tipo": "entrada"}, no_subfluxo("s", "y"), comando("c", "test $(wc -l < y.log) -ge 2"), {"id": "f", "tipo": "fim"}],
+        "conexoes": [{"de": "e", "para": "s"}, {"de": "s", "para": "c"}, {"de": "c", "para": "s", "saida": "nao"}, {"de": "c", "para": "f", "saida": "sim"}]}));
+    let e = ate_parar(&id);
+    assert_eq!(e.status, "concluido", "{:?}", e.erro);
+    assert_eq!((filhas_de(&id).len(), amb.linhas("y.log")), (2, 2));
+}
+
+#[test]
+fn fluxo_apagado_falha_com_mensagem_clara() {
+    let amb = ambiente();
+    let e = ate_parar(&amb.iniciar(chama("x", "X", "Y")));
+    assert_eq!(e.status, "falhou");
+    assert_eq!(e.nos["s"].erro.as_deref(), Some("O fluxo chamado “Y” não existe mais"));
+    assert_eq!(e.nos["s"].filha, None, "sem filha para a tela abrir");
+}
+
+/// O engine caiu entre reservar o id no pai e gravar a filha: a nova tentativa usa o mesmo id.
+#[test]
+fn id_reservado_sem_filha_abre_com_o_mesmo_id() {
+    let amb = ambiente();
+    let id = amb.iniciar(chama("x", "X", "y"));
+    assert_eq!(ate_parar(&id).status, "falhou");
+    let reservado = format!("exec-reservada-{:04x}", rand::random::<u16>());
+    mexer(&amb.state, &viva(&id).unwrap(), |e| e.nos.get_mut("s").unwrap().filha = Some(reservado.clone()));
+    amb.salvar(so_comando("y", "Y", &conta("y")));
+    retomar(&amb.state, &id).unwrap();
+    let e = ate_parar(&id);
+    assert_eq!(e.status, "concluido", "{:?}", e.erro);
+    assert_eq!((filhas_de(&id), amb.linhas("y.log")), (vec![reservado], 1));
+}
+
+#[test]
+fn fluxo_do_projeto_vence_o_global_de_mesmo_id() {
+    let amb = ambiente();
+    let global = amb.projeto.with_file_name("global");
+    fluxos::salvar(&global, &serde_json::from_value(so_comando("y", "Do global", "true")).unwrap()).unwrap();
+    fluxos::salvar(&global, &serde_json::from_value(so_comando("so-global", "Só global", "true")).unwrap()).unwrap();
+    amb.salvar(so_comando("y", "Do projeto", "true"));
+    let projeto = amb.projeto.to_string_lossy();
+    assert_eq!(subfluxo::fluxo_salvo("y", Some(&global), &projeto).unwrap().nome, "Do projeto");
+    assert_eq!(subfluxo::fluxo_salvo("so-global", Some(&global), &projeto).unwrap().nome, "Só global");
+}
+
+#[test]
+fn pilha_mostra_x_y_z() {
+    let amb = ambiente();
+    let id = x_y_z(&amb, "echo ok");
+    assert_eq!(obter(&id).unwrap().pilha, ["X"]);
+    assert_eq!(ate_parar(&id).status, "concluido");
+    let c = cadeia(&id);
+    assert_eq!(obter(&c[0]).unwrap().pilha, ["X", "Y"]);
+    assert_eq!(obter(&c[1]).unwrap().pilha, ["X", "Y", "Z"]);
+}
+
+#[test]
+fn ciclo_roda_e_cancelar_para() {
+    let amb = ambiente();
+    let x = json!({"id": "x", "nome": "X", "na_pasta_do_projeto": true, "nos": [
+        {"id": "e", "tipo": "entrada"}, comando("c", "echo x >> ciclo.log; sleep 0.05"), no_subfluxo("s", "x"), {"id": "f", "tipo": "fim"}],
+        "conexoes": [{"de": "e", "para": "c"}, {"de": "c", "para": "s", "saida": "sim"}, {"de": "s", "para": "f"}]});
+    amb.salvar(x.clone());
+    let id = amb.iniciar(x);
+    ate("três níveis", || amb.linhas("ciclo.log") >= 3);
+    cancelar(&amb.state, &id).unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    let (linhas, tamanho) = (amb.linhas("ciclo.log"), cadeia(&id).len());
+    std::thread::sleep(Duration::from_millis(1200));
+    assert_eq!((amb.linhas("ciclo.log"), cadeia(&id).len()), (linhas, tamanho), "cancelar parou o ciclo");
+    assert!(tamanho >= 2);
+    for e in std::iter::once(id.clone()).chain(cadeia(&id)) { assert_eq!(obter(&e).unwrap().status, "cancelado", "{e}"); }
+}
+
+/// O pai segue `rodando`, sem dar a filha por terminada, e a parada aparece nele, mesmo vindo de Z.
+#[test]
+fn filha_parada_aparece_no_pai_que_continua_esperando() {
+    let amb = ambiente();
+    amb.salvar(com_aprovacao("z", "Z"));
+    amb.salvar(chama("y", "Y", "z"));
+    let id = amb.iniciar(chama("x", "X", "y"));
+    let atividade = |no: &str| obter(&id).unwrap().nos[no].atividade.clone();
+    ate("a aprovação de Z chegar em X", || atividade("s").contains("“Z” espera aprovação"));
+    let y = filha_de(&id, "s");
+    let z = filha_de(&y, "s");
+    let e = obter(&id).unwrap();
+    assert_eq!((e.status.as_str(), e.nos["s"].status.as_str(), e.nos["f"].status.as_str()), ("rodando", "rodando", "pendente"));
+    aprovar(&amb.state, &z, "ap", true).unwrap();
+    assert_eq!(ate_parar(&id).status, "concluido");
+
+    let amb = ambiente();
+    amb.salvar(com_aprovacao("y", "Y"));
+    let id = amb.iniciar(chama("x", "X", "y"));
+    let y = filha_de(&id, "s");
+    com_status(&y, "aguardando");
+    mexer(&amb.state, &viva(&y).unwrap(), |e| e.status = "pausado".into());
+    ate("a pausa de Y chegar em X", || obter(&id).unwrap().nos["s"].atividade.contains("“Y” está pausada"));
+    assert_eq!(obter(&id).unwrap().status, "rodando");
+    cancelar(&amb.state, &id).unwrap();
+    assert_eq!(obter(&y).unwrap().status, "cancelado");
+}
+
+/// Aprovação em outro ramo deixa o pai `aguardando`: ele continua vivo e colhe a filha.
+#[test]
+fn pai_aguardando_em_outro_ramo_nao_larga_a_filha() {
+    let amb = ambiente();
+    amb.salvar(so_comando("y", "Y", "sleep 0.2; echo de-y"));
+    let id = amb.iniciar(json!({"id": "x", "nome": "X", "na_pasta_do_projeto": true, "nos": [
+        {"id": "e", "tipo": "entrada"}, {"id": "ap", "tipo": "aprovacao"}, no_subfluxo("s", "y"), {"id": "f", "tipo": "fim"}],
+        "conexoes": [{"de": "e", "para": "ap"}, {"de": "e", "para": "s"}, {"de": "ap", "para": "f", "saida": "sim"}, {"de": "s", "para": "f"}]}));
+    ate("a filha entregar", || no_em(&id, "s", "concluido"));
+    assert_eq!(obter(&id).unwrap().status, "aguardando");
+    aprovar(&amb.state, &id, "ap", true).unwrap();
+    assert_eq!(ate_parar(&id).status, "concluido");
+}
+
+/// O engine caiu com um ramo na aprovação e outro esperando a filha: a etapa que rodava volta pausada,
+/// e a pergunta volta junto no retomar.
+#[test]
+fn engine_religado_pausa_quem_aguardava_com_etapa_rodando() {
+    let amb = ambiente();
+    let dir = pasta_execucoes(&amb.state);
+    fs::create_dir_all(&dir).unwrap();
+    let id = format!("exec-religada-{:04x}", rand::random::<u16>());
+    let e: Execucao = serde_json::from_value(json!({"id": id, "projeto": "p", "projeto_id": "p", "entrada": "x", "pasta": ".", "status": "aguardando", "criado_ms": 0, "atualizado_ms": 0,
+        "fluxo": chama("x", "X", "y"), "nos": {"s": {"status": "rodando", "filha": "exec-outra"}, "f": {"status": "aguardando"}}, "fila": []})).unwrap();
+    gravar(&amb.state, &e);
+    carregar(&amb.state);
+    let e = obter(&id).unwrap();
+    assert_eq!((e.status.as_str(), e.nos["s"].status.as_str(), e.nos["f"].status.as_str()), ("pausado", "pausado", "aguardando"));
+}
+
+/// Quem para muda o status antes de ler `processos`: o processo que abre nesse intervalo se mata sozinho.
+#[test]
+fn processo_aberto_depois_do_cancelar_nao_sobrevive() {
+    let amb = ambiente();
+    let id = amb.iniciar(fluxo_de_um_comando());
+    ate_parar(&id);
+    cancelar(&amb.state, &id).unwrap();
+    let mut filho = Command::new("sleep").arg("60").spawn().unwrap();
+    guardar_processo(&viva(&id).unwrap(), &id, "c", filho.id());
+    assert!(!filho.wait().unwrap().success(), "tinha que morrer");
+}
