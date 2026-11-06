@@ -73,7 +73,7 @@ export function kanbanReducer(state: KanbanState, action: KanbanAction): KanbanS
         ...state,
         tasks: state.tasks.map((task) =>
           task.id === action.id
-            ? { ...task, status: action.status, position: nextPosition(), updatedAt: new Date().toISOString() }
+            ? { ...task, status: action.status, position: nextPosition(), pegoPor: undefined, updatedAt: new Date().toISOString() }
             : task
         ),
       };

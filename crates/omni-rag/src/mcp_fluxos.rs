@@ -123,7 +123,7 @@ fn criar(contexto: &Contexto, argumentos: &Value) -> Result<String, String> {
     Ok(format!("Fluxo “{}” salvo ({escopo}), com {} etapas e {} agentes novos. Já aparece na tela Fluxos.", gerado.fluxo.id, gerado.fluxo.nos.len(), gerado.agentes_novos.len()))
 }
 
-fn projetos(contexto: &Contexto) -> Result<Vec<Value>, String> {
+pub(crate) fn projetos(contexto: &Contexto) -> Result<Vec<Value>, String> {
     Ok(api(contexto, "GET", "/projetos", None)?["projects"].as_array().cloned().unwrap_or_default())
 }
 
@@ -133,7 +133,7 @@ fn contem(pasta: &Path, projeto: &str) -> bool {
 }
 
 /// O pedido manda; sem ele, o projeto mais específico que contém a pasta atual.
-fn escolher_projeto(lista: &[Value], pedido: Option<&str>, pasta: Option<&Path>) -> Result<Value, String> {
+pub(crate) fn escolher_projeto(lista: &[Value], pedido: Option<&str>, pasta: Option<&Path>) -> Result<Value, String> {
     let achado = match pedido {
         Some(nome) => lista.iter().find(|item| item["id"] == nome || item["name"].as_str().is_some_and(|atual| atual.eq_ignore_ascii_case(nome))),
         None => pasta.and_then(|pasta| lista.iter()
@@ -165,7 +165,7 @@ fn execucoes(contexto: &Contexto) -> Result<String, String> {
 }
 
 /// Limpa antes de cortar: cortados ao meio, chave e CPF deixam de ser reconhecidos.
-fn limpo(argumentos: &Value, texto: &str) -> String {
+pub(crate) fn limpo(argumentos: &Value, texto: &str) -> String {
     let texto = sem_segredos(texto);
     if mascara_dispensada(argumentos) { texto } else { sem_dados_pessoais(&texto) }
 }

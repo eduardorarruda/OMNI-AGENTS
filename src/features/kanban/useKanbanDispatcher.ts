@@ -153,11 +153,14 @@ export function useKanbanDispatcher(
 
     async function processProject(project: Project) {
       const state = kanbanRef.current;
-      const doing = state.tasks.find((task) => task.projectId === project.id && task.status === "doing");
-      if (doing) {
-        await checkDoingTask(project, doing.id);
+      const doing = state.tasks.filter((task) => task.projectId === project.id && task.status === "doing");
+      const doDispatcher = doing.find((task) => !task.pegoPor);
+      if (doDispatcher) {
+        await checkDoingTask(project, doDispatcher.id);
         return;
       }
+      // Agente trabalhando pelo MCP: não há sessão daqui para olhar, e a fila continua sendo uma por projeto.
+      if (doing.length > 0) return;
       const next = state.tasks
         .filter((task) => task.projectId === project.id && task.status === "ready")
         .sort((a, b) => a.position - b.position)[0];

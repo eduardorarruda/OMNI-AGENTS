@@ -29,6 +29,8 @@ export interface KanbanTask {
   updatedAt: string;
   /** Preenchido nas tarefas que vieram de uma origem externa. `sumiu`: a origem não devolve mais a tarefa. */
   externa?: { origem: string; id: string; sumiu: boolean };
+  /** Quem pegou sem passar pelo dispatcher (hoje, um agente pelo MCP). O dispatcher não tem sessão para ele. */
+  pegoPor?: string | null;
 }
 
 /** Tarefa externa ainda sem projeto. Vira cartão quando o usuário escolhe o projeto. */

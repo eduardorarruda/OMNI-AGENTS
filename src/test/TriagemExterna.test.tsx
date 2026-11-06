@@ -170,4 +170,20 @@ describe("dispatcher e tarefas externas", () => {
     await waitFor(() => expect(writeTerminal).toHaveBeenCalledTimes(2), { timeout: 4_000 });
     expect(vi.mocked(writeTerminal).mock.calls[1][0]).toBe("s2");
   });
+
+  it("cartão pego por agente não vira falha nem libera a fila do projeto", async () => {
+    const dispatch = vi.fn();
+    const estado = { ...emptyKanban(), dispatcherEnabled: true, tasks: [cartao({ status: "doing", pegoPor: "mcp" }), cartao({ id: "c2" })] };
+    renderHook(() => useKanbanDispatcher(estado, dispatch, [projeto], []));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(spawnTerminal).not.toHaveBeenCalled();
+  });
+
+  it("cartão do dispatcher sem sessão segue virando falha", async () => {
+    const dispatch = vi.fn();
+    const estado = { ...emptyKanban(), dispatcherEnabled: true, tasks: [cartao({ id: "agente", status: "doing", pegoPor: "mcp" }), cartao({ status: "doing" })] };
+    renderHook(() => useKanbanDispatcher(estado, dispatch, [projeto], []));
+    await waitFor(() => expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: "TASK_FINISHED", id: "c1", outcome: "failed" })));
+  });
 });

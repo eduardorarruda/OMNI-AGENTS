@@ -90,6 +90,11 @@ async fn cartao_remover(State(state): State<Arc<EngineState>>, RoutePath(id): Ro
     Ok(Json(json!({"removido": removeu})))
 }
 
+async fn cartao_pegar(State(state): State<Arc<EngineState>>, RoutePath(id): RoutePath<String>) -> Result<Json<Cartao>, ApiError> {
+    let agora = regras::instante_agora();
+    alterar(&arquivo_do_kanban(&state), |q| regras::pegar(q, &id, &agora)).map(Json)
+}
+
 async fn ajustes_editar(State(state): State<Arc<EngineState>>, Json(mudancas): Json<Value>) -> Result<Json<Value>, ApiError> {
     alterar(&arquivo_do_kanban(&state), |q| regras::ajustar(q, &mudancas).map(|()| q.ajustes.clone())).map(Json)
 }
@@ -146,6 +151,7 @@ pub(crate) fn rotas() -> Router<Arc<EngineState>> {
             "/kanban/cartoes/{id}",
             patch(cartao_editar).delete(cartao_remover).layer(DefaultBodyLimit::max(CARTAO_MAX_BYTES)),
         )
+        .route("/kanban/cartoes/{id}/pegar", post(cartao_pegar))
         .route("/kanban/ajustes", patch(ajustes_editar).layer(DefaultBodyLimit::max(CARTAO_MAX_BYTES)))
         .route("/kanban/migrar", post(migrar).layer(DefaultBodyLimit::max(MIGRAR_MAX_BYTES)))
         .route("/kanban/externas", post(externas_importar).layer(DefaultBodyLimit::max(MIGRAR_MAX_BYTES)))
@@ -486,6 +492,53 @@ mod tests {
         assert!(r["error"].as_str().unwrap().contains("Filtre"), "{r}");
         let (_, quadro) = chamar(&app, "GET", "/kanban", "").await;
         assert_eq!(quadro["triagem"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn pegar_so_vale_uma_vez_e_so_antes_de_rodar() {
+        let (_dir, state) = fixture();
+        let app = app_local(state);
+        chamar(&app, "POST", "/kanban/cartoes", &cartao("a").to_string()).await;
+        let (status, pego) = chamar(&app, "POST", "/kanban/cartoes/a/pegar", "").await;
+        assert_eq!(status, StatusCode::OK, "{pego}");
+        assert_eq!((&pego["status"], &pego["pegoPor"]), (&json!("doing"), &json!("mcp")));
+        assert_ne!(pego["updatedAt"], cartao("a")["updatedAt"]);
+        // dois agentes no mesmo cartão: o segundo perde
+        let (status, _) = chamar(&app, "POST", "/kanban/cartoes/a/pegar", "").await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        chamar(&app, "PATCH", "/kanban/cartoes/a", r#"{"status":"done","pegoPor":null}"#).await;
+        let (status, _) = chamar(&app, "POST", "/kanban/cartoes/a/pegar", "").await;
+        assert_eq!(status, StatusCode::CONFLICT, "cartão concluído não volta a rodar por aqui");
+        let (status, _) = chamar(&app, "POST", "/kanban/cartoes/nao-existe/pegar", "").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    /// O caminho do MCP: `EngineRequest::Api`, com o token do engine, cai em `mobile::local`, que monta
+    /// as rotas sem o `somente_leitura_no_http`. Se isto passar a dar 403, o MCP deixou de escrever.
+    #[tokio::test]
+    async fn credencial_local_do_engine_escreve_no_kanban() {
+        let (_dir, state) = fixture();
+        let criado = mobile::local(state.clone(), "POST", "/kanban/cartoes", Some(cartao("a").to_string()), None, vec![]).await;
+        assert!(matches!(criado, EngineResponse::Api { status: 201, .. }), "{criado:?}");
+        let pego = mobile::local(state.clone(), "POST", "/kanban/cartoes/a/pegar", None, None, vec![]).await;
+        assert!(matches!(pego, EngineResponse::Api { status: 200, .. }), "{pego:?}");
+        let movido = mobile::local(state, "PATCH", "/kanban/cartoes/a", Some(r#"{"status":"done","pegoPor":null}"#.into()), None, vec![]).await;
+        assert!(matches!(movido, EngineResponse::Api { status: 200, .. }), "{movido:?}");
+    }
+
+    #[tokio::test]
+    async fn token_do_celular_nao_pega_nem_move_cartao() {
+        let (_dir, state) = fixture();
+        state.mobile.config.lock().unwrap().token = "segredo".into();
+        let criado = mobile::local(state.clone(), "POST", "/kanban/cartoes", Some(cartao("a").to_string()), None, vec![]).await;
+        assert!(matches!(criado, EngineResponse::Api { status: 201, .. }));
+        let app = router(state.clone());
+        for (metodo, uri, corpo) in [("POST", "/kanban/cartoes/a/pegar", ""), ("PATCH", "/kanban/cartoes/a", r#"{"status":"done"}"#)] {
+            let r = app.clone().oneshot(pedido(metodo, uri, corpo, Some("segredo"))).await.unwrap();
+            assert_eq!(r.status(), StatusCode::FORBIDDEN, "{metodo} {uri} com token de dispositivo");
+        }
+        let quadro = ler(&arquivo_do_kanban(&state)).unwrap();
+        assert_eq!((quadro.tarefas[0].status.as_str(), quadro.tarefas[0].pego_por.as_deref()), ("backlog", None));
     }
 
     #[tokio::test]

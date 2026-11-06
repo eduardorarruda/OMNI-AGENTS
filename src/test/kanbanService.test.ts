@@ -213,3 +213,38 @@ describe("gravação por cartão", () => {
     expect(avisoDoKanban()).toMatch(/não foi possível/i);
   });
 });
+
+describe("mudança feita fora da tela", () => {
+  it("a tela vê o cartão que o agente pegou pelo MCP", async () => {
+    const { quadro } = engineFalso({ tarefas: [cartao("a", { status: "ready" })], migrado: true });
+    const { result } = renderHook(() => useKanban());
+    await waitFor(() => expect(result.current.carregado).toBe(true));
+    Object.assign(quadro.tarefas[0], { status: "doing", pegoPor: "mcp" });
+    await waitFor(() => expect(result.current.kanban.tasks[0].status).toBe("doing"), { timeout: 8_000 });
+    expect(result.current.kanban.tasks[0].pegoPor).toBe("mcp");
+  }, 15_000);
+
+  it("releitura que saiu antes de um gesto não desfaz o gesto", async () => {
+    const { quadro } = engineFalso({ tarefas: [cartao("a")], migrado: true });
+    const { result } = renderHook(() => useKanban());
+    await waitFor(() => expect(result.current.carregado).toBe(true));
+    const normal = api.getMockImplementation()!;
+    const velho = JSON.stringify(quadro);
+    let soltar: (() => void) | undefined;
+    api.mockImplementation(async (metodo, caminho, corpo, extra) => {
+      if (metodo === "GET" && caminho === "/kanban" && !soltar) {
+        await new Promise<void>((resolve) => { soltar = resolve; });
+        return { type: "api" as const, status: 200, body: velho };
+      }
+      return normal(metodo, caminho, corpo, extra);
+    });
+    await waitFor(() => expect(soltar).toBeDefined(), { timeout: 8_000 });
+    act(() => result.current.dispatch({ type: "MOVE_TASK", id: "a", status: "ready" }));
+    await waitFor(() => expect(quadro.tarefas[0].status).toBe("ready"));
+    await act(async () => {
+      soltar?.();
+      await Promise.resolve();
+    });
+    expect(result.current.kanban.tasks[0].status).toBe("ready");
+  }, 15_000);
+});

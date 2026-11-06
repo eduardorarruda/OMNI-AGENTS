@@ -83,7 +83,7 @@ function quadroParaEstado(quadro: QuadroDoEngine): KanbanState {
 
 const AJUSTES = ["agentByProject", "dispatcherEnabled", "failureTimestamps", "pausedUntil"] as const;
 const CAMPOS_DO_CARTAO = [
-  "projectId", "title", "description", "status", "position", "loopTotal", "loopRemaining", "resultNote", "updatedAt", "externa",
+  "projectId", "title", "description", "status", "position", "loopTotal", "loopRemaining", "resultNote", "updatedAt", "externa", "pegoPor",
 ] as const;
 
 function ajustesDoEstado(estado: KanbanState): Record<string, unknown> {

@@ -118,4 +118,12 @@ describe("kanbanReducer", () => {
     state = kanbanReducer(state, { type: "REMOVE_TASK", id });
     expect(state.tasks).toHaveLength(0);
   });
+
+  it("arrastar cartão pego por agente devolve ele ao dispatcher", () => {
+    let state = kanbanReducer(emptyKanban(), { type: "CREATE_TASK", projectId: "p1", title: "T", description: "" });
+    const id = state.tasks[0].id;
+    state = { ...state, tasks: [{ ...state.tasks[0], status: "doing", pegoPor: "mcp" }] };
+    state = kanbanReducer(state, { type: "MOVE_TASK", id, status: "ready" });
+    expect(state.tasks[0].pegoPor).toBeUndefined();
+  });
 });

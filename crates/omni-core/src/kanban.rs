@@ -47,6 +47,10 @@ pub struct Cartao {
     pub updated_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub externa: Option<RefExterna>,
+    /// Quem pegou sem passar pelo dispatcher. O dispatcher não tem sessão para esse cartão: sem isto,
+    /// o daria como falho.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pego_por: Option<String>,
 }
 
 /// Tarefa externa ainda sem projeto (caixa de triagem). Vira `Cartao` quando o usuário escolhe o projeto.
@@ -163,9 +167,10 @@ pub fn criar(quadro: &mut Quadro, cartao: Cartao) -> Result<Cartao, ErroKanban> 
     Ok(cartao)
 }
 
-const CAMPOS_EDITAVEIS: [&str; 10] = [
-    "projectId", "title", "description", "status", "position", "loopTotal", "loopRemaining", "resultNote", "updatedAt", "externa",
+const CAMPOS_EDITAVEIS: [&str; 11] = [
+    "projectId", "title", "description", "status", "position", "loopTotal", "loopRemaining", "resultNote", "updatedAt", "externa", "pegoPor",
 ];
+const PEGO_PELO_MCP: &str = "mcp";
 
 /// Troca só os campos enviados de UM cartão. Campo desconhecido ou valor inválido recusa tudo e não muda nada.
 pub fn editar(quadro: &mut Quadro, id: &str, mudancas: &Value) -> Result<Cartao, ErroKanban> {
@@ -187,6 +192,18 @@ pub fn editar(quadro: &mut Quadro, id: &str, mudancas: &Value) -> Result<Cartao,
     validar(&novo).map_err(ErroKanban::Invalido)?;
     quadro.tarefas[posicao] = novo.clone();
     Ok(novo)
+}
+
+/// Agente pegando um cartão. Conferir e mudar é uma operação só: quem chega depois recebe `Conflito`.
+pub fn pegar(quadro: &mut Quadro, id: &str, agora: &str) -> Result<Cartao, ErroKanban> {
+    let cartao = quadro.tarefas.iter_mut().find(|c| c.id == id).ok_or_else(|| ErroKanban::NaoEncontrado("Cartão não encontrado".into()))?;
+    if !matches!(cartao.status.as_str(), "backlog" | "ready") {
+        return Err(ErroKanban::Conflito("Só dá para pegar cartão do Backlog ou de Pronta".into()));
+    }
+    cartao.status = "doing".into();
+    cartao.pego_por = Some(PEGO_PELO_MCP.into());
+    cartao.updated_at = agora.to_owned();
+    Ok(cartao.clone())
 }
 
 /// Idempotente: apagar o que já não existe não é erro (o pedido pode ter sido repetido). Devolve se algo saiu.
@@ -300,7 +317,7 @@ pub fn escolher_projeto(quadro: &mut Quadro, id: &str, origem: Option<&str>, pro
         id: id_do_cartao_externo(&tarefa.origem, &tarefa.id), project_id: project_id.to_owned(), title: titulo, description: tarefa.descricao,
         status: "backlog".into(), position, loop_total: None, loop_remaining: None, result_note: None,
         created_at: agora.to_owned(), updated_at: agora.to_owned(),
-        externa: Some(RefExterna { origem: tarefa.origem, id: tarefa.id, sumiu: tarefa.sumiu }),
+        externa: Some(RefExterna { origem: tarefa.origem, id: tarefa.id, sumiu: tarefa.sumiu }), pego_por: None,
     };
     let criado = criar(quadro, cartao)?;
     quadro.triagem.remove(indice);
@@ -337,7 +354,7 @@ mod tests {
         Cartao {
             id: id.into(), project_id: "p".into(), title: format!("Tarefa {id}"), description: String::new(),
             status: "backlog".into(), position: 1, loop_total: None, loop_remaining: None, result_note: None,
-            created_at: "2026-11-06T00:00:00Z".into(), updated_at: "2026-11-06T00:00:00Z".into(), externa: None,
+            created_at: "2026-11-06T00:00:00Z".into(), updated_at: "2026-11-06T00:00:00Z".into(), externa: None, pego_por: None,
         }
     }
 

@@ -4,12 +4,15 @@ import {
   AVISO_GRAVACAO_FALHOU,
   aplicarNoEngine,
   carregarKanbanComOrigem,
+  lerDoEngine,
   type OrigemDoKanban,
 } from "../../services/kanbanService";
 import { definirAvisoDoKanban } from "./kanbanAviso";
 import { emptyKanban, kanbanReducer } from "./kanbanReducer";
 
 const REPETIR_CARGA_MS = 3_000;
+/** Só o `GET /kanban` local: agentes mudam cartões pelo MCP. A busca externa não passa por aqui. */
+const RELER_MS = 3_000;
 
 interface Operacao {
   antes: KanbanState;
@@ -29,6 +32,8 @@ export function useKanban() {
   const drenando = useRef(false);
   const aceitando = useRef(false);
   const origem = useRef<OrigemDoKanban>("engine");
+  /** Sobe a cada gesto: leitura que saiu antes dele veio velha e é descartada. */
+  const gestos = useRef(0);
 
   const trocar = useCallback((estado: KanbanState) => {
     atual.current = estado;
@@ -60,6 +65,23 @@ export function useKanban() {
     };
   }, [trocar]);
 
+  useEffect(() => {
+    let vivo = true;
+    const ocupado = () => drenando.current || pendentes.current.length > 0;
+    async function reler() {
+      if (!aceitando.current || origem.current !== "engine" || ocupado()) return;
+      const gesto = gestos.current;
+      const estado = await lerDoEngine().catch(() => null);
+      if (!vivo || !estado || gesto !== gestos.current || ocupado()) return;
+      if (JSON.stringify(estado) !== JSON.stringify(atual.current)) trocar(estado);
+    }
+    const temporizador = window.setInterval(() => void reler(), RELER_MS);
+    return () => {
+      vivo = false;
+      window.clearInterval(temporizador);
+    };
+  }, [trocar]);
+
   const drenar = useCallback(async () => {
     if (drenando.current) return;
     drenando.current = true;
@@ -88,6 +110,7 @@ export function useKanban() {
   const dispatch = useCallback(
     (acao: KanbanAction) => {
       if (!aceitando.current) return;
+      gestos.current += 1;
       const antes = atual.current;
       const depois = kanbanReducer(antes, acao);
       if (depois === antes) return;

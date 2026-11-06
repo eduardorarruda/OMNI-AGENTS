@@ -8,6 +8,7 @@ pub mod grafo;
 pub mod mcp;
 pub mod mcp_fluxos;
 pub mod mcp_historico;
+pub mod mcp_kanban;
 pub mod memoria;
 mod pessoais;
 pub mod tarefas;
@@ -230,6 +231,8 @@ mod testes_memoria;
 mod testes_mcp;
 #[cfg(test)]
 mod testes_fluxos_mcp;
+#[cfg(test)]
+mod testes_kanban_mcp;
 #[cfg(test)]
 mod testes_busca;
 #[cfg(test)]

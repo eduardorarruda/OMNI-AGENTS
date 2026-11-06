@@ -4,7 +4,7 @@
 use crate::{
     agora_ms,
     busca::{com_campos, data_curta, resposta_limpa, resumo_em_volta, rodape, termos_da_busca, Achados, Filtros, Trecho},
-    engine::Contexto, mcp_fluxos, mcp_historico, tarefas, Base,
+    engine::Contexto, mcp_fluxos, mcp_historico, mcp_kanban, tarefas, Base,
 };
 use serde_json::{json, Value};
 use std::{io::{BufRead, Write}, sync::atomic::Ordering};
@@ -19,6 +19,7 @@ fn ferramentas() -> Value {
     let mut lista = ferramentas_da_base();
     lista.extend(mcp_historico::ferramentas());
     lista.extend(mcp_fluxos::ferramentas());
+    lista.extend(mcp_kanban::ferramentas());
     Value::Array(lista)
 }
 
@@ -118,6 +119,7 @@ pub(crate) fn chamar_em(base: &Base, contexto: &Contexto, nome: &str, argumentos
         }
         _ => mcp_historico::chamar(base, contexto, nome, argumentos)
             .or_else(|| mcp_fluxos::chamar(contexto, nome, argumentos))
+            .or_else(|| mcp_kanban::chamar(contexto, nome, argumentos))
             .unwrap_or_else(|| Err(format!("ferramenta desconhecida: {nome}"))),
     }
 }
