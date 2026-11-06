@@ -619,6 +619,7 @@ fn rotas() -> Router<Arc<EngineState>> {
         .route("/atencao",get(attention))
         .route("/sessoes",post(create_session))
         .route("/parear",post(parear))
+        .merge(super::segundo_plano::rotas())
 }
 
 fn router(state: Arc<EngineState>) -> Router {
@@ -745,7 +746,7 @@ fn current(state: &EngineState, id: &str) -> Result<(omni_core::conversations::C
     Ok((conversation,session))
 }
 
-fn linked_session(state: &EngineState, conversation: &omni_core::conversations::Conversation) -> Option<Arc<LiveSession>> {
+pub(crate) fn linked_session(state: &EngineState, conversation: &omni_core::conversations::Conversation) -> Option<Arc<LiveSession>> {
     conversation.segments.last().and_then(|segment| {
         let sessions = state.sessions.lock().ok()?;
         let SessionEntry::Live(session) = sessions.get(segment.terminal_session_id.as_deref()?)? else { return None };
@@ -3209,6 +3210,19 @@ quebra"}"#] {
         assert_eq!(app.clone().oneshot(com_token("segredx")).await.unwrap().status(),StatusCode::UNAUTHORIZED);
         assert_eq!(app.clone().oneshot(com_token("segredo")).await.unwrap().status(),StatusCode::OK);
         assert_ne!(app.oneshot(req("GET","/","","")).await.unwrap().status(),StatusCode::UNAUTHORIZED);
+    }
+
+    /// A rota nova nasce atrás do mesmo `same_origin`: sem token certo, 401; Host estranho, 403.
+    #[tokio::test] async fn rota_do_segundo_plano_exige_token() {
+        let (_dir,state) = fixture();
+        state.mobile.config.lock().unwrap().token = "segredo".into();
+        let app = router(state);
+        let pedido = |host:&str, token:&str| Request::builder().method("GET").uri("/segundo-plano?projeto=p").header("host",host)
+            .header("x-omni-token",token).body(Body::empty()).unwrap();
+        assert_eq!(app.clone().oneshot(pedido("127.0.0.1:47322","")).await.unwrap().status(),StatusCode::UNAUTHORIZED);
+        assert_eq!(app.clone().oneshot(pedido("127.0.0.1:47322","errado")).await.unwrap().status(),StatusCode::UNAUTHORIZED);
+        assert_eq!(app.clone().oneshot(pedido("evil.example","segredo")).await.unwrap().status(),StatusCode::FORBIDDEN);
+        assert_eq!(app.oneshot(pedido("127.0.0.1:47322","segredo")).await.unwrap().status(),StatusCode::OK);
     }
 
     #[test] fn habilitar_gera_token_e_o_desktop_nao_escolhe_o_segredo() {
