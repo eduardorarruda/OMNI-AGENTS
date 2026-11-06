@@ -18,6 +18,7 @@ pub mod comandos;
 pub mod armazenamento;
 pub mod mestra;
 pub mod exportar;
+pub mod tokens;
 pub mod processos;
 
 use serde::{Deserialize, Serialize};
