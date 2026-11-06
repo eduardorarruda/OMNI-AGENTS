@@ -25,7 +25,7 @@ pub struct Contexto {
     pub agentes_globais: Option<PathBuf>,
     /// Pasta em que a CLI abriu este MCP: a do projeto da conversa.
     pub pasta_atual: Option<PathBuf>,
-    /// Esta sessão pegou tarefa externa: o que ela iniciar para nas Aprovações.
+    /// Esta sessão viu tarefa externa. Quem lê e grava é `marca_de_fora`, que também olha o disco.
     pub veio_de_fora: Arc<AtomicBool>,
 }
 
@@ -44,7 +44,8 @@ impl Contexto {
             .or_else(|| Some(caminho_padrao()?.parent()?.parent()?.join("engine")))
             .unwrap_or_default();
         Self {
-            pasta_do_engine,
+            // `mcp::responder` chega aqui, e a marca de tarefa grava nesta pasta: teste nunca toca a real.
+            pasta_do_engine: if cfg!(test) { std::env::temp_dir().join("omni-rag-testes") } else { pasta_do_engine },
             porta: std::env::var("OMNI_ENGINE_PORT").ok().and_then(|porta| porta.parse().ok()).unwrap_or(PORTA_PADRAO),
             fluxos_globais: omni_core::fluxos::pasta_global(),
             agentes_globais: omni_core::agentes::pasta_global(),

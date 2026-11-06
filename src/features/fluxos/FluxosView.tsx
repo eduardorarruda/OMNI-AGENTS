@@ -21,7 +21,7 @@ import "../../mobile/mobile.css";
 import { ArestaDoFluxo, type ArestaOmni } from "./ArestaDoFluxo";
 import { ICONE, NoDoFluxoView, type NoOmni } from "./NoDoFluxo";
 import { NovoFluxo } from "./NovoFluxo";
-import { nosAtivos } from "./execucaoModel";
+import { nosAtivos, perguntaDoNo } from "./execucaoModel";
 import { aoPedirExecucao, consumirPedidoDeExecucao } from "./pedidoDeExecucao";
 import { LinhaDoTempo } from "./LinhaDoTempo";
 import { SeletorDeSubfluxo, TrilhaDeSubfluxo } from "./TrilhaDeSubfluxo";
@@ -789,7 +789,7 @@ function PainelDaExecucao({ execucao, no, onErro, onAbrirSessao, onVoltar }: { e
       )}
       {estado?.status === "aguardando" && (
         <div className="fx-aprovar">
-          <p>{String(no.config.pergunta || "Continuar?")}</p>
+          <p>{perguntaDoNo(no)}</p>
           <div className="flex gap-2">
             <Button size="sm" variant="primary" onClick={() => void aprovarNo(execucao.id, no.id, true).catch((e) => onErro(erroDe(e)))}>Aprovar</Button>
             <Button size="sm" variant="ghost" onClick={() => void aprovarNo(execucao.id, no.id, false).catch((e) => onErro(erroDe(e)))}>Recusar</Button>

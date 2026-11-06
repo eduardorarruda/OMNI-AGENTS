@@ -33,6 +33,22 @@ it("fluxo parado na aprovação aparece com a saída anterior e Aprovar manda si
   expect(screen.queryByText("Publicar a versão?")).not.toBeInTheDocument();
 });
 
+it("celular mostra a etapa de tarefa de fora parada, sem nó Aprovação", async () => {
+  const segurada = {
+    ...execucao, fluxo: { nome: "Vinda de fora", conexoes: [], nos: [{ id: "c", tipo: "comando", titulo: "Rodar script", config: { comando: "./deploy.sh" } }] },
+    nos: { c: { status: "aguardando", saida: "" } },
+  };
+  request.mockImplementation(async (path: string) => {
+    if (path === "/fluxos/execucoes") return [{ id: "ex1", status: "aguardando" }];
+    if (path === "/fluxos/execucoes/ex1") return segurada;
+    return { ok: true };
+  });
+  render(<AprovacoesDeFluxo />);
+  expect(await screen.findByText(/Tarefa de fora: liberar “Rodar script”/)).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Recusar" }));
+  expect(request).toHaveBeenCalledWith("/fluxos/execucoes/ex1/nos/c/aprovar", expect.objectContaining({ body: JSON.stringify({ sim: false }) }));
+});
+
 it("engine sem as rotas de fluxo não mostra nada", async () => {
   request.mockRejectedValue(new Error("Falha HTTP 404"));
   const { container } = render(<AprovacoesDeFluxo />);

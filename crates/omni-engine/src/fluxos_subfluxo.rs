@@ -10,7 +10,7 @@ use std::time::Duration;
 
 const INTERVALO_DA_ESPERA: Duration = Duration::from_millis(500);
 
-fn esta_viva(e: &Execucao) -> bool { matches!(e.status.as_str(), "rodando" | "aguardando") }
+pub(super) fn esta_viva(e: &Execucao) -> bool { matches!(e.status.as_str(), "rodando" | "aguardando") }
 
 /// Filhas diretas de uma execução, inclusive as de voltas anteriores do mesmo nó. Lê o mapa, não os
 /// nós do pai: assim acha até a filha recém-aberta. Solta o mapa antes de travar cada execução, porque

@@ -515,8 +515,16 @@ pub fn mascarada(tarefa: &Tarefa) -> Tarefa {
 
 /// `listar_tarefas` do MCP: curta de propósito, o detalhe vem do `ler_tarefa`. A busca olha o dado
 /// inteiro, e só a linha que sai é mascarada.
+fn busca_normalizada(busca: Option<&str>) -> String { busca.unwrap_or_default().trim().to_lowercase() }
+
+/// A lista traria alguma tarefa? É o que decide se a sessão viu texto de fora.
+pub fn tem_achadas(cache: &Cache, busca: Option<&str>) -> bool {
+    let busca = busca_normalizada(busca);
+    cache.tarefas.iter().any(|tarefa| combina(tarefa, &busca))
+}
+
 pub fn lista_resumida(cache: &Cache, busca: Option<&str>, agora: i64, sem_mascara: bool) -> String {
-    let busca = busca.unwrap_or_default().trim().to_lowercase();
+    let busca = busca_normalizada(busca);
     let achadas: Vec<&Tarefa> = cache.tarefas.iter().filter(|tarefa| combina(tarefa, &busca)).collect();
     if achadas.is_empty() { return sem_achados(cache, &busca, agora); }
     let mut linhas = vec![format!("{} tarefas, cache atualizado {} {MARCA}", achadas.len(), idade_do_cache(cache, agora))];

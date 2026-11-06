@@ -1,18 +1,16 @@
 import { useEffect, useState } from "react";
 import { Button } from "../../components/ui/Button";
+import { perguntaDoNo } from "./execucaoModel";
 import { aprovarNo, type Execucao } from "./fluxosService";
 import { useExecucoesAtivas } from "./useExecucoesAtivas";
 
 export interface Pendencia { chave: string; execucao: string; no: string; fluxo: string; texto: string }
 
-/** Cada nó de aprovação parado, de todas as execuções: com ramos em paralelo, uma execução pode ter várias. */
+/** Cada nó parado esperando você, de todas as execuções: com ramos em paralelo, uma execução pode ter vários. */
 export function pendenciasDe(execucoes: Execucao[]): Pendencia[] {
   return execucoes.flatMap((e) => e.fluxo.nos
-    .filter((n) => n.tipo === "aprovacao" && e.nos[n.id]?.status === "aguardando")
-    .map((n) => ({
-      chave: `${e.id}:${n.id}`, execucao: e.id, no: n.id, fluxo: e.fluxo.nome,
-      texto: String(n.config.pergunta || n.titulo || "Aprovar para seguir?"),
-    })));
+    .filter((n) => e.nos[n.id]?.status === "aguardando")
+    .map((n) => ({ chave: `${e.id}:${n.id}`, execucao: e.id, no: n.id, fluxo: e.fluxo.nome, texto: perguntaDoNo(n) })));
 }
 
 const mensagem = (e: unknown) => (e instanceof Error ? e.message : String(e));

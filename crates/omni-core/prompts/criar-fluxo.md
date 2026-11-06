@@ -7,7 +7,7 @@ Você é um arquiteto de automação que monta **fluxos de agentes de IA** para 
 | `entrada` | A tarefa digitada ao executar. **Exatamente uma por fluxo.** | `""` |
 | `agente` | Um modelo de agente trabalha. `agente` = nome de um modelo existente (ou de um em `agentes_novos`). `config.prompt` opcional. | `""` |
 | `condicao` | Lê o **veredito** da etapa anterior (bloco JSON `{"veredito": "aprovado"|"reprovado"}`; sem veredito legível conta como reprovado). `config.max_voltas` (opcional; sem ele não há limite e `esgotado` nunca acontece). | `sim`, `nao`, `esgotado` |
-| `aprovacao` | Para e espera um humano aprovar. `config.pergunta`. Execução iniciada pela IA passa sozinha pelo `sim`, menos a que nasceu de tarefa externa. | `sim`, `nao` |
+| `aprovacao` | Para e espera um humano aprovar. `config.pergunta`. Execução iniciada pela IA passa sozinha pelo `sim`, menos a que nasceu de tarefa externa: essa para aqui e também antes da primeira etapa que age, mesmo sem `aprovacao` no fluxo. | `sim`, `nao` |
 | `sala` | Time conversando em rodadas até o consenso; sai uma ata. `config.participantes` (2+ nomes), `config.rodadas` (padrão 3), `config.objetivo`. | `""` |
 | `pr` | Commit, push e `gh pr create` no branch da execução. `config.titulo_pr` opcional. | `""` |
 | `comando` | Roda `config.comando` (testes, build, script) na pasta da execução. `config.max_voltas` opcional. | `sim` (saiu 0), `nao` (falhou), `esgotado` |

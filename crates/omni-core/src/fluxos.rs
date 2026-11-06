@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 #[path = "fluxos_ensaio.rs"]
 pub mod ensaio;
 /// Vai no ambiente dos agentes de uma execução nascida de tarefa externa. O MCP deles começa marcado,
-/// e o que iniciarem também para nas Aprovações.
+/// e o que iniciarem também espera um humano.
 pub const VARIAVEL_DE_FORA: &str = "OMNI_VEIO_DE_FORA";
 
 #[path = "fluxos_limites.rs"]
@@ -259,6 +259,32 @@ pub fn saida_do_juntar(f: &Fluxo, no: &str, saidas: &HashMap<String, String>) ->
     }).collect::<Vec<_>>().join("\n\n")
 }
 
+/// Etapa que faz alguma coisa no mundo. Subfluxo não conta: quem age é a filha, que tem a própria
+/// parada, e a busca segue através dele. Sem `_`: tipo novo tem que decidir aqui.
+fn etapa_age(tipo: &TipoDeNo) -> bool {
+    match tipo {
+        TipoDeNo::Agente | TipoDeNo::Sala | TipoDeNo::Pr | TipoDeNo::Comando => true,
+        TipoDeNo::Entrada | TipoDeNo::Condicao | TipoDeNo::Aprovacao | TipoDeNo::Juntar | TipoDeNo::Subfluxo | TipoDeNo::Fim => false,
+    }
+}
+
+/// As etapas que agem sem que nada tenha passado por um humano: as primeiras de cada caminho desde a
+/// entrada. O `sim` de uma Aprovação encerra o caminho; o `nao` não, porque recusar não é aprovar o que
+/// vem depois. É o que uma execução de tarefa externa não pode rodar sozinha.
+pub fn primeiras_que_agem(f: &Fluxo) -> HashSet<&str> {
+    let mut pendentes: Vec<&str> = entrada(f).map(|no| no.id.as_str()).into_iter().collect();
+    let mut vistos = HashSet::new();
+    let mut achadas = HashSet::new();
+    while let Some(atual) = pendentes.pop() {
+        if !vistos.insert(atual) { continue; }
+        let Some(no) = f.nos.iter().find(|no| no.id == atual) else { continue };
+        if etapa_age(&no.tipo) { achadas.insert(atual); continue; }
+        let aprovacao = no.tipo == TipoDeNo::Aprovacao;
+        pendentes.extend(f.conexoes.iter().filter(|c| c.de == atual && !(aprovacao && c.saida == "sim")).map(|c| c.para.as_str()));
+    }
+    achadas
+}
+
 pub fn entrada(f: &Fluxo) -> Option<&No> {
     f.nos.iter().find(|n| n.tipo == TipoDeNo::Entrada)
 }
@@ -427,6 +453,53 @@ pub fn apagar(pasta: &Path, id: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fluxo_de(nos: &[(&str, &str)], conexoes: &[(&str, &str, &str)]) -> Fluxo {
+        let nos: Vec<Value> = nos.iter().map(|(id, tipo)| serde_json::json!({"id": id, "tipo": tipo})).collect();
+        let conexoes: Vec<Value> = conexoes.iter().map(|(de, para, saida)| serde_json::json!({"de": de, "para": para, "saida": saida})).collect();
+        serde_json::from_value(serde_json::json!({"id": "t", "nome": "T", "nos": nos, "conexoes": conexoes})).unwrap()
+    }
+
+    fn primeiras(f: &Fluxo) -> Vec<&str> {
+        let mut lista: Vec<&str> = primeiras_que_agem(f).into_iter().collect();
+        lista.sort_unstable();
+        lista
+    }
+
+    #[test]
+    fn todo_tipo_que_age_conta_como_primeira_etapa() {
+        for tipo in ["agente", "sala", "pr", "comando"] {
+            let f = fluxo_de(&[("e", "entrada"), ("x", tipo), ("f", "fim")], &[("e", "x", ""), ("x", "f", "")]);
+            assert_eq!(primeiras(&f), ["x"], "{tipo}");
+        }
+    }
+
+    #[test]
+    fn primeira_etapa_atravessa_o_que_nao_age_e_para_na_primeira() {
+        let f = fluxo_de(&[("e", "entrada"), ("c", "condicao"), ("s", "subfluxo"), ("a", "agente"), ("b", "comando"), ("f", "fim")],
+            &[("e", "c", ""), ("c", "s", "nao"), ("s", "a", ""), ("a", "b", ""), ("b", "f", "sim")]);
+        assert_eq!(primeiras(&f), ["a"]);
+    }
+
+    #[test]
+    fn so_o_sim_da_aprovacao_encerra_o_caminho() {
+        let f = fluxo_de(&[("e", "entrada"), ("ok", "aprovacao"), ("a", "comando"), ("b", "comando"), ("f", "fim")],
+            &[("e", "ok", ""), ("ok", "a", "sim"), ("ok", "b", "nao"), ("a", "f", "sim"), ("b", "f", "sim")]);
+        assert_eq!(primeiras(&f), ["b"]);
+    }
+
+    #[test]
+    fn etapa_com_caminho_sem_aprovacao_para_mesmo_com_outro_aprovado() {
+        let f = fluxo_de(&[("e", "entrada"), ("ok", "aprovacao"), ("a", "comando"), ("f", "fim")],
+            &[("e", "ok", ""), ("e", "a", ""), ("ok", "a", "sim"), ("a", "f", "sim")]);
+        assert_eq!(primeiras(&f), ["a"]);
+    }
+
+    #[test]
+    fn fluxo_sem_etapa_que_age_nao_para() {
+        let f = fluxo_de(&[("e", "entrada"), ("f", "fim")], &[("e", "f", "")]);
+        assert!(primeiras_que_agem(&f).is_empty());
+    }
 
     #[test]
     fn fluxos_prontos_validam() {
