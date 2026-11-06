@@ -4,8 +4,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { DetalheDaConta } from "../features/terminal/DetalheDaConta";
 import { AgentUsageStatus } from "../features/terminal/AgentUsageStatus";
 import { UsoDeTodasAsContas } from "../features/terminal/UsoDeTodasAsContas";
-import { SessionProvidersContext } from "../features/terminal/sessionProviders";
-import type { TerminalSession } from "../features/terminal/terminalService";
 
 const RENOVA_5H = Date.UTC(2026, 10, 6, 18, 0) / 1000;
 const RENOVA_SEMANA = Date.UTC(2026, 10, 9, 12, 0) / 1000;
@@ -100,7 +98,3 @@ it("rodapé busca os tokens da conta no engine e mostra \"não disponível\" ond
   expect(await within(detalhe).findByText(/1\.200 entrada · 340 saída · 5\.000 cache/)).toBeInTheDocument();
   expect(within(detalhe).getByText("não disponível")).toBeInTheDocument();
 });
-
-// Evita aviso de import não usado quando o contexto de sessão não é preciso.
-void SessionProvidersContext;
-void ({} as TerminalSession);

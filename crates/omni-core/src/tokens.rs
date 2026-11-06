@@ -26,6 +26,7 @@ pub struct CacheDeArquivos {
     pub leituras: u64,
 }
 
+const MOTIVO_SEM_LEITURA: &str = "Não foi possível ler os históricos desta conta";
 const MS_DIA: i64 = 86_400_000;
 
 /// Meia-noite local do dia de `ms`, `dias_atras` dias antes.
@@ -48,19 +49,21 @@ fn carimbo(caminho: &Path) -> Option<(u64, u64)> {
 }
 
 /// Registros do arquivo, do cache quando mtime e tamanho não mudaram.
-fn registros<'a>(cache: &'a mut CacheDeArquivos, caminho: &Path, ler: fn(&Path) -> Vec<Registro>) -> &'a [Registro] {
+/// `None` quando o arquivo não abre (nada é guardado, a próxima chamada tenta de novo).
+fn registros<'a>(cache: &'a mut CacheDeArquivos, caminho: &Path, ler: fn(&Path) -> Option<Vec<Registro>>) -> Option<&'a [Registro]> {
     let carimbo = carimbo(caminho).unwrap_or((0, 0));
     let valido = cache.arquivos.get(caminho).is_some_and(|(m, t, _)| (*m, *t) == carimbo);
     if !valido {
         cache.leituras += 1;
-        cache.arquivos.insert(caminho.to_path_buf(), (carimbo.0, carimbo.1, ler(caminho)));
+        let lidos = ler(caminho)?;
+        cache.arquivos.insert(caminho.to_path_buf(), (carimbo.0, carimbo.1, lidos));
     }
-    &cache.arquivos[caminho].2
+    Some(&cache.arquivos[caminho].2)
 }
 
-fn ler_claude(caminho: &Path) -> Vec<Registro> {
+fn ler_claude(caminho: &Path) -> Option<Vec<Registro>> {
     use std::io::BufRead;
-    let Ok(arquivo) = std::fs::File::open(caminho) else { return Vec::new() };
+    let arquivo = std::fs::File::open(caminho).ok()?;
     let mut saida = Vec::new();
     for linha in std::io::BufReader::new(arquivo).lines().map_while(Result::ok) {
         if !linha.contains("\"usage\"") { continue; }
@@ -73,12 +76,12 @@ fn ler_claude(caminho: &Path) -> Vec<Registro> {
             cache: numero(&uso["cache_creation_input_tokens"]) + numero(&uso["cache_read_input_tokens"]),
         } });
     }
-    saida
+    Some(saida)
 }
 
-fn ler_codex(caminho: &Path) -> Vec<Registro> {
+fn ler_codex(caminho: &Path) -> Option<Vec<Registro>> {
     use std::io::BufRead;
-    let Ok(arquivo) = crate::abrir(caminho) else { return Vec::new() };
+    let arquivo = crate::abrir(caminho).ok()?;
     let mut saida = Vec::new();
     for linha in std::io::BufReader::new(arquivo).lines().map_while(Result::ok) {
         if !linha.contains("token_count") { continue; }
@@ -93,7 +96,7 @@ fn ler_codex(caminho: &Path) -> Vec<Registro> {
         } });
     }
     saida.sort_by_key(|r| r.ts_ms);
-    saida
+    Some(saida)
 }
 
 fn jsonl_recursivo(pasta: &Path, fundo: usize, achados: &mut Vec<PathBuf>) {
@@ -122,14 +125,19 @@ pub fn tokens_claude(pasta: &Path, agora_ms: i64, cache: &mut CacheDeArquivos) -
     let mut arquivos = Vec::new();
     jsonl_recursivo(&raiz, 0, &mut arquivos);
     let mut por_id: HashMap<String, Registro> = HashMap::new();
+    let (mut tentados, mut lidos) = (0, 0);
     for caminho in arquivos {
         if carimbo(&caminho).is_some_and(|(m, _)| (m as i64) < ini_7) { continue; }
-        for r in registros(cache, &caminho, ler_claude).iter().filter(|r| r.ts_ms >= ini_7 && r.ts_ms <= agora_ms) {
+        tentados += 1;
+        let Some(lista) = registros(cache, &caminho, ler_claude) else { continue };
+        lidos += 1;
+        for r in lista.iter().filter(|r| r.ts_ms >= ini_7 && r.ts_ms <= agora_ms) {
             let Some(id) = r.id.clone() else { continue };
             // Resposta regravada: vale a versão mais completa.
             if por_id.get(&id).is_none_or(|antigo| r.c.saida >= antigo.c.saida) { por_id.insert(id, r.clone()); }
         }
     }
+    if tentados > 0 && lidos == 0 { return tokens_indisponiveis(MOTIVO_SEM_LEITURA); }
     let (mut hoje, mut sete) = (Contagem::default(), Contagem::default());
     for r in por_id.values() {
         sete = soma(sete, r.c);
@@ -145,14 +153,18 @@ pub fn tokens_codex(pasta: &Path, agora_ms: i64, cache: &mut CacheDeArquivos) ->
     if !raiz.is_dir() { return tokens_indisponiveis("Esta conta ainda não tem histórico do Codex"); }
     let (ini_hoje, ini_7) = (inicio_do_dia_local(agora_ms, 0), inicio_do_dia_local(agora_ms, 6));
     let (mut hoje, mut sete) = (Contagem::default(), Contagem::default());
+    let (mut tentados, mut lidos) = (0, 0);
     for caminho in crate::rollouts(&raiz) {
         if carimbo(&caminho).is_some_and(|(m, _)| (m as i64) < ini_7) { continue; }
-        let lista = registros(cache, &caminho, ler_codex);
+        tentados += 1;
+        let Some(lista) = registros(cache, &caminho, ler_codex) else { continue };
+        lidos += 1;
         let Some(fim) = lista.iter().rfind(|r| r.ts_ms <= agora_ms).map(|r| r.c) else { continue };
         let antes = |inicio: i64| lista.iter().rfind(|r| r.ts_ms < inicio).map(|r| r.c).unwrap_or_default();
         hoje = soma(hoje, diferenca(fim, antes(ini_hoje)));
         sete = soma(sete, diferenca(fim, antes(ini_7)));
     }
+    if tentados > 0 && lidos == 0 { return tokens_indisponiveis(MOTIVO_SEM_LEITURA); }
     TokensDaConta { hoje: Some(hoje), sete_dias: Some(sete), motivo: None }
 }
 
@@ -214,6 +226,31 @@ mod testes {
         let r = tokens_claude(d.path(), agora, &mut CacheDeArquivos::default());
         assert_eq!(r.hoje, Some(Contagem { entrada: 1, saida: 1, cache: 0 }));
         assert_eq!(r.sete_dias, Some(Contagem { entrada: 6, saida: 6, cache: 0 }));
+    }
+
+    #[test]
+    fn mesmo_id_em_dois_arquivos_conta_uma_vez() {
+        let agora = meia_noite_local_ms() + 3_600_000;
+        let d = pasta_claude(&[msg_claude("m1", agora - 1000, 10, 20, 0, 0)]);
+        let outro = d.path().join("projects/outro");
+        fs::create_dir_all(&outro).unwrap();
+        fs::write(outro.join("b.jsonl"), msg_claude("m1", agora - 1000, 10, 20, 0, 0)).unwrap();
+        let r = tokens_claude(d.path(), agora, &mut CacheDeArquivos::default());
+        assert_eq!(r.hoje, Some(Contagem { entrada: 10, saida: 20, cache: 0 }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn arquivos_ilegiveis_viram_nao_disponivel_e_nao_zero() {
+        use std::os::unix::fs::PermissionsExt;
+        let agora = meia_noite_local_ms() + 3_600_000;
+        let d = pasta_claude(&[msg_claude("m1", agora - 1000, 10, 20, 0, 0)]);
+        let arq = d.path().join("projects/proj/a.jsonl");
+        fs::set_permissions(&arq, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::File::open(&arq).is_ok() { return; } // como root a permissão não vale
+        let r = tokens_claude(d.path(), agora, &mut CacheDeArquivos::default());
+        assert_eq!((r.hoje, r.sete_dias), (None, None));
+        assert!(r.motivo.is_some());
     }
 
     #[test]
