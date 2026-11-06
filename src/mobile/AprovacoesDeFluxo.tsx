@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "../components/ui/Button";
 import { request } from "./api";
+import { avisarFluxos, novosAvisosDeFluxo, type AvisoDeFluxo } from "./notificacoes";
 
 /** Só o que esta tela lê da execução (o tipo completo mora em `features/fluxos/fluxosService.ts`, que é do PC). */
 interface Execucao {
@@ -31,12 +32,16 @@ export function AprovacoesDeFluxo({ aoMudar }: { aoMudar?: (quantas: number) => 
   const [pendentes, setPendentes] = useState<Pendente[]>([]);
   const [respondendo, setRespondendo] = useState<string | null>(null);
   const [erro, setErro] = useState<{ execucao: string; texto: string } | null>(null);
+  const avisosVistos = useRef(new Map<string, number>());
+  const primeiraLeitura = useRef(true);
 
   useEffect(() => {
     let vivo = true;
     async function ler() {
       try {
-        const lista = await request<{ id: string; status: string }[]>("/fluxos/execucoes");
+        const lista = await request<(AvisoDeFluxo & { status: string })[]>("/fluxos/execucoes");
+        avisarFluxos(novosAvisosDeFluxo(lista, avisosVistos.current, primeiraLeitura.current));
+        primeiraLeitura.current = false;
         const detalhes = await Promise.all(lista.filter((e) => e.status === "aguardando")
           .map((e) => request<Execucao>(`/fluxos/execucoes/${encodeURIComponent(e.id)}`)));
         if (vivo) setPendentes(pendentesDe(detalhes));

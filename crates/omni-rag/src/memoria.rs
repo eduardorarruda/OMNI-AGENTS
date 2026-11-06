@@ -17,7 +17,7 @@ const MAIOR_RESPOSTA: usize = 5000;
 const MAIOR_TITULO: usize = 90;
 const MENOR_CORPO: usize = 20;
 const TERMOS_NA_BUSCA: usize = 12;
-const PALAVRAS_VAZIAS: [&str; 24] = ["para", "como", "qual", "quais", "esse", "essa", "isso", "este", "esta", "aqui", "mais", "pode", "fazer", "tenho",
+pub(crate) const PALAVRAS_VAZIAS: [&str; 24] = ["para", "como", "qual", "quais", "esse", "essa", "isso", "este", "esta", "aqui", "mais", "pode", "fazer", "tenho",
     "quero", "preciso", "minha", "meus", "onde", "quando", "porque", "agora", "with", "that"];
 
 pub const ESQUEMA: &str = "
@@ -54,15 +54,20 @@ pub struct Turno {
     pub ferramentas: Vec<String>,
 }
 
-pub fn slug_de(titulo: &str) -> String {
-    let base: String = titulo.chars().map(|letra| match letra {
+/// Sempre uma letra por letra: quem acha a posição numa cópia sem acento usa a mesma no original.
+pub(crate) fn sem_acento(letra: char) -> char {
+    match letra {
         'á' | 'à' | 'ã' | 'â' | 'Á' | 'À' | 'Ã' | 'Â' => 'a', 'é' | 'ê' | 'É' | 'Ê' => 'e', 'í' | 'Í' => 'i',
         'ó' | 'ô' | 'õ' | 'Ó' | 'Ô' | 'Õ' => 'o', 'ú' | 'Ú' => 'u', 'ç' | 'Ç' => 'c', outra => outra.to_ascii_lowercase(),
-    }).map(|letra| if letra.is_ascii_alphanumeric() { letra } else { '-' }).collect();
+    }
+}
+
+pub fn slug_de(titulo: &str) -> String {
+    let base: String = titulo.chars().map(sem_acento).map(|letra| if letra.is_ascii_alphanumeric() { letra } else { '-' }).collect();
     base.split('-').filter(|parte| !parte.is_empty()).collect::<Vec<_>>().join("-")
 }
 
-fn so_letras(texto: &str) -> String {
+pub(crate) fn so_letras(texto: &str) -> String {
     texto.chars().filter(|letra| letra.is_alphanumeric()).flat_map(char::to_lowercase).collect()
 }
 
@@ -81,7 +86,7 @@ fn termos(texto: &str) -> Vec<String> {
         .collect()
 }
 
-fn cortar(texto: &str, limite: usize) -> String {
+pub(crate) fn cortar(texto: &str, limite: usize) -> String {
     let compacto = texto.split_whitespace().collect::<Vec<_>>().join(" ");
     if compacto.chars().count() <= limite { return compacto; }
     format!("{}…", compacto.chars().take(limite).collect::<String>())
@@ -178,7 +183,7 @@ impl Base {
     }
 }
 
-fn nota_da_linha(linha: &rusqlite::Row) -> rusqlite::Result<Nota> {
+pub(crate) fn nota_da_linha(linha: &rusqlite::Row) -> rusqlite::Result<Nota> {
     Ok(Nota { slug: linha.get(0)?, titulo: linha.get(1)?, corpo: linha.get(2)?, tags: linha.get(3)?, projeto: linha.get(4)?, origem: linha.get(5)?, conversa: linha.get(6)? })
 }
 

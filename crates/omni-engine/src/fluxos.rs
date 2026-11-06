@@ -7,6 +7,7 @@ use super::*;
 use omni_core::fluxos::{self, Contexto, Fluxo, TipoDeNo};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::io::BufRead;
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
@@ -77,6 +78,20 @@ pub struct Execucao {
     pub pr_url: Option<String>,
     #[serde(default)]
     pub custo_usd: f64,
+    /// `pastas_extras` do fluxo já resolvidas contra o projeto: o que vira `--add-dir`.
+    #[serde(default)]
+    pub pastas_extras: Vec<String>,
+    /// Custo que você já aceitou ao retomar depois do limite: `custo_maximo` conta a partir daqui.
+    #[serde(default)]
+    pub custo_aceito: f64,
+    /// Pausada pelo `custo_maximo`. Só o usuário retoma: o MCP recusa.
+    #[serde(default)]
+    pub parou_por_custo: bool,
+    /// Sobe a cada evento que merece aviso, como o `attention_seq` das sessões; `aviso` diz qual foi.
+    #[serde(default)]
+    pub aviso_seq: u32,
+    #[serde(default)]
+    pub aviso: Option<String>,
 }
 
 type Viva = Arc<Mutex<Execucao>>;
@@ -92,7 +107,7 @@ fn gravar(state: &EngineState, e: &Execucao) {
     let _ = atomic_write_json(&pasta.join(format!("{}.json", e.id)), e);
 }
 
-fn id_valido(id: &str) -> bool { !id.is_empty() && id.len() <= 80 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') }
+use omni_core::fluxos::id_valido;
 
 /// Lê as execuções do disco ao subir o engine. O que estava rodando volta como pausado: o processo
 /// da CLI morreu junto com o engine, e retomar é decisão sua.
@@ -114,7 +129,7 @@ pub fn listar() -> Vec<Value> {
     lista.sort_by_key(|e| std::cmp::Reverse(e.criado_ms));
     lista.into_iter().map(|e| json!({"id": e.id, "fluxo": e.fluxo.nome, "fluxo_id": e.fluxo.id, "projeto": e.projeto, "projeto_id": e.projeto_id,
         "entrada": e.entrada.chars().take(160).collect::<String>(), "status": e.status, "criado_ms": e.criado_ms, "atualizado_ms": e.atualizado_ms,
-        "pr_url": e.pr_url, "custo_usd": e.custo_usd, "erro": e.erro})).collect()
+        "pr_url": e.pr_url, "custo_usd": e.custo_usd, "erro": e.erro, "aviso_seq": e.aviso_seq, "aviso": e.aviso})).collect()
 }
 
 pub fn obter(id: &str) -> Option<Execucao> { execucoes().lock().ok()?.get(id)?.lock().ok().map(|e| e.clone()) }
@@ -133,6 +148,13 @@ fn git(pasta: &str, args: &[&str]) -> Result<String> {
 fn sem_janela(c: &mut Command) {
     #[cfg(windows)] { use std::os::windows::process::CommandExt; c.creation_flags(0x0800_0000); }
     let _ = c;
+}
+
+fn resolver_pastas(fluxo: &Fluxo, projeto: &str) -> Result<Vec<String>> {
+    let home = fluxos::pasta_do_usuario();
+    fluxo.pastas_extras.iter().map(|pasta| {
+        fluxos::resolver_pasta_extra(Path::new(projeto), pasta, home.as_deref()).map(|real| fluxos::texto_do_caminho(&real)).map_err(|erro| anyhow!(erro))
+    }).collect()
 }
 
 /// Começa uma execução: prepara o worktree e solta a thread.
@@ -157,10 +179,12 @@ pub fn iniciar(state: &Arc<EngineState>, fluxo: Fluxo, projeto: String, projeto_
     } else {
         (projeto.clone(), None, None)
     };
+    let pastas_extras = resolver_pastas(&fluxo, &projeto)?;
     let inicio = fluxos::entrada(&fluxo).ok_or_else(|| anyhow!("sem entrada"))?.id.clone();
     let nos = fluxo.nos.iter().map(|n| (n.id.clone(), EstadoDoNo { status: "pendente".into(), ..Default::default() })).collect();
     let e = Execucao { id: id.clone(), fluxo, projeto, projeto_id, entrada, pasta, branch, base, status: "rodando".into(), erro: None,
-        criado_ms: agora, atualizado_ms: agora, nos, fila: vec![Passo { no: inicio, de: None }], pr_url: None, custo_usd: 0.0 };
+        criado_ms: agora, atualizado_ms: agora, nos, fila: vec![Passo { no: inicio, de: None }], pr_url: None, custo_usd: 0.0,
+        pastas_extras, custo_aceito: 0.0, parou_por_custo: false, aviso_seq: 0, aviso: None };
     gravar(state, &e);
     execucoes().lock().map_err(|_| anyhow!("execucoes"))?.insert(id.clone(), Arc::new(Mutex::new(e.clone())));
     soltar(state.clone(), id);
@@ -172,29 +196,63 @@ fn soltar(state: Arc<EngineState>, id: String) { std::thread::spawn(move || exec
 /// Muda a execução e grava. Devolve o que a função devolveu.
 fn mexer<T>(state: &EngineState, v: &Viva, f: impl FnOnce(&mut Execucao) -> T) -> T {
     let mut e = v.lock().expect("execucao");
+    let status_antes = e.status.clone();
     let r = f(&mut e);
+    if e.status != status_antes { registrar_aviso(&mut e); }
     e.atualizado_ms = now_ms();
     gravar(state, &e);
     r
 }
 
+/// O que a tela e o celular precisam avisar quando a execução muda de status.
+fn registrar_aviso(e: &mut Execucao) {
+    let aviso = match e.status.as_str() {
+        "aguardando" => "aprovacao",
+        "falhou" => "falhou",
+        "concluido" => "concluido",
+        "pausado" if e.parou_por_custo => "custo",
+        _ => return,
+    };
+    e.aviso = Some(aviso.into());
+    e.aviso_seq += 1;
+}
+
+fn estourou_o_custo(e: &Execucao) -> bool {
+    e.fluxo.custo_maximo.is_some_and(|maximo| e.custo_usd - e.custo_aceito >= maximo)
+}
+
+fn pausar_por_custo(e: &mut Execucao) {
+    let maximo = e.fluxo.custo_maximo.unwrap_or_default();
+    e.parou_por_custo = true;
+    e.status = "pausado".into();
+    e.erro = Some(format!("Pausado pelo limite de custo: US$ {:.2} gastos, limite de US$ {maximo:.2}. O custo de uma etapa só é conhecido quando ela termina, então o total pode passar do limite. Ao retomar, vale mais US$ {maximo:.2}.", e.custo_usd));
+}
+
+/// Tira da fila o que pode rodar agora. Conta o que já está rodando porque `aprovar` solta outro
+/// executor enquanto um ramo ainda trabalha: quem esbarra no teto sai, e o executor daquele ramo
+/// pega o resto da fila quando terminar.
+fn proximo_lote(e: &mut Execucao) -> Option<Vec<Passo>> {
+    if e.status != "rodando" { return None; }
+    let rodando = e.nos.values().filter(|n| n.status == "rodando").count();
+    if e.fila.is_empty() {
+        if rodando == 0 { e.status = "concluido".into(); }
+        return None;
+    }
+    if estourou_o_custo(e) {
+        if rodando == 0 { pausar_por_custo(e); }
+        return None;
+    }
+    let vagas = fluxos::limite_paralelo(&e.fluxo).saturating_sub(rodando).min(e.fila.len());
+    if vagas == 0 { return None; }
+    let lote: Vec<Passo> = e.fila.drain(..vagas).collect();
+    // Já marcados aqui, para outro executor não dar a execução por concluída no meio.
+    for p in &lote { if let Some(n) = e.nos.get_mut(&p.no) { n.status = "rodando".into(); } }
+    Some(lote)
+}
+
 fn executar(state: &Arc<EngineState>, id: &str) {
     let Ok(v) = viva(id) else { return };
-    loop {
-        // A fila inteira de uma vez: os próximos de um nó com várias saídas ligadas são ramos
-        // paralelos e rodam juntos. Já marcados "rodando" aqui, para outro executor (o que `aprovar`
-        // solta enquanto um ramo ainda trabalha) não dar a execução por concluída no meio.
-        let lote = mexer(state, &v, |e| {
-            if e.status != "rodando" { return None; }
-            if e.fila.is_empty() {
-                if !e.nos.values().any(|n| n.status == "rodando") { e.status = "concluido".into(); }
-                return None;
-            }
-            let lote = std::mem::take(&mut e.fila);
-            for p in &lote { if let Some(n) = e.nos.get_mut(&p.no) { n.status = "rodando".into(); } }
-            Some(lote)
-        });
-        let Some(lote) = lote else { break };
+    while let Some(lote) = mexer(state, &v, proximo_lote) {
         // ponytail: ramos paralelos dividem o mesmo worktree; dois agentes no mesmo arquivo brigam.
         // Worktree por ramo + merge no Juntar se isso aparecer.
         let viva_ref = &v;
@@ -203,23 +261,22 @@ fn executar(state: &Arc<EngineState>, id: &str) {
             tarefas.into_iter().filter_map(|t| t.join().ok().and_then(|(passo, r)| r.err().map(|erro| (passo, erro)))).collect()
         });
         if erros.is_empty() { continue; }
-        for (passo, erro) in erros {
+        // Tudo numa operação só: com `falhou` visível antes da segunda etapa do lote, um retomar nesse
+        // intervalo perderia a etapa que ainda não tinha voltado para a fila.
+        mexer(state, &v, |e| for (passo, erro) in &erros {
             let pausado = erro.to_string() == PAUSADO;
-            mexer(state, &v, |e| {
-                if let Some(n) = e.nos.get_mut(&passo.no) {
-                    n.status = if pausado { "pausado".into() } else { "falhou".into() };
-                    if !pausado { n.erro = Some(erro.to_string()); }
-                    n.fim_ms = now_ms();
-                }
-                if pausado {
-                    // Volta para o começo da fila: retomar continua este nó.
-                    e.fila.insert(0, passo.clone());
-                } else if e.status == "rodando" || e.status == "aguardando" {
-                    e.status = "falhou".into();
-                    e.erro = Some(format!("{}: {erro}", passo.no));
-                }
-            });
-        }
+            if let Some(n) = e.nos.get_mut(&passo.no) {
+                n.status = if pausado { "pausado".into() } else { "falhou".into() };
+                if !pausado { n.erro = Some(erro.to_string()); }
+                n.fim_ms = now_ms();
+            }
+            // Volta para o começo da fila com a origem: retomar refaz só esta etapa, com o mesmo `{{anterior}}`.
+            if e.status != "cancelado" { e.fila.insert(0, passo.clone()); }
+            if !pausado && (e.status == "rodando" || e.status == "aguardando") {
+                e.status = "falhou".into();
+                e.erro = Some(format!("{}: {erro}", passo.no));
+            }
+        });
         break;
     }
 }
@@ -245,7 +302,7 @@ fn processar(state: &Arc<EngineState>, v: &Viva, passo: &Passo) -> Result<()> {
         TipoDeNo::Agente => {
             let retomar = v.lock().ok().and_then(|e| e.nos.get(&no.id).filter(|n| n.status == "rodando" && n.session_id.is_some() && n.saida.is_empty()).and_then(|n| n.session_id.clone()));
             let prompt = fluxos::montar_prompt(&no, &ctx);
-            let ajuste = Ajuste { modelo: texto_de(&no.config, "modelo"), esforco: texto_de(&no.config, "esforco"), conta: texto_de(&no.config, "conta") };
+            let ajuste = Ajuste { modelo: texto_de(&no.config, "modelo"), esforco: texto_de(&no.config, "esforco"), conta: texto_de(&no.config, "conta"), ..Ajuste::limites_de(&no) };
             let r = rodar_agente(state, v, &no.id, &no.agente, &prompt, retomar.as_deref(), &pasta, &projeto, &ajuste)?;
             definir_saida(state, v, &no.id, r);
             String::new()
@@ -280,7 +337,8 @@ fn processar(state: &Arc<EngineState>, v: &Viva, passo: &Passo) -> Result<()> {
             let tratado = v.lock().map(|e| !fluxos::proximos(&e.fluxo, &no.id, caminho).is_empty()).unwrap_or(false);
             if !ok && !tratado {
                 let ultima = saida.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("sem saída").to_owned();
-                definir_saida(state, v, &no.id, saida);
+                // Sem `definir_saida`: "concluído" aqui soltaria o Juntar de um ramo irmão antes da falha.
+                mexer(state, v, |e| if let Some(n) = e.nos.get_mut(&no.id) { n.saida = saida; });
                 return Err(anyhow!("o comando falhou: {ultima}"));
             }
             definir_saida(state, v, &no.id, saida);
@@ -295,11 +353,39 @@ fn definir_saida(state: &EngineState, v: &Viva, no: &str, saida: String) {
     mexer(state, v, |e| if let Some(n) = e.nos.get_mut(no) { n.saida = saida; n.status = "concluido".into(); n.fim_ms = now_ms(); });
 }
 
+/// Os próximos de `no`. Na saída `nao` de uma Condição, o revisor pode pedir só alguns ramos
+/// (`refazer`): ele escolhe entre as conexões que já existem, nunca abre caminho novo. Se nenhum id
+/// bater com uma conexão, vale tudo o que está ligado.
+fn proximos_da_saida(e: &Execucao, no: &str, saida: &str) -> Vec<String> {
+    let ligados: Vec<String> = fluxos::proximos(&e.fluxo, no, saida).into_iter().map(|n| n.id.clone()).collect();
+    let eh_condicao = e.fluxo.nos.iter().any(|n| n.id == no && n.tipo == TipoDeNo::Condicao);
+    if saida != "nao" || !eh_condicao { return ligados; }
+    let pedidos = fluxos::refazer(e.nos.get(no).map_or("", |n| n.saida.as_str()));
+    let escolhidos: Vec<String> = ligados.iter().filter(|id| pedidos.contains(id)).cloned().collect();
+    if escolhidos.is_empty() { ligados } else { escolhidos }
+}
+
+/// Voltar a um nó invalida o que vem depois dele, até o próximo Juntar. Sem isto, o fim de um ramo
+/// longo que vai rodar de novo ainda contaria como pronto e o Juntar sairia antes da hora. Anda só
+/// para a frente: `nao` e `esgotado` são a volta do loop, e cruzá-los reabriria ramos que já terminaram.
+fn reabrir_ate_o_juntar(e: &mut Execucao, de: &str, origem: &str) {
+    let mut fila = vec![de.to_owned()];
+    let mut vistos: HashSet<String> = HashSet::from([origem.to_owned()]);
+    while let Some(atual) = fila.pop() {
+        if !vistos.insert(atual.clone()) { continue; }
+        let seguintes: Vec<String> = e.fluxo.conexoes.iter().filter(|c| c.de == atual && matches!(c.saida.as_str(), "" | "sim")).map(|c| c.para.clone()).collect();
+        for id in seguintes {
+            if e.fluxo.nos.iter().any(|n| n.id == id && n.tipo == TipoDeNo::Juntar) { continue; }
+            if let Some(n) = e.nos.get_mut(&id).filter(|n| n.status == "concluido") { n.status = "pendente".into(); }
+            fila.push(id);
+        }
+    }
+}
+
 fn seguir(state: &EngineState, v: &Viva, no: &str, saida: &str) {
     mexer(state, v, |e| {
         if let Some(n) = e.nos.get_mut(no) { if !saida.is_empty() { n.caminho = Some(saida.to_owned()); } }
-        let proximos: Vec<String> = fluxos::proximos(&e.fluxo, no, saida).into_iter().map(|n| n.id.clone()).collect();
-        for p in proximos {
+        for p in proximos_da_saida(e, no, saida) {
             // Juntar: só entra na fila quando o último ramo chega (os outros já terminaram).
             if e.fluxo.nos.iter().any(|n| n.id == p && n.tipo == TipoDeNo::Juntar) {
                 let faltam = fluxos::antecessores(&e.fluxo, &p).into_iter().any(|a| a != no && e.nos.get(a).is_none_or(|n| n.status != "concluido"));
@@ -307,14 +393,88 @@ fn seguir(state: &EngineState, v: &Viva, no: &str, saida: &str) {
             }
             // Voltar a um nó (loop QA → dev): ele roda de novo do zero, sem retomar a sessão anterior.
             if let Some(n) = e.nos.get_mut(&p) { n.status = "pendente".into(); n.session_id = None; n.saida.clear(); }
+            reabrir_ate_o_juntar(e, &p, no);
             e.fila.push(Passo { no: p, de: Some(no.to_owned()) });
         }
     });
 }
 
-/// Modelo/esforço/conta escolhidos no nó, por cima dos do modelo de agente.
+/// Modelo/esforço/conta escolhidos no nó, por cima dos do modelo de agente, e o que a etapa não pode.
 #[derive(Default)]
-struct Ajuste { modelo: Option<String>, esforco: Option<String>, conta: Option<String> }
+struct Ajuste { modelo: Option<String>, esforco: Option<String>, conta: Option<String>, proibidas: Vec<String>, escrita: Option<Vec<String>> }
+
+impl Ajuste {
+    fn limites_de(no: &fluxos::No) -> Self { Self { proibidas: no.proibidas.clone(), escrita: no.escrita.clone(), ..Self::default() } }
+}
+
+/// Argumentos do `claude -p`. Sem `escrita`, nada muda: `acceptEdits` grava em toda a pasta. Com ela,
+/// só o modo `default` respeita regra de caminho, o shell sai, e os settings do usuário e do projeto
+/// ficam de fora porque um `allow` lá alargaria o limite (medido; ver `omni_core::fluxos`).
+fn args_do_claude(modelo: &omni_core::agentes::ModeloDeAgente, ajuste: &Ajuste, extras: &[String], retomar: Option<&str>) -> Vec<String> {
+    let modo = if ajuste.escrita.is_some() { "default" } else { "acceptEdits" };
+    let mut args: Vec<String> = ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", modo].map(str::to_owned).to_vec();
+    args.extend(["--append-system-prompt".to_owned(), modelo.instrucoes.clone()]);
+    let liberadas = ajuste.escrita.as_ref().map_or_else(|| modelo.ferramentas.clone(), |caminhos| fluxos::ferramentas_com_escrita_limitada(&modelo.ferramentas, caminhos));
+    if !liberadas.is_empty() { args.extend(["--allowedTools".to_owned(), liberadas.join(",")]); }
+    let shell = ajuste.escrita.iter().flat_map(|_| fluxos::FERRAMENTAS_DE_SHELL.map(str::to_owned));
+    for proibida in ajuste.proibidas.iter().cloned().chain(shell) { args.extend(["--disallowedTools".to_owned(), proibida]); }
+    if ajuste.escrita.is_some() { args.extend(["--setting-sources".to_owned(), String::new()]); }
+    for pasta in extras { args.extend(["--add-dir".to_owned(), pasta.clone()]); }
+    if !modelo.modelo.is_empty() { args.extend(["--model".to_owned(), modelo.modelo.clone()]); }
+    if !modelo.esforco.is_empty() { args.extend(["--effort".to_owned(), modelo.esforco.clone()]); }
+    if let Some(sid) = retomar { args.extend(["--resume".to_owned(), sid.to_owned()]); }
+    args
+}
+
+/// O `.claude.json` de onde a CLI leria os MCP desta conta.
+fn estado_do_claude(perfil: Option<&omni_core::Profile>) -> Option<PathBuf> {
+    match perfil.filter(|p| !p.builtin) {
+        Some(p) => Some(PathBuf::from(&p.config_dir).join(".claude.json")),
+        None => fluxos::pasta_do_usuario().map(|home| home.join(".claude.json")),
+    }
+}
+
+/// Devolve à etapa com `escrita` os MCP que o agente declarou. Vai por arquivo: o registro pode ter
+/// `env` com segredo, e argumento de linha de comando aparece para qualquer processo da máquina.
+fn args_de_mcp(pasta: &Path, no: &str, ferramentas: &[String], estado: &Path) -> Result<Vec<String>> {
+    let configuracao: Value = fs::read(estado).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
+    let Some(servidores) = fluxos::mcp_das_ferramentas(ferramentas, &configuracao) else { return Ok(Vec::new()) };
+    fs::create_dir_all(pasta)?;
+    let arquivo = pasta.join(format!("{no}.mcp.json"));
+    gravar_privado(&arquivo, &servidores)?;
+    Ok(vec!["--mcp-config".to_owned(), arquivo.to_string_lossy().into_owned()])
+}
+
+/// Só o dono lê: o `env` dos servidores pode ter segredo.
+fn gravar_privado(arquivo: &Path, valor: &Value) -> Result<()> {
+    let _ = fs::remove_file(arquivo);
+    let mut opcoes = fs::OpenOptions::new();
+    opcoes.write(true).create_new(true);
+    #[cfg(unix)]
+    { use std::os::unix::fs::OpenOptionsExt; opcoes.mode(0o600); }
+    opcoes.open(arquivo)?.write_all(&serde_json::to_vec_pretty(valor)?)?;
+    Ok(())
+}
+
+/// O registro de MCP só existe enquanto a etapa roda.
+struct ApagaAoSair(PathBuf);
+impl Drop for ApagaAoSair { fn drop(&mut self) { let _ = fs::remove_file(&self.0); } }
+
+/// Argumentos do `codex exec`. O Codex não bloqueia ferramenta nem limita caminho: o que ele não
+/// garante falha aqui, em vez de rodar sem o limite que o fluxo pediu. Só leitura é o sandbox dele, e
+/// pasta extra é raiz gravável do sandbox.
+fn args_do_codex(modelo: &omni_core::agentes::ModeloDeAgente, ajuste: &Ajuste, extras: &[String], retomar: Option<&str>) -> Result<Vec<String>> {
+    if !ajuste.proibidas.is_empty() { return Err(anyhow!("`proibidas` só vale para agentes do Claude: o Codex não tem como bloquear ferramenta")); }
+    if ajuste.escrita.as_ref().is_some_and(|caminhos| !caminhos.is_empty()) { return Err(anyhow!("`escrita` com caminhos só vale para agentes do Claude: no Codex dá só para deixar a lista vazia (só leitura)")); }
+    let mut args: Vec<String> = match retomar { Some(sid) => vec!["exec".into(), "resume".into(), sid.to_owned()], None => vec!["exec".into()] };
+    let sandbox = if ajuste.escrita.is_some() { "read-only" } else { "workspace-write" };
+    args.extend(["--json", "--skip-git-repo-check", "--sandbox", sandbox].map(str::to_owned));
+    if !extras.is_empty() { args.extend(["-c".to_owned(), format!("sandbox_workspace_write.writable_roots={}", json!(extras))]); }
+    if !modelo.modelo.is_empty() { args.extend(["--model".to_owned(), modelo.modelo.clone()]); }
+    if !modelo.esforco.is_empty() { args.extend(["-c".to_owned(), format!("model_reasoning_effort={}", modelo.esforco)]); }
+    args.push("-".into());
+    Ok(args)
+}
 
 /// Conta da etapa: a escolhida (nó, senão modelo de agente), depois a principal da CLI, depois as
 /// outras — pulando conta com login caído ou esgotada pelo uso gravado. `so_com_uso`: na troca por
@@ -361,11 +521,7 @@ fn modelo_do_agente(nome: &str, projeto: &str) -> Result<omni_core::agentes::Mod
         .map(|a| a.modelo.clone()).ok_or_else(|| anyhow!("Modelo de agente “{nome}” não encontrado"))
 }
 
-pub(crate) fn executavel(nome: &str) -> Option<PathBuf> {
-    let path = env::var_os("PATH")?;
-    let nomes: Vec<String> = if cfg!(windows) { vec![format!("{nome}.exe"), format!("{nome}.cmd")] } else { vec![nome.to_owned()] };
-    env::split_paths(&path).find_map(|d| nomes.iter().map(|n| d.join(n)).find(|p| p.is_file()))
-}
+pub(crate) fn executavel(nome: &str) -> Option<PathBuf> { fluxos::executavel(nome) }
 
 pub(crate) fn comando_da_cli(exe: &Path) -> Command {
     if exe.extension().is_some_and(|e| e.eq_ignore_ascii_case("cmd")) { let mut c = Command::new("cmd"); c.arg("/C").arg(exe); c } else { Command::new(exe) }
@@ -389,7 +545,7 @@ fn rodar_agente(state: &Arc<EngineState>, v: &Viva, no: &str, agente: &str, prom
         // ponytail: a conta nova recomeça a etapa do zero (o worktree guarda o que já foi feito); levar
         // o transcript junto, como a troca do terminal, se recomeçar custar caro.
         let retomar = if fora.is_empty() { retomar } else { None };
-        match rodar_na_conta(state, v, no, &modelo, prompt, retomar, pasta, perfil.as_ref()) {
+        match rodar_na_conta(state, v, no, &modelo, ajuste, prompt, retomar, pasta, perfil.as_ref()) {
             Err(erro) if eh_limite(&erro.to_string()) => {
                 let Some(p) = perfil else { return Err(erro) };
                 fora.push(p.id.clone());
@@ -404,32 +560,27 @@ fn rodar_agente(state: &Arc<EngineState>, v: &Viva, no: &str, agente: &str, prom
 }
 
 #[allow(clippy::too_many_arguments)]
-fn rodar_na_conta(state: &EngineState, v: &Viva, no: &str, modelo: &omni_core::agentes::ModeloDeAgente, prompt: &str, retomar: Option<&str>, pasta: &str, perfil: Option<&omni_core::Profile>) -> Result<String> {
+fn rodar_na_conta(state: &EngineState, v: &Viva, no: &str, modelo: &omni_core::agentes::ModeloDeAgente, ajuste: &Ajuste, prompt: &str, retomar: Option<&str>, pasta: &str, perfil: Option<&omni_core::Profile>) -> Result<String> {
     let exe = executavel(&modelo.cli).ok_or_else(|| anyhow!("CLI “{}” não encontrada neste PC", modelo.cli))?;
     let mut c = comando_da_cli(&exe);
-    match modelo.cli.as_str() {
+    let (extras, run_id) = v.lock().map(|e| (e.pastas_extras.clone(), e.id.clone())).map_err(|_| anyhow!("execucao"))?;
+    let log = pasta_execucoes(state).join(&run_id);
+    let _registro_de_mcp = ApagaAoSair(log.join(format!("{no}.mcp.json")));
+    c.args(match modelo.cli.as_str() {
         "claude" => {
-            c.args(["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits"]);
-            c.arg("--append-system-prompt").arg(&modelo.instrucoes);
-            if !modelo.ferramentas.is_empty() { c.arg("--allowedTools").arg(modelo.ferramentas.join(",")); }
-            if !modelo.modelo.is_empty() { c.arg("--model").arg(&modelo.modelo); }
-            if !modelo.esforco.is_empty() { c.arg("--effort").arg(&modelo.esforco); }
-            if let Some(sid) = retomar { c.arg("--resume").arg(sid); }
+            let mut args = args_do_claude(modelo, ajuste, &extras, retomar);
+            if let Some(estado) = estado_do_claude(perfil).filter(|_| ajuste.escrita.is_some()) { args.extend(args_de_mcp(&log, no, &modelo.ferramentas, &estado)?); }
+            args
         }
-        "codex" => {
-            if let Some(sid) = retomar { c.args(["exec", "resume", sid]); } else { c.arg("exec"); }
-            c.args(["--json", "--skip-git-repo-check", "--sandbox", "workspace-write"]);
-            if !modelo.modelo.is_empty() { c.arg("--model").arg(&modelo.modelo); }
-            if !modelo.esforco.is_empty() { c.arg("-c").arg(format!("model_reasoning_effort={}", modelo.esforco)); }
-            c.arg("-");
-        }
+        "codex" => args_do_codex(modelo, ajuste, &extras, retomar)?,
         outra => return Err(anyhow!("A CLI “{outra}” ainda não roda sem tela nos fluxos")),
-    }
+    });
     if let Some(p) = perfil { c.envs(omni_core::env_for(p)); }
+    // O omni-rag herda e ignora `sem_mascara`: etapa não tem pessoa para autorizar (`busca::MARCA_DE_ETAPA`).
+    c.env("OMNI_ETAPA_DE_FLUXO", "1");
     c.current_dir(pasta).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     sem_janela(&mut c);
     let mut filho = c.spawn().with_context(|| format!("não consegui abrir {}", modelo.cli))?;
-    let run_id = v.lock().map_err(|_| anyhow!("execucao"))?.id.clone();
     processos().lock().expect("processos").insert(format!("{run_id}/{no}"), filho.id());
     mexer(state, v, |e| if let Some(n) = e.nos.get_mut(no) {
         n.cli = Some(modelo.cli.clone()); n.conta = perfil.map(|p| p.id.clone());
@@ -443,7 +594,6 @@ fn rodar_na_conta(state: &EngineState, v: &Viva, no: &str, modelo: &omni_core::a
         stdin.write_all(texto.as_bytes())?;
     }
 
-    let log = pasta_execucoes(state).join(&run_id);
     let _ = fs::create_dir_all(&log);
     let mut arquivo = fs::OpenOptions::new().create(true).append(true).open(log.join(format!("{no}.log")))?;
     let mut final_texto = String::new();
@@ -540,7 +690,7 @@ fn rodar_sala(state: &Arc<EngineState>, v: &Viva, no: &fluxos::No, ctx: &Context
         let mut todos = true;
         for quem in &participantes {
             let prompt = fluxos::prompt_da_sala(&objetivo, &conversa, quem, rodada, rodadas);
-            let fala = rodar_agente(state, v, &no.id, quem, &prompt, None, pasta, projeto, &Ajuste::default())?;
+            let fala = rodar_agente(state, v, &no.id, quem, &prompt, None, pasta, projeto, &Ajuste::limites_de(no))?;
             todos &= fluxos::concordou(&fala);
             conversa.push((quem.clone(), fala));
             let parcial = conversa.iter().map(|(q, t)| format!("### {q}\n{t}")).collect::<Vec<_>>().join("\n\n");
@@ -548,7 +698,7 @@ fn rodar_sala(state: &Arc<EngineState>, v: &Viva, no: &fluxos::No, ctx: &Context
         }
         if todos && rodada > 1 { break; }
     }
-    let ata = rodar_agente(state, v, &no.id, &participantes[0], &fluxos::prompt_da_ata(&objetivo, &conversa), None, pasta, projeto, &Ajuste::default())?;
+    let ata = rodar_agente(state, v, &no.id, &participantes[0], &fluxos::prompt_da_ata(&objetivo, &conversa), None, pasta, projeto, &Ajuste::limites_de(no))?;
     Ok(format!("## Ata\n\n{ata}\n\n---\n\n## Conversa\n\n{}", conversa.iter().map(|(q, t)| format!("### {q}\n{t}")).collect::<Vec<_>>().join("\n\n")))
 }
 
@@ -595,19 +745,25 @@ pub fn pausar(state: &EngineState, id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Etapa parada que não está na fila: execução gravada por um engine antigo, ou que estava rodando
+/// quando o engine caiu. Sem isto ela ficaria "rodando" para sempre e a execução nunca terminaria.
+fn devolver_para_a_fila(e: &mut Execucao) {
+    let paradas: Vec<String> = e.nos.iter().filter(|(id, n)| matches!(n.status.as_str(), "pausado" | "falhou") && !e.fila.iter().any(|p| p.no == **id)).map(|(id, _)| id.clone()).collect();
+    for no in paradas {
+        let de = fluxos::antecessores(&e.fluxo, &no).into_iter().find(|a| e.nos.get(*a).is_some_and(|n| n.status == "concluido")).map(str::to_owned);
+        e.fila.insert(0, Passo { no, de });
+    }
+}
+
 pub fn retomar(state: &Arc<EngineState>, id: &str) -> Result<()> {
     let v = viva(id)?;
     mexer(state, &v, |e| {
         if e.status != "pausado" && e.status != "falhou" { return Err(anyhow!("Só dá para retomar uma execução pausada ou que falhou")); }
-        // Falhou: tenta o nó que falhou de novo.
-        if e.status == "falhou" {
-            if let Some((id_no, _)) = e.nos.iter().find(|(_, n)| n.status == "falhou") {
-                let id_no = id_no.clone();
-                if !e.fila.iter().any(|p| p.no == id_no) { e.fila.insert(0, Passo { no: id_no, de: None }); }
-            }
-        }
-        for n in e.nos.values_mut().filter(|n| n.status == "pausado" || n.status == "falhou") { n.status = "rodando".into(); n.erro = None; }
-        e.status = "rodando".into();
+        devolver_para_a_fila(e);
+        for n in e.nos.values_mut().filter(|n| n.status == "pausado" || n.status == "falhou") { n.status = "pendente".into(); n.erro = None; }
+        if std::mem::take(&mut e.parou_por_custo) { e.custo_aceito = e.custo_usd; }
+        // Um ramo falhou enquanto outro esperava aprovação: a pergunta continua de pé, e a fila anda depois da resposta.
+        e.status = if e.nos.values().any(|n| n.status == "aguardando") { "aguardando".into() } else { "rodando".into() };
         e.erro = None;
         Ok(())
     })?;
@@ -681,6 +837,10 @@ pub fn abrir_conversa(state: &Arc<EngineState>, id: &str, no: &str) -> Result<Te
             env: perfil.as_ref().map(omni_core::env_for).unwrap_or_default(), provider: Some(cli),
             profile_id: perfil.map(|p| p.id), conversation_id: None, external_session_id: Some(sid) })
 }
+
+#[cfg(test)]
+#[path = "fluxos_testes.rs"]
+mod limites;
 
 #[cfg(test)]
 mod tests {

@@ -348,19 +348,61 @@ fn mcp_lista_e_le_so_do_cache_local() {
     assert_eq!(sem_id["result"]["isError"], true);
 }
 
+const AGORA: i64 = 100 * 24 * 3_600_000;
+
+#[test]
+fn cache_vazio_manda_pedir_o_atualizar_e_nao_promete_buscar() {
+    let texto = lista_resumida(&Cache::default(), None, AGORA, false);
+    assert!(texto.contains("Nenhuma tarefa") && texto.contains("clicar em Atualizar no painel Tarefas"), "{texto}");
+    assert!(texto.contains("não acessa a API"), "{texto}");
+}
+
+#[test]
+fn cache_velho_mostra_a_idade_e_o_caminho_mas_entrega_as_tarefas() {
+    let cache = Cache { buscado_em_ms: AGORA - 3 * 3_600_000, tarefas: vec![tarefa("1")], ..Cache::default() };
+    let texto = lista_resumida(&cache, None, AGORA, false);
+    assert!(texto.contains("há 3 h") && texto.contains("Atualizar") && texto.contains("#1"), "{texto}");
+    let vazio = lista_resumida(&Cache { tarefas: vec![], ..cache }, None, AGORA, false);
+    assert!(vazio.contains("há 3 h") && vazio.contains("Atualizar"), "{vazio}");
+}
+
+#[test]
+fn cache_recente_nao_incomoda_com_aviso() {
+    let cache = Cache { buscado_em_ms: AGORA - 120_000, tarefas: vec![tarefa("1")], ..Cache::default() };
+    let texto = lista_resumida(&cache, None, AGORA, false);
+    assert!(texto.contains("há 2 min") && !texto.contains("Atualizar"), "{texto}");
+    let sem_achado = lista_resumida(&cache, Some("zzz"), AGORA, false);
+    assert!(sem_achado.contains("Nenhuma das 1 tarefas") && !sem_achado.contains("Atualizar"), "{sem_achado}");
+}
+
+#[test]
+fn tarefa_sai_mascarada_mas_a_busca_ainda_acha_pelo_dado_inteiro() {
+    let mut item = tarefa("1");
+    item.titulo = format!("{} Maria Silva R$ 1.500,00", "x".repeat(90));
+    item.responsavel = "João Souza".into();
+    item.descricao = "CPF 529.982.247-25".into();
+    item.comentarios = vec!["ligar (11) 98765-4321".into()];
+    let cache = Cache { buscado_em_ms: AGORA, tarefas: vec![item.clone()], ..Cache::default() };
+    let lista = lista_resumida(&cache, Some("joão"), AGORA, false);
+    assert!(lista.contains("#1") && lista.contains("[nome]") && !lista.contains("Silva") && !lista.contains("Si…") && !lista.contains("Souza"), "{lista}");
+    assert!(lista_resumida(&cache, None, AGORA, true).contains("João Souza"));
+    let lida = texto_da_tarefa(&mascarada(&item));
+    assert!(lida.contains("[cpf]") && lida.contains("[telefone]") && !lida.contains("529.982"), "{lida}");
+}
+
 #[test]
 fn campo_gigante_nao_entra_inteiro_na_lista_do_mcp() {
     let mut item = tarefa("1");
     item.status = "s".repeat(50_000);
     item.responsavel = "r".repeat(50_000);
     item.id = "9".repeat(50_000);
-    assert!(lista_resumida(&Cache { tarefas: vec![item], ..Cache::default() }, None, 1_000).chars().count() < 1_000);
+    assert!(lista_resumida(&Cache { tarefas: vec![item], ..Cache::default() }, None, 1_000, false).chars().count() < 1_000);
 }
 
 #[test]
 fn mcp_limita_a_lista() {
     let cache = Cache { tarefas: (0..50).map(|n| tarefa(&n.to_string())).collect(), ..Cache::default() };
-    let texto = lista_resumida(&cache, None, 1_000);
+    let texto = lista_resumida(&cache, None, 1_000, false);
     assert!(texto.contains("#19") && !texto.contains("#20"));
     assert!(texto.contains("mais 30"));
 }

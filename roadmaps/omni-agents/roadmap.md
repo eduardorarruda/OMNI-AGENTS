@@ -407,3 +407,17 @@ arquivos tocados e o próximo passo. Quando a pendência for resolvida, risque d
 - [ ] Capturar no acervo de telas uma tela real com agente em segundo plano (a sonda precisa de rede) e confirmar ao vivo o
   caso (1): ele foi deduzido do código, porque o aviso de fila só aparece com a frase na área do turno.
 - [ ] Conversa nova pela web/celular abre sem conta do workspace; terminal comum em WSL/SSH não recebe o `GH_TOKEN`.
+
+### Oito melhorias: planejamento (2026-11-06)
+
+Design aprovado (`docs/superpowers/specs/2026-11-06-omni-oito-itens-design.md`). Plano em `docs/superpowers/plans/2026-11-06-omni-oito-itens.md`. Nada implementado.
+
+- [ ] Fase 1: erro de contexto ao enviar mensagem (item 10, prioridade), arquivo citado que "não existe" e reconhecimento do Linux (`servidores.rs`).
+- [ ] Fase 2: Fluxos (acompanhamento ao vivo, botão Aprovar, subfluxos, sem limites, autonomia pelo MCP).
+- [ ] Fase 3: Tarefas em Segundo Plano e panorama do projeto.
+- [ ] Fase 4: uso da conta (detalhe ao clicar, tokens dos históricos locais).
+- [ ] Fase 5: Kanban no engine e tarefas externas (triagem, busca só no clique).
+- [ ] Fase 6: grafo de conhecimento.
+- [ ] Fase 7: X para tirar mensagem da fila (fila do OMNI por padrão; fila da CLI só onde a tecla for medida).
+
+Próximo passo: o usuário revisa o plano e pede a execução; a Tarefa 0 commita o trabalho aberto antes de tudo.

@@ -567,12 +567,12 @@ fn rotas() -> Router<Arc<EngineState>> {
         .route("/conversas/{id}/imagens/{n}/{k}",get(imagem_da_mensagem))
         .route("/conversas/{id}/teclas",post(teclas))
         .route("/conversas/{id}/parar",post(parar))
-        .route("/conversas/{id}/prompt",post(prompt))
+        .route("/conversas/{id}/prompt",post(prompt).layer(DefaultBodyLimit::max(TEXTO_LONGO_MAX)))
         .route("/conversas/{id}/aprovar",post(approve))
         .route("/conversas/{id}/escolher",post(escolher))
         .route("/conversas/{id}/nome",post(renomear))
         .route("/conversas/{id}/ocultar",post(ocultar))
-        .route("/fluxos/execucoes",get(fluxos_listar).post(fluxos_iniciar))
+        .route("/fluxos/execucoes",get(fluxos_listar).post(fluxos_iniciar).layer(DefaultBodyLimit::max(TEXTO_LONGO_MAX)))
         .route("/fluxos/execucoes/{id}",get(fluxos_obter))
         .route("/fluxos/execucoes/{id}/{acao}",post(fluxos_acao))
         .route("/fluxos/execucoes/{id}/nos/{no}/historico",get(fluxos_historico))
@@ -1608,14 +1608,16 @@ fn percent_decode(valor: &str) -> String {
     String::from_utf8_lossy(&saida).into_owned()
 }
 
+/// Prompt e entrada de fluxo: uma análise grande leva o contexto inteiro. O teto só protege o terminal.
+const TEXTO_LONGO_MAX: usize = 1024 * 1024;
 #[derive(Deserialize)] #[serde(deny_unknown_fields)] struct PromptBody { texto: String, #[serde(default)] fila: bool }
 #[derive(Deserialize)] #[serde(deny_unknown_fields)] struct ApprovalBody { permitir: bool }
 async fn prompt(State(state): State<Arc<EngineState>>, RoutePath(id): RoutePath<String>, headers: HeaderMap, Json(body): Json<PromptBody>) -> Result<(StatusCode,Json<Value>),ApiError> {
     // `/comando` passa: colado na CLI e confirmado com Enter, ela executa como se fosse digitado
     // (conferido com `/context` no Claude 2.1.304). Caractere de controle continua barrado — é ele
     // que viraria tecla (Esc, Ctrl+C) dentro do terminal.
-    if body.texto.trim().is_empty() || body.texto.len() > 16_000 || body.texto.chars().any(|c|c.is_control() && c != '\n' && c != '\t') {
-        return Err(error(StatusCode::BAD_REQUEST,"Envie texto de até 16000 bytes, sem caracteres de controle"));
+    if body.texto.trim().is_empty() || body.texto.len() > TEXTO_LONGO_MAX || body.texto.chars().any(|c|c.is_control() && c != '\n' && c != '\t') {
+        return Err(error(StatusCode::BAD_REQUEST,"Envie texto de até 1 MB, sem caracteres de controle"));
     }
     let kind = if body.fila { ActionKind::Fila(body.texto) } else { ActionKind::Prompt(body.texto) };
     enqueue_async(state,id,headers,kind).await
@@ -2936,6 +2938,17 @@ mod tests {
         let caminho = serde_json::from_str::<Value>(&body).unwrap()["caminho"].as_str().unwrap().to_string();
         assert_eq!(std::fs::read(&caminho).unwrap(), b"\x89PNG\r\n\x1a\n");
         assert!(caminho.ends_with("print.png"));
+    }
+    /// Prompt e entrada de fluxo grandes passam do teto geral de 32 KB; acima de 1 MB a rota recusa.
+    #[tokio::test] async fn texto_longo_passa_pela_rota_e_o_teto_continua_valendo() {
+        let (_dir,state) = fixture();
+        let corpo = |tamanho: usize| Some(json!({"texto":"a".repeat(tamanho)}).to_string());
+        for rota in ["/conversas/nao-existe/prompt","/fluxos/execucoes"] {
+            let EngineResponse::Api { status, .. } = local(state.clone(),"POST",rota,corpo(200_000),None,vec![]).await else { panic!("não é Api") };
+            assert_ne!(status,413,"{rota} recusou 200 KB");
+            let EngineResponse::Api { status, .. } = local(state.clone(),"POST",rota,corpo(TEXTO_LONGO_MAX + 1),None,vec![]).await else { panic!("não é Api") };
+            assert_eq!(status,413,"{rota} aceitou acima do teto");
+        }
     }
     /// Tarefas: grava a lista inteira e lê de volta; lista malformada não chega ao disco.
     #[tokio::test] async fn tarefas_vao_e_voltam_inteiras() {

@@ -17,6 +17,12 @@ export interface Fluxo {
   id: string; nome: string; descricao: string; nos: NoDoFluxo[]; conexoes: Conexao[];
   /** Roda direto na pasta do projeto, sem worktree (leva o que não foi commitado; mexe nos seus arquivos). */
   na_pasta_do_projeto?: boolean;
+  /** Quantas etapas rodam ao mesmo tempo. */
+  max_paralelo?: number;
+  /** Pastas fora do projeto que os agentes alcançam. */
+  pastas_extras?: string[];
+  /** Pausa a execução quando o custo em dólares passa disto. */
+  custo_maximo?: number;
 }
 export interface FluxoSalvo extends Fluxo { escopo: "global" | "projeto"; caminho: string }
 

@@ -81,7 +81,7 @@ export function FilePane({ projectPath, tab, saveMode, onDirtyChange }: FilePane
       }
       return () => window.clearTimeout(autoSaveTimerRef.current);
     }
-    readTextFile(path, projectPath)
+    readTextFile(path)
       .then((text) => {
         if (cancelled) return;
         savedContentRef.current = text;

@@ -8,6 +8,7 @@ import { Sidebar } from "./components/Sidebar";
 import { fileKind, joinPath } from "./features/files/filesService";
 import { semLocal } from "./mobile/api";
 import { exists } from "@tauri-apps/plugin-fs";
+import { homeDir } from "@tauri-apps/api/path";
 import { EVENTO_ABRIR_ARQUIVO } from "./mobile/anexos";
 import { QuickOpen } from "./features/files/QuickOpen";
 import { useWorkspace } from "./features/workspace/useWorkspace";
@@ -183,13 +184,16 @@ export function App() {
     const abrir = (evento: Event) => {
       const { caminho: citado, ok, falha } = (evento as CustomEvent<{ caminho: string; ok: () => void; falha: (motivo: Error) => void }>).detail;
       const caminho = semLocal(citado).replace(/^\.[\\/]/, "");
-      const absoluto = /^([A-Za-z]:)?[\\/]/.test(caminho) ? caminho : joinPath(projetoDaCitacao, caminho);
+      const resolver = async () => {
+        if (/^~[\\/]/.test(caminho)) return joinPath(await homeDir(), caminho.slice(2));
+        return /^([A-Za-z]:)?[\\/]/.test(caminho) ? caminho : joinPath(projetoDaCitacao, caminho);
+      };
       // Citado mas inexistente (o agente ainda vai criar, ou foi apagado): avisa sem abrir aba vazia.
-      exists(absoluto).then((tem) => {
-        if (!tem) return falha(new Error("Não existe no disco"));
+      resolver().then(async (absoluto) => {
+        if (!await exists(absoluto)) return falha(new Error("Não existe no disco"));
         abrirCitado.current(absoluto, fileKind(absoluto));
         ok();
-      }, falha);
+      }).catch(falha);
     };
     window.addEventListener(EVENTO_ABRIR_ARQUIVO, abrir);
     return () => window.removeEventListener(EVENTO_ABRIR_ARQUIVO, abrir);

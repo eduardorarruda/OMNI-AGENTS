@@ -11,6 +11,7 @@ name = "omni-rag"
 path = "src/main.rs"
 
 [dependencies]
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 flate2 = "1"
 omni-core = { path = "../omni-core" }
 regex = "1"

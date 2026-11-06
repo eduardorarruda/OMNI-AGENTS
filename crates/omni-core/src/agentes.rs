@@ -46,7 +46,12 @@ pub const CLIS: [&str; 3] = ["claude", "codex", "cursor"];
 pub const SAIDAS: [&str; 4] = ["texto", "plano", "veredito", "relatorio"];
 
 /// Kit que vem com o OMNI: semeado na pasta global na primeira vez que ela é lida.
-pub const KIT: [(&str, &str); 7] = [
+/// Nomes do kit já entregues: agente novo chega numa pasta antiga sem ressuscitar o que a pessoa apagou.
+const REGISTRO_DO_KIT: &str = ".kit-semeado";
+/// Pasta de antes do registro já recebeu estes: o que faltar ali a pessoa apagou.
+const KIT_SEM_REGISTRO: [&str; 7] = ["arquiteto", "dev", "documentacao", "orquestrador", "qa", "revisor", "seguranca"];
+
+pub const KIT: [(&str, &str); 8] = [
     ("orquestrador", include_str!("../agentes-kit/orquestrador.md")),
     ("arquiteto", include_str!("../agentes-kit/arquiteto.md")),
     ("dev", include_str!("../agentes-kit/dev.md")),
@@ -54,6 +59,7 @@ pub const KIT: [(&str, &str); 7] = [
     ("revisor", include_str!("../agentes-kit/revisor.md")),
     ("seguranca", include_str!("../agentes-kit/seguranca.md")),
     ("documentacao", include_str!("../agentes-kit/documentacao.md")),
+    ("testador-web", include_str!("../agentes-kit/testador-web.md")),
 ];
 
 pub fn pasta_global() -> Option<PathBuf> {
@@ -163,8 +169,18 @@ fn ler_pasta(pasta: &Path, escopo: &str) -> Vec<AgenteSalvo> {
 /// Grava o kit na pasta global se ela ainda não existe. Pasta existente (mesmo vazia, porque você
 /// apagou tudo) não é mexida.
 pub fn semear_kit(pasta: &Path) -> std::io::Result<()> {
-    if pasta.exists() { return Ok(()); }
-    restaurar_kit(pasta)
+    let registro = pasta.join(REGISTRO_DO_KIT);
+    let conhecidos = fs::read_to_string(&registro)
+        .unwrap_or_else(|_| if pasta.exists() { KIT_SEM_REGISTRO.join("\n") } else { String::new() });
+    let novos: Vec<_> = KIT.iter().filter(|(nome, _)| !conhecidos.lines().any(|linha| linha == *nome)).collect();
+    if novos.is_empty() { return Ok(()); }
+    fs::create_dir_all(pasta)?;
+    for (nome, texto) in novos {
+        let arquivo = pasta.join(format!("{nome}.md"));
+        if !arquivo.exists() { fs::write(arquivo, texto)?; }
+    }
+    let nomes: Vec<&str> = KIT.iter().map(|(nome, _)| *nome).collect();
+    fs::write(registro, nomes.join("\n"))
 }
 
 /// Grava (ou regrava) os modelos do kit. Os que você criou com outro nome ficam como estão.
@@ -304,16 +320,56 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let global = dir.path().join("agents");
         let projeto = dir.path().join("proj");
-        assert_eq!(listar(Some(&global), None).len(), 7);
+        assert_eq!(listar(Some(&global), None).len(), KIT.len());
         apagar(&global, "qa").unwrap();
         // Pasta já existe: apagar um do kit não faz ele voltar.
-        assert_eq!(listar(Some(&global), None).len(), 6);
+        assert_eq!(listar(Some(&global), None).len(), KIT.len() - 1);
         let novo = ler(KIT[3].1).unwrap();
         salvar(&pasta_do_projeto(&projeto), &novo).unwrap();
         let lista = listar(Some(&global), Some(&projeto));
         assert!(lista.iter().any(|a| a.escopo == "projeto" && a.modelo.name == "qa"));
         let instalado = instalar_no_claude_code(&projeto, &novo).unwrap();
         assert!(fs::read_to_string(instalado).unwrap().contains("tools: Read, Bash, Grep, Glob"));
+    }
+
+    #[test]
+    fn agente_novo_do_kit_chega_em_pasta_antiga_sem_mexer_no_que_a_pessoa_editou() {
+        let pasta = tempfile::tempdir().unwrap();
+        fs::write(pasta.path().join("qa.md"), "editado").unwrap();
+
+        semear_kit(pasta.path()).unwrap();
+
+        assert!(pasta.path().join("testador-web.md").exists());
+        assert_eq!(fs::read_to_string(pasta.path().join("qa.md")).unwrap(), "editado");
+    }
+
+    #[test]
+    fn pasta_antiga_sem_registro_nao_recria_o_que_a_pessoa_apagou() {
+        let pasta = tempfile::tempdir().unwrap();
+
+        semear_kit(pasta.path()).unwrap();
+
+        assert!(!pasta.path().join("qa.md").exists());
+        assert!(pasta.path().join("testador-web.md").exists());
+    }
+
+    #[test]
+    fn agente_do_kit_apagado_nao_volta_sozinho() {
+        let pasta = tempfile::tempdir().unwrap();
+        semear_kit(pasta.path()).unwrap();
+        fs::remove_file(pasta.path().join("testador-web.md")).unwrap();
+
+        semear_kit(pasta.path()).unwrap();
+
+        assert!(!pasta.path().join("testador-web.md").exists());
+    }
+
+    #[test]
+    fn testador_web_e_um_modelo_valido() {
+        let (_, texto) = KIT.iter().find(|(nome, _)| *nome == "testador-web").unwrap();
+        let modelo = ler(texto).unwrap();
+        assert!(validar(&modelo).is_ok());
+        assert!(modelo.instrucoes.contains("3840x2160"));
     }
 
     #[test]

@@ -10,6 +10,12 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[path = "fluxos_ensaio.rs"]
+pub mod ensaio;
+#[path = "fluxos_limites.rs"]
+mod limites;
+pub use limites::*;
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum TipoDeNo {
@@ -58,6 +64,12 @@ pub struct No {
     pub x: f64,
     #[serde(default)]
     pub y: f64,
+    /// Ferramentas que a etapa de agente ou sala não pode usar: `Bash`, `Bash(rm:*)`, `WebFetch`…
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub proibidas: Vec<String>,
+    /// Caminhos que a etapa pode gravar, relativos à pasta da execução. Ausente: sem limite. Vazio: só lê.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub escrita: Option<Vec<String>>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -81,6 +93,16 @@ pub struct Fluxo {
     /// commitado (uma release, por exemplo) — e que por isso mexem nos seus arquivos de verdade.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub na_pasta_do_projeto: bool,
+    /// Quantas etapas rodam ao mesmo tempo. Ausente: `MAX_PARALELO_PADRAO`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_paralelo: Option<u32>,
+    /// Pastas fora do projeto que os agentes alcançam, com caminho relativo ao projeto.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pastas_extras: Vec<String>,
+    /// Pausa a execução quando o custo acumulado chega aqui (US$). O custo de uma etapa só existe
+    /// quando ela termina, então o total pode passar um pouco.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custo_maximo: Option<f64>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -124,6 +146,9 @@ pub fn saidas(tipo: &TipoDeNo) -> &'static [&'static str] {
     }
 }
 
+/// O id vira nome de arquivo do log da etapa: sem isto, um fluxo clonado escreveria fora da pasta.
+pub fn id_valido(id: &str) -> bool { !id.is_empty() && id.len() <= 80 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') }
+
 pub fn validar(f: &Fluxo) -> Result<(), String> {
     if !crate::agentes::nome_valido(&f.id) { return Err("Id do fluxo: só letras minúsculas, números e hífen".into()); }
     if f.nome.trim().is_empty() { return Err("Dê um nome ao fluxo".into()); }
@@ -131,15 +156,33 @@ pub fn validar(f: &Fluxo) -> Result<(), String> {
     if ids.len() != f.nos.len() { return Err("Dois nós com o mesmo id".into()); }
     if f.nos.iter().filter(|n| n.tipo == TipoDeNo::Entrada).count() != 1 { return Err("O fluxo precisa de exatamente uma Entrada".into()); }
     for n in &f.nos {
+        if !id_valido(&n.id) { return Err(format!("Id de nó inválido “{}”: só letras, números, hífen e sublinhado", n.id)); }
         if n.tipo == TipoDeNo::Agente && n.agente.trim().is_empty() { return Err(format!("O nó “{}” precisa de um modelo de agente", rotulo(n))); }
         if n.tipo == TipoDeNo::Sala && participantes(n).len() < 2 { return Err(format!("A sala “{}” precisa de pelo menos dois participantes", rotulo(n))); }
         if n.tipo == TipoDeNo::Comando && n.config["comando"].as_str().is_none_or(|c| c.trim().is_empty()) { return Err(format!("O comando “{}” está vazio", rotulo(n))); }
         if n.tipo == TipoDeNo::Juntar && antecessores(f, &n.id).len() < 2 { return Err(format!("O Juntar “{}” precisa de pelo menos dois ramos chegando", rotulo(n))); }
         if n.tipo == TipoDeNo::Pr && f.na_pasta_do_projeto { return Err("Pull request precisa de worktree: desligue “rodar na pasta do projeto” ou troque o PR por um comando".into()); }
     }
+    validar_limites(f)?;
     for c in &f.conexoes {
         let (Some(de), true) = (f.nos.iter().find(|n| n.id == c.de), ids.contains(c.para.as_str())) else { return Err("Conexão aponta para um nó que não existe".into()) };
         if !saidas(&de.tipo).contains(&c.saida.as_str()) { return Err(format!("“{}” não tem a saída “{}”", rotulo(de), c.saida)); }
+    }
+    Ok(())
+}
+
+fn validar_limites(f: &Fluxo) -> Result<(), String> {
+    if f.max_paralelo.is_some_and(|n| n == 0 || n > MAX_PARALELO_TETO) { return Err(format!("`max_paralelo` vai de 1 a {MAX_PARALELO_TETO}")); }
+    if f.custo_maximo.is_some_and(|c| !c.is_finite() || c <= 0.0) { return Err("`custo_maximo` precisa ser maior que zero".into()); }
+    for pasta in &f.pastas_extras { validar_pasta_extra(pasta)?; }
+    for n in &f.nos {
+        let com_limite = !n.proibidas.is_empty() || n.escrita.is_some();
+        if com_limite && !matches!(n.tipo, TipoDeNo::Agente | TipoDeNo::Sala) { return Err(format!("“{}” não é etapa de agente: `proibidas` e `escrita` não valem nela", rotulo(n))); }
+        for regra in &n.proibidas { validar_proibida(regra)?; }
+        for caminho in n.escrita.iter().flatten() { validar_escrita(caminho)?; }
+        if let Some(alvo) = ensaio::marcadores_do_no(n).into_iter().find(|alvo| !f.nos.iter().any(|x| x.id == *alvo)) {
+            return Err(format!("“{}” usa {{{{no:{alvo}}}}}, mas essa etapa não existe", rotulo(n)));
+        }
     }
     Ok(())
 }
@@ -209,6 +252,12 @@ pub fn veredito(texto: &str) -> Option<bool> {
         (Some(_), None) => Some(false),
         _ => None,
     }
+}
+
+/// Quais etapas o revisor mandou refazer: `{"veredito": "reprovado", "refazer": ["a", "c"]}`.
+pub fn refazer(texto: &str) -> Vec<String> {
+    json_da_resposta(texto).and_then(|j| j["refazer"].as_array().cloned()).into_iter().flatten()
+        .filter_map(|id| id.as_str().map(str::to_owned)).collect()
 }
 
 /// O que cada nó já produziu, para montar o prompt do próximo.
@@ -399,11 +448,48 @@ mod tests {
     #[test]
     fn prompt_troca_os_marcadores_e_sala_reconhece_consenso() {
         let no = No { id: "d".into(), tipo: TipoDeNo::Agente, titulo: "".into(), agente: "dev".into(),
-            config: serde_json::json!({"prompt": "Faça {{entrada}}. QA disse: {{anterior}}. Plano: {{no:p}}"}), x: 0.0, y: 0.0 };
+            config: serde_json::json!({"prompt": "Faça {{entrada}}. QA disse: {{anterior}}. Plano: {{no:p}}"}), x: 0.0, y: 0.0, proibidas: Vec::new(), escrita: None };
         let ctx = Contexto { entrada: "login".into(), anterior: "falta teste".into(), saidas: [("p".to_owned(), "3 passos".to_owned())].into() };
         assert_eq!(montar_prompt(&no, &ctx), "Faça login. QA disse: falta teste. Plano: 3 passos");
         assert!(concordou("Concordo com a proposta.\n\n`CONSENSO`"));
         assert!(!concordou("Ainda não há consenso sobre isso."));
+    }
+
+    /// Fluxo salvo antes destes campos continua carregando, e sem eles o JSON não muda.
+    #[test]
+    fn campos_novos_sao_opcionais_e_nao_aparecem_quando_ausentes() {
+        let antigo = r#"{"id":"a","nome":"A","nos":[{"id":"e","tipo":"entrada"}],"conexoes":[]}"#;
+        let f: Fluxo = serde_json::from_str(antigo).unwrap();
+        assert_eq!((f.max_paralelo, f.custo_maximo, f.pastas_extras.len(), f.nos[0].escrita.is_none()), (None, None, 0, true));
+        assert_eq!(limite_paralelo(&f), 3);
+        let texto = serde_json::to_string(&f).unwrap();
+        for campo in ["max_paralelo", "custo_maximo", "pastas_extras", "escrita", "proibidas"] { assert!(!texto.contains(campo), "{texto}"); }
+    }
+
+    #[test]
+    fn validacao_recusa_limite_invalido() {
+        let base = || -> Fluxo { serde_json::from_value(serde_json::json!({"id": "v", "nome": "V", "nos": [
+            {"id": "e", "tipo": "entrada"}, {"id": "a", "tipo": "agente", "agente": "dev", "config": {"prompt": "{{no:e}}"}}, {"id": "f", "tipo": "fim"}],
+            "conexoes": [{"de": "e", "para": "a"}, {"de": "a", "para": "f"}]})).unwrap() };
+        validar(&base()).unwrap();
+        let recusa = |muda: &dyn Fn(&mut Fluxo), trecho: &str| { let mut f = base(); muda(&mut f); assert!(validar(&f).unwrap_err().contains(trecho), "{trecho}"); };
+        recusa(&|f| f.max_paralelo = Some(0), "max_paralelo");
+        recusa(&|f| f.max_paralelo = Some(11), "max_paralelo");
+        recusa(&|f| f.custo_maximo = Some(0.0), "custo_maximo");
+        recusa(&|f| f.custo_maximo = Some(f64::NAN), "custo_maximo");
+        recusa(&|f| f.pastas_extras = vec!["/".into()], "raiz");
+        recusa(&|f| f.pastas_extras = vec!["~".into()], "Pasta extra");
+        recusa(&|f| f.nos[1].proibidas = vec!["--x".into()], "proibida");
+        recusa(&|f| f.nos[1].escrita = Some(vec!["../fora".into()]), "escrita");
+        recusa(&|f| f.nos[2].escrita = Some(Vec::new()), "não é etapa de agente");
+        recusa(&|f| f.nos[1].config = serde_json::json!({"prompt": "{{no:fantasma}}"}), "fantasma");
+    }
+
+    #[test]
+    fn refazer_le_a_lista_do_veredito() {
+        assert_eq!(refazer("Faltou.\n```json\n{\"veredito\": \"reprovado\", \"refazer\": [\"a\", \"c\", 3]}\n```"), ["a", "c"]);
+        assert!(refazer("{\"veredito\": \"reprovado\"}").is_empty());
+        assert!(refazer("reprovado").is_empty());
     }
 
     #[test]
@@ -425,6 +511,18 @@ mod tests {
         assert!(fluxo_da_resposta(&sem, &existentes).unwrap_err().contains("a11y"));
         // Agente novo com nome repetido: recusado.
         assert!(fluxo_da_resposta(&resposta.replace("\"name\": \"a11y\"", "\"name\": \"qa\"").replace("\"agente\": \"a11y\"", "\"agente\": \"qa\""), &existentes).is_err());
+    }
+
+    #[test]
+    fn id_de_no_nao_pode_sair_da_pasta_da_execucao() {
+        let mut f: Fluxo = serde_json::from_str(FLUXOS_PRONTOS[0].1).unwrap();
+        let antigo = f.nos[1].id.clone();
+        f.nos[1].id = "../../fora".into();
+        for c in &mut f.conexoes {
+            if c.de == antigo { c.de = "../../fora".into(); }
+            if c.para == antigo { c.para = "../../fora".into(); }
+        }
+        assert!(validar(&f).unwrap_err().contains("Id de nó inválido"));
     }
 
     #[test]

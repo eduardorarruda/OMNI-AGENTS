@@ -441,3 +441,132 @@ fn listar_conversas_filtra_pelo_titulo_e_mostra_o_projeto() {
     assert!(texto.contains("a · Boleto · Central"), "{texto}");
     assert!(!texto.contains("Outra"));
 }
+
+fn conversa_em(local: &Ambiente, pasta: &str, sessao: &str, linhas: &[Value]) {
+    let conta = local.contexto.pasta_do_engine.parent().expect("raiz").join("conta");
+    fs::create_dir_all(conta.join("projects").join(pasta)).expect("pasta");
+    let texto: Vec<String> = linhas.iter().map(Value::to_string).collect();
+    fs::write(conta.join("projects").join(pasta).join(format!("{sessao}.jsonl")), texto.join("\n")).expect("transcript");
+    let perfis = json!({"profiles": [{"id": "c", "provider": "claude", "name": "C", "config_dir": conta.to_string_lossy(), "created_at_ms": 1}]});
+    fs::write(local.contexto.pasta_do_engine.join("profiles.json"), perfis.to_string()).expect("perfis");
+}
+
+fn fala_em(dia: &str, pasta: &str, texto: &str) -> Value {
+    let mut linha = fala("user", texto);
+    linha["timestamp"] = json!(format!("{dia}T12:00:00Z"));
+    linha["cwd"] = json!(pasta);
+    linha
+}
+
+#[test]
+fn busca_une_a_mesma_passagem_em_sessoes_diferentes_sem_gastar_o_limite() {
+    let local = ambiente(1);
+    for sessao in ["a", "b", "c"] { conversa_em(&local, "proj", sessao, &[fala("user", "A regra do faturamento é mensal")]); }
+    conversa_em(&local, "proj", "d", &[fala("user", "Outra regra do faturamento")]);
+    let dados = tempdir().expect("dados");
+    let texto = historico(&local.contexto, &base(dados.path()), "buscar_no_historico", json!({"consulta": "faturamento", "limite": 3})).expect("busca");
+    assert_eq!(texto.matches("sessao ").count(), 2, "{texto}");
+    assert!(texto.contains("Outra regra") && texto.contains("A regra"), "{texto}");
+    assert!(texto.contains("repetidas unidas"), "{texto}");
+}
+
+#[test]
+fn busca_filtra_por_projeto_e_data_e_mostra_a_data_da_mensagem() {
+    let local = ambiente(1);
+    conversa_em(&local, "-home-eu-OMNI-AGENTS", "a", &[fala_em("2026-03-02", "/home/eu/OMNI-AGENTS", "boleto do omni")]);
+    conversa_em(&local, "-home-eu-Central", "b", &[fala_em("2026-01-02", "/home/eu/Central", "boleto da central")]);
+    let dados = tempdir().expect("dados");
+    let banco = base(dados.path());
+    let tudo = historico(&local.contexto, &banco, "buscar_no_historico", json!({"consulta": "boleto"})).expect("busca");
+    assert!(tudo.contains("2026-03-02") && tudo.contains("OMNI-AGENTS") && tudo.contains("2026-01-02"), "{tudo}");
+    let projeto = historico(&local.contexto, &banco, "buscar_no_historico", json!({"consulta": "boleto", "projeto": "omni agents"})).expect("projeto");
+    assert!(projeto.contains("boleto do omni") && !projeto.contains("central"), "{projeto}");
+    let desde = historico(&local.contexto, &banco, "buscar_no_historico", json!({"consulta": "boleto", "desde": "2026-02-01"})).expect("desde");
+    assert!(desde.contains("boleto do omni") && !desde.contains("da central"), "{desde}");
+}
+
+#[test]
+fn busca_mascara_a_mensagem_e_resumo_traz_titulo() {
+    let local = ambiente(1);
+    let longe = "x ".repeat(100);
+    conversa_em(&local, "proj", "a", &[fala("user", &format!("alvo {longe} Maria Silva, CPF 529.982.247-25")), json!({"type": "ai-title", "aiTitle": "Cobrança do aluno"})]);
+    let dados = tempdir().expect("dados");
+    let banco = base(dados.path());
+    let texto = historico(&local.contexto, &banco, "buscar_no_historico", json!({"consulta": "alvo"})).expect("busca");
+    assert!(!texto.contains("Silva") && !texto.contains("529.982"), "{texto}");
+    let achou_pelo_nome = historico(&local.contexto, &banco, "buscar_no_historico", json!({"consulta": "Maria"})).expect("nome");
+    assert!(achou_pelo_nome.contains("sessao a") && !achou_pelo_nome.contains("Silva"), "{achou_pelo_nome}");
+    let resumo = historico(&local.contexto, &banco, "buscar_no_historico", json!({"consulta": "alvo", "resumo": true})).expect("resumo");
+    assert!(resumo.contains("Cobrança do aluno"), "{resumo}");
+}
+
+#[test]
+fn ler_conversa_mascara_antes_de_paginar_e_respeita_sem_mascara() {
+    let conversa = json!({"markdown": "abc Maria Silva pagou"});
+    let (porta, _) = engine_falso(vec![("GET /conversas/c1/exportar", 200, conversa)]);
+    let local = ambiente(porta);
+    let dados = tempdir().expect("dados");
+    let banco = base(dados.path());
+    let primeira = historico(&local.contexto, &banco, "ler_conversa", json!({"id": "c1", "max_caracteres": 9})).expect("parte");
+    assert!(primeira.contains("abc [nome") && !primeira.contains("Mar"), "{primeira}");
+    let aberta = historico(&local.contexto, &banco, "ler_conversa", json!({"id": "c1", "sem_mascara": true})).expect("aberta");
+    assert!(aberta.contains("Maria Silva"), "{aberta}");
+}
+
+#[test]
+fn memoria_mostra_data_mascara_e_filtra() {
+    let local = ambiente(1);
+    let dados = tempdir().expect("dados");
+    let banco = base(dados.path());
+    let nota = |slug: &str, projeto: &str, origem: &str| crate::memoria::Nota { slug: slug.into(), titulo: format!("Nota {slug}"), corpo: format!("Maria Silva cuida do boleto {slug}"), projeto: projeto.into(), origem: origem.into(), ..Default::default() };
+    banco.gravar_nota(&nota("a", "Central", "auto")).expect("nota");
+    banco.gravar_nota(&nota("b", "CRM EBPÓS", "compact")).expect("nota");
+    let tudo = historico(&local.contexto, &banco, "buscar_memoria", json!({"consulta": "boleto"})).expect("busca");
+    assert!(tudo.contains("[nome]") && !tudo.contains("Silva") && tudo.contains(&crate::busca::data_curta(crate::agora_ms())), "{tudo}");
+    let projeto = historico(&local.contexto, &banco, "buscar_memoria", json!({"consulta": "boleto", "projeto": "crm"})).expect("projeto");
+    assert!(projeto.contains("Nota b") && !projeto.contains("Nota a"), "{projeto}");
+    let origem = historico(&local.contexto, &banco, "buscar_memoria", json!({"consulta": "boleto", "origem": "auto"})).expect("origem");
+    assert!(origem.contains("Nota a") && !origem.contains("Nota b"), "{origem}");
+    let resumo = historico(&local.contexto, &banco, "buscar_memoria", json!({"consulta": "boleto", "resumo": true})).expect("resumo");
+    assert!(resumo.starts_with("- Nota"), "{resumo}");
+}
+
+const CONTINUADA: &str = "This session is being continued from a previous conversation that ran out of context.";
+
+fn compactacao() -> Value {
+    json!({"type": "user", "isCompactSummary": true, "timestamp": "2026-01-01T00:00:00Z", "cwd": "/p", "message": {"role": "user", "content": CONTINUADA}})
+}
+
+#[test]
+fn listar_conversas_troca_o_titulo_de_continuacao_pelo_primeiro_pedido_real() {
+    let semente = ambiente(1);
+    conversa_em(&semente, "proj", "s1", &[compactacao(), fala("user", "arrumar boleto vencido")]);
+    let conta = semente.contexto.pasta_do_engine.parent().expect("raiz").join("conta/projects/proj/s1.jsonl");
+    let quando = fs::metadata(&conta).expect("arquivo").modified().expect("data").duration_since(std::time::UNIX_EPOCH).expect("época").as_millis() as u64;
+    let (porta, _) = engine_falso(vec![
+        ("GET /projetos", 200, json!({"projects": []})),
+        ("GET /conversas", 200, json!([
+            {"id": "history-1", "title": CONTINUADA, "provider": "claude", "updated_at_ms": quando},
+            {"id": "history-2", "title": CONTINUADA, "provider": "claude", "updated_at_ms": 1}
+        ])),
+    ]);
+    let contexto = Contexto { porta, ..semente.contexto };
+    let dados = tempdir().expect("dados");
+    let texto = historico(&contexto, &base(dados.path()), "listar_conversas", json!({})).expect("lista");
+    assert!(texto.contains("history-1 · arrumar boleto vencido"), "{texto}");
+    assert!(texto.contains("history-2 · Conversa continuada, sem título"), "{texto}");
+    assert!(!texto.contains("being continued"), "{texto}");
+}
+
+#[test]
+fn listar_conversas_mascara_o_titulo() {
+    let (porta, _) = engine_falso(vec![
+        ("GET /projetos", 200, json!({"projects": []})),
+        ("GET /conversas", 200, json!([{"id": "a", "title": "Boleto de Maria Silva", "provider": "claude", "updated_at_ms": 0}])),
+    ]);
+    let local = ambiente(porta);
+    let dados = tempdir().expect("dados");
+    let banco = base(dados.path());
+    assert!(historico(&local.contexto, &banco, "listar_conversas", json!({})).expect("lista").contains("Boleto de [nome]"));
+    assert!(historico(&local.contexto, &banco, "listar_conversas", json!({"sem_mascara": true})).expect("lista").contains("Maria Silva"));
+}

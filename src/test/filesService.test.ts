@@ -64,9 +64,9 @@ describe("listDir", () => {
 });
 
 describe("restrição de raiz do projeto", () => {
-  it("rejeita leitura de caminho fora da raiz do projeto", async () => {
-    await expect(readTextFile("C:\\outro\\arquivo.txt", "C:\\dev\\projeto")).rejects.toThrow();
-    expect(mockReadTextFile).not.toHaveBeenCalled();
+  it("lê arquivo citado fora da raiz do projeto", async () => {
+    mockReadTextFile.mockResolvedValueOnce("conteúdo");
+    await expect(readTextFile("C:\\outro\\arquivo.txt")).resolves.toBe("conteúdo");
   });
 
   it("rejeita escrita de caminho fora da raiz do projeto", async () => {
@@ -76,13 +76,13 @@ describe("restrição de raiz do projeto", () => {
 
   it("permite leitura de caminho dentro da raiz", async () => {
     mockReadTextFile.mockResolvedValueOnce("conteúdo");
-    const text = await readTextFile("C:\\dev\\projeto\\src\\a.ts", "C:\\dev\\projeto");
+    const text = await readTextFile("C:\\dev\\projeto\\src\\a.ts");
     expect(text).toBe("conteúdo");
   });
 
   it("arquivo inexistente vira mensagem legível, não o erro cru do sistema", async () => {
     mockReadTextFile.mockRejectedValueOnce("failed to open file at path: C:\\dev\\projeto\\x.json with error: (os error 2)");
-    await expect(readTextFile("C:\\dev\\projeto\\x.json", "C:\\dev\\projeto")).rejects.toThrow(/^Arquivo não encontrado/);
+    await expect(readTextFile("C:\\dev\\projeto\\x.json")).rejects.toThrow(/^Arquivo não encontrado/);
   });
 
   it("rejeita criar arquivo/pasta fora da raiz", async () => {

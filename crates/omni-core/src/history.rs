@@ -1,7 +1,7 @@
 //! Histórico nativo do Claude Code, do Codex e do Cursor: tudo que o CLI gravou em disco, com a conversa aberta
 //! pelo OMNI ou não. Diferente de `conversations`, que só conhece o que nasceu aqui dentro.
 //! Só lê transcripts dentro da pasta de uma conta cadastrada; nunca toca em credencial.
-use crate::{conversations::{text_message, timestamp}, Profile};
+use crate::{conversations::{e_resumo_de_compactacao, text_message, timestamp}, Profile};
 use serde::Serialize;
 use serde_json::Value;
 use std::{
@@ -90,6 +90,8 @@ fn blank(provider: &str, profile: &Profile, session_id: String, path: &Path) -> 
 /// Início do pedido que o Claude Desktop faz sozinho para resumir uma sessão. Grava um transcript
 /// como outro qualquer, mas não é conversa de ninguém: eram a maioria das entradas do Histórico.
 const RESUMO_DO_DESKTOP: &str = "Below is a conversation log from a Claude Code coding session";
+/// Continuação em que a pessoa ainda não digitou nada: só existe o resumo, que não serve de nome.
+const SO_CONTINUACAO: &str = "Conversa continuada";
 
 /// `<config>/projects/<slug>/<uuid>.jsonl`. Título = último `ai-title` (o Claude reescreve conforme a
 /// conversa anda). Sessão sem nenhum prompt digitado (só hook de inicialização) fica de fora.
@@ -97,6 +99,7 @@ pub fn claude_entry(path: &Path, profile: &Profile) -> Option<HistoryEntry> {
     let file = crate::abrir(path).ok()?;
     let mut entry = blank("claude", profile, path.file_stem()?.to_string_lossy().into_owned(), path);
     let mut summary = None;
+    let mut continuada = false;
     for line in BufReader::new(file).lines().map_while(Result::ok) {
         // Só desserializa linha que interessa: transcript passa de 5 MB.
         if line.contains("\"type\":\"ai-title\"") {
@@ -107,11 +110,13 @@ pub fn claude_entry(path: &Path, profile: &Profile) -> Option<HistoryEntry> {
         } else if entry.first_prompt.is_none() && line.contains("\"type\":\"user\"") {
             let Ok(value) = serde_json::from_str::<Value>(&line) else { continue };
             let Some(prompt) = message(&value, "claude").filter(|message| message.role == "user") else { continue };
-            entry.first_prompt = Some(preview(&prompt.text));
             entry.cwd = value["cwd"].as_str().map(str::to_owned);
             entry.started_at_ms = timestamp(&value["timestamp"]);
+            if e_resumo_de_compactacao(&value, &prompt.text) { continuada = true; continue; }
+            entry.first_prompt = Some(preview(&prompt.text));
         }
     }
+    if continuada && entry.first_prompt.is_none() { entry.first_prompt = Some(SO_CONTINUACAO.into()); }
     if entry.first_prompt.as_ref()?.starts_with(RESUMO_DO_DESKTOP) { return None; }
     if entry.title.is_none() { entry.title = summary; }
     Some(entry)
@@ -204,7 +209,7 @@ fn titulos_do_desktop(raiz: &Path) -> HashMap<String, String> {
         .filter_map(|arquivo| serde_json::from_slice::<Value>(&fs::read(arquivo).ok()?).ok())
         .filter_map(|sessao| {
             let titulo = sessao["title"].as_str()?.trim();
-            (!titulo.is_empty()).then(|| Some((sessao["cliSessionId"].as_str()?.to_owned(), titulo.to_owned())))?
+            (!titulo.is_empty() && !e_resumo_de_compactacao(&Value::Null, titulo)).then(|| Some((sessao["cliSessionId"].as_str()?.to_owned(), titulo.to_owned())))?
         })
         .collect()
 }
@@ -382,6 +387,30 @@ mod tests {
         let titulos = titulos_do_desktop(raiz.path());
         assert_eq!(titulos.get("s1").map(String::as_str), Some("Sistema de tarefas"));
         assert_eq!(titulos.len(), 1);
+    }
+
+    #[test]
+    fn continuacao_usa_o_primeiro_pedido_real_e_nao_o_resumo_da_compactacao() {
+        let pasta = tempfile::tempdir().unwrap();
+        let projeto = pasta.path().join("projects").join("p");
+        fs::create_dir_all(&projeto).unwrap();
+        let resumo = json!({"type":"user","isCompactSummary":true,"cwd":"/p","timestamp":"2026-01-01T00:00:00Z","message":{"role":"user","content":"This session is being continued from a previous conversation that ran out of context."}});
+        let pedido = json!({"type":"user","cwd":"/p","timestamp":"2026-01-01T00:01:00Z","message":{"role":"user","content":"arruma o boleto"}});
+        fs::write(projeto.join("a.jsonl"), lines(&[resumo.clone(), pedido])).unwrap();
+        fs::write(projeto.join("b.jsonl"), lines(&[resumo])).unwrap();
+        let conta = profile("claude", pasta.path());
+        assert_eq!(claude_entry(&projeto.join("a.jsonl"), &conta).unwrap().first_prompt.as_deref(), Some("arruma o boleto"));
+        let so_resumo = claude_entry(&projeto.join("b.jsonl"), &conta).unwrap();
+        assert_eq!((so_resumo.first_prompt.as_deref(), so_resumo.cwd.as_deref()), (Some("Conversa continuada"), Some("/p")));
+    }
+
+    #[test]
+    fn titulo_do_desktop_que_e_resumo_de_compactacao_nao_vale() {
+        let raiz = tempfile::tempdir().unwrap();
+        let pasta = raiz.path().join("conta").join("org");
+        fs::create_dir_all(&pasta).unwrap();
+        fs::write(pasta.join("local_a.json"), r#"{"cliSessionId":"s1","title":"This session is being continued from a previous conversation"}"#).unwrap();
+        assert!(titulos_do_desktop(raiz.path()).is_empty());
     }
 
     #[test]

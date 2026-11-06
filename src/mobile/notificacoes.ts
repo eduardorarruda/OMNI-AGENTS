@@ -82,6 +82,28 @@ export function novosAvisos(lista: readonly Conversation[], vistos: Set<string>,
 }
 
 /** Notificação do sistema quando uma conversa passa a precisar de você (aprovar ou responder). */
+export interface AvisoDeFluxo { id: string; fluxo?: string; aviso_seq?: number; aviso?: string | null }
+
+const TITULO_DO_AVISO: Record<string, string> = {
+  aprovacao: "Fluxo pede aprovação", falhou: "Fluxo falhou", concluido: "Fluxo concluído", custo: "Fluxo parou no limite de custo",
+};
+
+/** Cada evento sobe o `aviso_seq` da execução. Na primeira leitura só anota: o que já aconteceu não é novidade. */
+export function novosAvisosDeFluxo(lista: readonly AvisoDeFluxo[], vistos: Map<string, number>, primeira: boolean): AvisoDeFluxo[] {
+  const novos = lista.filter((e) => e.aviso && (e.aviso_seq ?? 0) > (vistos.get(e.id) ?? 0));
+  for (const e of novos) vistos.set(e.id, e.aviso_seq ?? 0);
+  return primeira ? [] : novos;
+}
+
+export function avisarFluxos(novos: readonly AvisoDeFluxo[], prefs: PrefsDeAviso = lerPrefs()) {
+  if (!prefs.ligadas || novos.length === 0) return;
+  if (!prefs.comAPaginaAberta && document.visibilityState === "visible" && document.hasFocus()) return;
+  for (const e of novos) {
+    if (e.aviso === "aprovacao" ? !prefs.aprovacao : !prefs.terminou) continue;
+    void notificar(TITULO_DO_AVISO[e.aviso ?? ""] ?? "Fluxo mudou", e.fluxo ?? "", { tag: `fluxo-${e.id}`, url: window.location.href, vibrar: prefs.vibrar });
+  }
+}
+
 export function useNotificacoes(atencao: readonly Conversation[], carregado: boolean, url: (id: string) => string) {
   const [prefs] = usePrefsDeAviso();
   const vistos = useRef(new Set<string>());

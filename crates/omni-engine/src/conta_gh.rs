@@ -67,19 +67,27 @@ mod tests {
         assert!(env.iter().all(|(chave, valor)| chave != "GH_TOKEN" && !valor.contains("token-de")), "token foi parar no env gravado");
     }
 
+    /// O CommandBuilder herda o ambiente: rodando dentro do OMNI, traria o token real, e `assert_eq!`
+    /// o imprimiria na falha.
+    fn comando_sem_token() -> CommandBuilder {
+        let mut comando = CommandBuilder::new("sh");
+        comando.env_remove("GH_TOKEN");
+        comando
+    }
+
     #[test]
     fn conta_invalida_nem_chama_o_gh() {
-        let mut comando = CommandBuilder::new("sh");
+        let mut comando = comando_sem_token();
         aplicar(&mut comando, &env("--user=outra"), |_| panic!("chamou o gh"));
-        assert_eq!(gh_token(&comando), None);
+        assert!(gh_token(&comando).is_none());
     }
 
     #[test]
     fn sem_conta_ou_sem_token_segue_sem_gh_token() {
-        let mut comando = CommandBuilder::new("sh");
+        let mut comando = comando_sem_token();
         aplicar(&mut comando, &[], |_| panic!("chamou o gh"));
         aplicar(&mut comando, &env("conta-b"), |_| None);
-        assert_eq!(gh_token(&comando), None);
+        assert!(gh_token(&comando).is_none());
     }
 
     #[test]

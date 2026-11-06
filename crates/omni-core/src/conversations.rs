@@ -47,6 +47,12 @@ pub struct Conversation {
 pub const TITULO_PALAVRAS: usize = 3;
 const PALAVRA_MAX: usize = 24;
 
+/// Ao compactar, o Claude Code grava o resumo como fala do usuário, no começo do transcript da
+/// continuação. Não é o assunto da conversa. O texto cobre transcript sem a marca `isCompactSummary`.
+pub fn e_resumo_de_compactacao(value: &Value, text: &str) -> bool {
+    value["isCompactSummary"] == true || text.trim_start().starts_with("This session is being continued from a previous conversation")
+}
+
 /// Primeiro prompt de verdade do usuário, lido do transcript que a própria CLI grava (sem comando
 /// local nem instrução injetada). `None` enquanto ninguém falou nada.
 pub fn primeiro_prompt(conversation: &Conversation) -> Option<String> {
@@ -61,7 +67,7 @@ pub fn primeiro_prompt(conversation: &Conversation) -> Option<String> {
             }
             // Mensagem de sistema do próprio CLI (comando local, lembrete) não é o assunto da conversa.
             let text = text.trim_start();
-            if text.starts_with('<') || text.starts_with("# AGENTS.md") || text.starts_with("Caveat:") || text.is_empty() {
+            if text.starts_with('<') || text.starts_with("# AGENTS.md") || text.starts_with("Caveat:") || text.is_empty() || e_resumo_de_compactacao(&value, text) {
                 continue;
             }
             return Some(text.chars().take(2_000).collect());
@@ -631,6 +637,20 @@ segunda linha"}}),
         // Mensagem de sistema da própria CLI não conta; do prompt de verdade saem as palavras de
         // conteúdo, sem o verbo do pedido nem conectivo.
         assert_eq!(display_title(&conversa), "Login Quebra Safari");
+    }
+
+    #[test] fn nome_automatico_pula_o_resumo_da_compactacao() {
+        let dir = tempfile::tempdir().unwrap();
+        let transcript = dir.path().join("t.jsonl");
+        let linhas = [
+            json!({"type":"user","isCompactSummary":true,"message":{"role":"user","content":"Resumo marcado sem a frase de sempre"}}),
+            json!({"type":"user","message":{"role":"user","content":"This session is being continued from a previous conversation that ran out of context."}}),
+            json!({"type":"user","message":{"role":"user","content":"corrigir login quebrado no safari"}}),
+        ].map(|linha| linha.to_string()).join("\n");
+        std::fs::write(&transcript, linhas).unwrap();
+        let segmento = Segment{provider:"claude".into(),profile_id:None,external_session_id:None,transcript_path:Some(transcript.to_string_lossy().into_owned()),terminal_session_id:None,started_at_ms:0,ended_at_ms:None,historico_ate_ms:None};
+        let conversa = Conversation{id:"c".into(),project_id:"p".into(),cwd:"/p".into(),title:"Conversa".into(),title_source:TitleSource::Auto,created_at_ms:0,segments:vec![segmento]};
+        assert_eq!(primeiro_prompt(&conversa).as_deref(), Some("corrigir login quebrado no safari"));
     }
 
     #[test] fn titulo_curto_fica_com_ate_tres_palavras_de_conteudo() {

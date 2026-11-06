@@ -1,5 +1,6 @@
 //! Base de conhecimento local do OMNI: arquivos viram trechos num índice FTS5. A busca devolve só
 //! trechos curtos, e o agente pede o trecho inteiro quando precisa — é isso que economiza tokens.
+pub mod busca;
 pub mod engine;
 pub mod extrair;
 pub mod ganchos;
@@ -7,6 +8,7 @@ pub mod mcp;
 pub mod mcp_fluxos;
 pub mod mcp_historico;
 pub mod memoria;
+mod pessoais;
 pub mod tarefas;
 
 use regex::Regex;
@@ -75,6 +77,12 @@ pub fn sem_segredos(texto: &str) -> String {
             | (?i:(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis)://[^\s:@/]+:[^\s@/]+@)").unwrap()
     });
     padroes.replace_all(texto, "[segredo removido]").into_owned()
+}
+
+/// Tira do que sai para o agente CPF, CNPJ, e-mail, telefone, valor em reais e, por heurística, nomes:
+/// a base guarda tudo inteiro, e a máscara vale na saída. Veja o limite da heurística em `pessoais`.
+pub fn sem_dados_pessoais(texto: &str) -> String {
+    pessoais::mascarar(texto)
 }
 
 impl Base {
@@ -219,5 +227,11 @@ mod testes;
 mod testes_memoria;
 #[cfg(test)]
 mod testes_mcp;
+#[cfg(test)]
+mod testes_fluxos_mcp;
+#[cfg(test)]
+mod testes_busca;
+#[cfg(test)]
+mod testes_pessoais;
 #[cfg(test)]
 mod testes_tarefas;

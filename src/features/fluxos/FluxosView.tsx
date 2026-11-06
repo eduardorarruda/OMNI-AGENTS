@@ -222,7 +222,7 @@ function Fluxos({ projectId, projectPath, onAbrirSessao, onClose }: Props) {
   }, [emExecucao]);
 
   function abrirFluxo(f: Fluxo | null, info?: { escopo: "global" | "projeto"; id?: string }) {
-    const base = f ? { id: f.id, nome: f.nome, descricao: f.descricao, nos: f.nos, conexoes: f.conexoes, na_pasta_do_projeto: f.na_pasta_do_projeto } : fluxoVazio();
+    const base = f ? { id: f.id, nome: f.nome, descricao: f.descricao, nos: f.nos, conexoes: f.conexoes, na_pasta_do_projeto: f.na_pasta_do_projeto, max_paralelo: f.max_paralelo, pastas_extras: f.pastas_extras, custo_maximo: f.custo_maximo } : fluxoVazio();
     setRascunho(structuredClone(base));
     setOrigem(info ?? null);
     setEscopo(info?.escopo ?? "global");

@@ -75,8 +75,12 @@ const ALTURA_MAXIMA_PX = 160;
 
 /** Teclado físico e mouse: Enter envia, como no terminal do PC. No celular o Enter do teclado
  *  virtual continua quebrando linha — lá o botão de enviar está sempre à mão. */
-function enterEnvia(): boolean {
-  return typeof window !== "undefined" && Boolean(window.matchMedia?.("(pointer: fine)").matches);
+/** No celular, Enter quebra linha. O app do PC envia sempre: o WebKit do Linux pode não informar o
+ *  mouse em `pointer: fine`, e aí o Enter não fazia nada. */
+export function enterEnvia(): boolean {
+  if (typeof window === "undefined") return false;
+  if ("__TAURI_INTERNALS__" in window) return true;
+  return Boolean(window.matchMedia?.("(any-pointer: fine)").matches);
 }
 
 function ChipAnexo({ anexo, onRemover, travado }: { anexo: Anexo; onRemover: () => void; travado: boolean }) {
@@ -610,7 +614,7 @@ export function Composer({ texto, onTexto, anexos, onAdicionar, onRemover, onEnv
         )}
         <label htmlFor="reply" className="sr-only">Sua resposta</label>
         <div className="composer-campo-caixa">
-        <textarea id="reply" ref={campo} rows={1} value={texto} maxLength={16000} placeholder={placeholder}
+        <textarea id="reply" ref={campo} rows={1} value={texto} placeholder={placeholder}
           className="composer-campo" onPaste={colar} onKeyDown={tecla}
           onChange={(event) => { onTexto(event.target.value); acompanharMencao(event.target.value, event.target.selectionStart ?? event.target.value.length); }}
           onClick={(event) => acompanharMencao(event.currentTarget.value, event.currentTarget.selectionStart ?? 0)}

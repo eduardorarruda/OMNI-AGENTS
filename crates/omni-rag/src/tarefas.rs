@@ -1,6 +1,6 @@
 //! Tarefas de uma API HTTP externa. Aqui fica só o que não precisa de rede: configuração, leitura da
 //! resposta e o cache local. A requisição mora em `src-tauri/src/tarefas.rs`, e o MCP lê só o cache.
-use crate::sem_segredos;
+use crate::{sem_dados_pessoais, sem_segredos};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -28,6 +28,11 @@ const ERRO_MAXIMO: usize = 200;
 const CAMPOS_DE_MENSAGEM: [&str; 4] = ["message", "mensagem", "error", "erro"];
 const ITENS_NA_LISTA: usize = 20;
 const TITULO_NA_LISTA: usize = 100;
+const MINUTO_MS: i64 = 60 * 1000;
+const HORA_MS: i64 = 60 * MINUTO_MS;
+const DIA_MS: i64 = 24 * HORA_MS;
+/// O MCP nunca busca sozinho: a Central é frágil e polling é proibido. Quem atualiza é a pessoa.
+const COMO_ATUALIZAR: &str = "Esta ferramenta não acessa a API, de propósito. Peça ao usuário para clicar em Atualizar no painel Tarefas do OMNI e chame de novo.";
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -470,14 +475,53 @@ fn linha_da_lista(tarefa: &Tarefa) -> String {
     format!("#{} [{}] {}{responsavel}", curto(&tarefa.id), curto(&tarefa.status), cortar(&uma_linha(&tarefa.titulo), TITULO_NA_LISTA))
 }
 
-/// `listar_tarefas` do MCP: curta de propósito, o detalhe vem do `ler_tarefa`.
-pub fn lista_resumida(cache: &Cache, busca: Option<&str>, agora: i64) -> String {
+fn idade_do_cache(cache: &Cache, agora: i64) -> String {
+    if cache.buscado_em_ms <= 0 { return "de quando, não se sabe".into(); }
+    match (agora - cache.buscado_em_ms).max(0) {
+        idade if idade < HORA_MS => format!("há {} min", idade / MINUTO_MS),
+        idade if idade < DIA_MS => format!("há {} h", idade / HORA_MS),
+        idade => format!("há {} dias", idade / DIA_MS),
+    }
+}
+
+fn cache_velho(cache: &Cache, agora: i64) -> bool {
+    agora - cache.buscado_em_ms >= VALIDADE_DO_CACHE_MS
+}
+
+fn sem_achados(cache: &Cache, busca: &str, agora: i64) -> String {
+    let idade = idade_do_cache(cache, agora);
+    if cache.buscado_em_ms <= 0 && cache.tarefas.is_empty() { return format!("Nenhuma tarefa no cache: ele ainda não foi preenchido. {COMO_ATUALIZAR}"); }
+    let situacao = if busca.is_empty() || cache.tarefas.is_empty() { format!("Nenhuma tarefa no cache, atualizado {idade}.") }
+        else { format!("Nenhuma das {} tarefas do cache, atualizado {idade}, combina com a busca.", cache.tarefas.len()) };
+    if cache_velho(cache, agora) { format!("{situacao} {COMO_ATUALIZAR}") } else { situacao }
+}
+
+/// `ler_tarefa` com id que o cache não tem: a tarefa pode ser mais nova que ele.
+pub fn tarefa_fora_do_cache(cache: &Cache, agora: i64) -> String {
+    format!("Tarefa não encontrada no cache, atualizado {}. {COMO_ATUALIZAR}", idade_do_cache(cache, agora))
+}
+
+/// O id fica: é com ele que o agente pede a tarefa. O resto sai antes de qualquer corte de tamanho.
+pub fn mascarada(tarefa: &Tarefa) -> Tarefa {
+    Tarefa {
+        id: tarefa.id.clone(),
+        titulo: sem_dados_pessoais(&tarefa.titulo),
+        descricao: sem_dados_pessoais(&tarefa.descricao),
+        status: sem_dados_pessoais(&tarefa.status),
+        responsavel: sem_dados_pessoais(&tarefa.responsavel),
+        comentarios: tarefa.comentarios.iter().map(|texto| sem_dados_pessoais(texto)).collect(),
+    }
+}
+
+/// `listar_tarefas` do MCP: curta de propósito, o detalhe vem do `ler_tarefa`. A busca olha o dado
+/// inteiro, e só a linha que sai é mascarada.
+pub fn lista_resumida(cache: &Cache, busca: Option<&str>, agora: i64, sem_mascara: bool) -> String {
     let busca = busca.unwrap_or_default().trim().to_lowercase();
     let achadas: Vec<&Tarefa> = cache.tarefas.iter().filter(|tarefa| combina(tarefa, &busca)).collect();
-    if achadas.is_empty() { return "Nenhuma tarefa no cache. Atualize pela aba Tarefas do OMNI.".into(); }
-    let minutos = (agora - cache.buscado_em_ms).max(0) / 60_000;
-    let mut linhas = vec![format!("{} tarefas, cache de {minutos} min atrás {MARCA}", achadas.len())];
-    linhas.extend(achadas.iter().take(ITENS_NA_LISTA).map(|tarefa| linha_da_lista(tarefa)));
+    if achadas.is_empty() { return sem_achados(cache, &busca, agora); }
+    let mut linhas = vec![format!("{} tarefas, cache atualizado {} {MARCA}", achadas.len(), idade_do_cache(cache, agora))];
+    if cache_velho(cache, agora) { linhas.push(format!("O cache pode estar desatualizado. {COMO_ATUALIZAR}")); }
+    linhas.extend(achadas.iter().take(ITENS_NA_LISTA).map(|tarefa| if sem_mascara { linha_da_lista(tarefa) } else { linha_da_lista(&mascarada(tarefa)) }));
     if achadas.len() > ITENS_NA_LISTA { linhas.push(format!("… e mais {}. Refine a busca.", achadas.len() - ITENS_NA_LISTA)); }
     linhas.join("\n")
 }

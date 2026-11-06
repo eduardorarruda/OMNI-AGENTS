@@ -140,8 +140,9 @@ async function walkAllFiles(projectRoot: string, ignoreList: string[], limit: nu
   return files.slice(0, limit);
 }
 
-export async function readTextFile(absolutePath: string, projectRoot: string): Promise<string> {
-  assertWithinRoot(absolutePath, projectRoot);
+/** Ler vale em qualquer pasta: o agente entrega arquivo fora do projeto e só abre com o clique da
+ *  pessoa. Escrever continua preso ao projeto. */
+export async function readTextFile(absolutePath: string): Promise<string> {
   try {
     return await pluginReadTextFile(absolutePath);
   } catch (reason) {

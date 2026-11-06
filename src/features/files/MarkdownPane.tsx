@@ -35,7 +35,7 @@ export function MarkdownPane({ projectPath, tab, fileSaveMode, onDirtyChange }: 
 
   const load = useCallback(async () => {
     try {
-      const [text, mtime] = await Promise.all([readTextFile(path, projectPath), fileMtime(path)]);
+      const [text, mtime] = await Promise.all([readTextFile(path), fileMtime(path)]);
       setContent(text);
       setError(null);
       lastMtimeRef.current = mtime;
