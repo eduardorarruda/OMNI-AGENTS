@@ -57,10 +57,16 @@ pub struct DadosDoProcesso { pub nome: String, pub cmd: String, pub pasta: Optio
 #[cfg(unix)]
 fn rodar(programa: &str, args: &[&str]) -> Result<String, String> {
     let saida = std::process::Command::new(programa).args(args).output().map_err(|erro| format!("{programa}: {erro}"))?;
-    if !saida.status.success() && saida.stdout.is_empty() {
-        return Err(format!("{programa}: {}", String::from_utf8_lossy(&saida.stderr).trim()));
+    tratar_saida(saida.status.success(), &saida.stdout, &saida.stderr, programa)
+}
+
+/// Resultado de um comando de leitura. `lsof` sai com 1 e nada em stdout/stderr quando não há
+/// escuta nenhuma: isso é lista vazia, não erro.
+pub fn tratar_saida(sucesso: bool, stdout: &[u8], stderr: &[u8], programa: &str) -> Result<String, String> {
+    if !sucesso && stdout.is_empty() && !stderr.iter().all(u8::is_ascii_whitespace) {
+        return Err(format!("{programa}: {}", String::from_utf8_lossy(stderr).trim()));
     }
-    Ok(String::from_utf8_lossy(&saida.stdout).into_owned())
+    Ok(String::from_utf8_lossy(stdout).into_owned())
 }
 
 /// Portas em escuta com o dono. macOS usa `lsof`; Linux usa `ss` e, se ele faltar, `/proc/net/tcp`.
@@ -137,36 +143,69 @@ pub fn parse_ps_pares(saida: &str) -> Vec<(u32, u32)> {
     }).collect()
 }
 
+/// Vivo de verdade: zumbi (já morto, esperando o pai recolher) não conta.
 #[cfg(unix)]
 fn vivo(pid: u32) -> bool {
+    if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        let estado = stat.rsplit(')').next().and_then(|r| r.trim_start().chars().next());
+        return !matches!(estado, Some('Z' | 'X'));
+    }
     std::process::Command::new("kill").args(["-0", &pid.to_string()]).output().is_ok_and(|s| s.status.success())
 }
 
+/// O `kill` falhar para um pid que já morreu é normal; quem confere o resultado é `confirmar_morte`.
+/// Só falha de verdade (não conseguir nem rodar o `kill`) volta como erro.
 #[cfg(unix)]
-fn sinal(nome: &str, pids: &[u32]) {
-    if pids.is_empty() { return; }
-    let mut cmd = std::process::Command::new("kill");
-    cmd.arg(nome);
-    cmd.args(pids.iter().map(u32::to_string));
-    let _ = cmd.output();
+fn sinal(nome: &str, pids: &[u32]) -> Result<(), String> {
+    if pids.is_empty() { return Ok(()); }
+    std::process::Command::new("kill").arg(nome).args(pids.iter().map(u32::to_string)).output()
+        .map(|_| ()).map_err(|erro| format!("Não deu para rodar o kill: {erro}"))
+}
+
+const MENSAGEM_PROPRIO: &str = "Derrubar este servidor fecharia os terminais do OMNI AGENTS (o app ou o engine está na mesma árvore). Nada foi encerrado.";
+
+/// Decisão pura: a árvore a derrubar não pode conter o próprio processo, um ancestral dele, nem
+/// um processo `omni-engine`/`omni-agents`. O engine ser ANCESTRAL do servidor é normal e não barra.
+pub fn verificar_arvore(alvos: &[u32], pares: &[(u32, u32)], eu: u32, nomes: &[(u32, String)]) -> Result<(), String> {
+    let mut meus_ancestrais = vec![eu];
+    let mut atual = eu;
+    while let Some((_, pai)) = pares.iter().find(|(pid, _)| *pid == atual) {
+        if *pai == 0 || meus_ancestrais.contains(pai) { break; }
+        meus_ancestrais.push(*pai);
+        atual = *pai;
+    }
+    let do_omni = |pid: &u32| nomes.iter().any(|(p, n)| p == pid && matches!(n.as_str(), "omni-engine" | "omni-agents"));
+    if alvos.iter().any(|pid| meus_ancestrais.contains(pid) || do_omni(pid)) { return Err(MENSAGEM_PROPRIO.to_owned()); }
+    Ok(())
+}
+
+/// `Err` com a causa se algum dos `pids` ainda vive.
+pub fn confirmar_morte(pids: &[u32], vivo: impl Fn(u32) -> bool) -> Result<(), String> {
+    match pids.iter().find(|p| vivo(**p)) {
+        Some(pid) => Err(format!("Não deu para encerrar o processo {pid}: ele continuou vivo mesmo depois do KILL.")),
+        None => Ok(()),
+    }
 }
 
 /// Derruba `raiz` e tudo que desceu dela: TERM em cada um, espera até `espera` o que ainda vive
-/// sair, e KILL no que sobrou. Nunca mexe no próprio processo.
+/// sair, e KILL no que sobrou. Recusa tudo, sem matar nada, se a árvore atingir o próprio OMNI.
+/// No fim confere quem sobreviveu e devolve erro se sobrar alguém.
 #[cfg(unix)]
 pub fn derrubar_arvore(raiz: u32, espera: std::time::Duration) -> Result<(), String> {
-    let eu = std::process::id();
-    let mut alvos = omni_core::processos::descendentes(raiz, &pares_de_processos()?);
+    let pares = pares_de_processos()?;
+    let mut alvos = omni_core::processos::descendentes(raiz, &pares);
     alvos.push(raiz);
-    alvos.retain(|pid| *pid != eu);
-    sinal("-TERM", &alvos);
+    let nomes: Vec<(u32, String)> = alvos.iter().filter_map(|p| Some((*p, dados_do_processo(*p)?.nome))).collect();
+    verificar_arvore(&alvos, &pares, std::process::id(), &nomes)?;
+    sinal("-TERM", &alvos)?;
     let limite = std::time::Instant::now() + espera;
     while std::time::Instant::now() < limite && alvos.iter().any(|p| vivo(*p)) {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
     let sobrou: Vec<u32> = alvos.into_iter().filter(|p| vivo(*p)).collect();
-    sinal("-KILL", &sobrou);
-    Ok(())
+    sinal("-KILL", &sobrou)?;
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    confirmar_morte(&sobrou, vivo)
 }
 
 #[cfg(test)]
@@ -236,5 +275,68 @@ rapportd  600    e    8u  IPv4 0x1236      0t0  TCP *:49152 (LISTEN)\n";
         filho.wait().unwrap();
         std::thread::sleep(std::time::Duration::from_millis(200));
         assert!(!vivo(neto[0]), "o neto sobreviveu");
+    }
+
+    #[cfg(unix)]
+    fn nomes(l: &[(u32, &str)]) -> Vec<(u32, String)> { l.iter().map(|(p, n)| (*p, (*n).to_owned())).collect() }
+
+    #[cfg(unix)]
+    #[test]
+    fn arvore_com_o_proprio_processo_e_recusada() {
+        let pares = [(10, 1), (20, 10), (30, 20)];
+        let e = verificar_arvore(&[30, 20, 99], &pares, 99, &nomes(&[(30, "node"), (20, "sh"), (99, "omni-agents")])).unwrap_err();
+        assert!(e.contains("terminais do OMNI"), "{e}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn arvore_com_ancestral_do_omni_e_recusada() {
+        // eu (30) desce de 10; derrubar 10 levaria o OMNI junto.
+        let pares = [(10, 1), (20, 10), (30, 20)];
+        assert!(verificar_arvore(&[10], &pares, 30, &nomes(&[(10, "bash")])).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn arvore_com_engine_ou_app_pelo_nome_e_recusada() {
+        let pares = [(5, 1), (6, 5)];
+        assert!(verificar_arvore(&[6, 5], &pares, 999, &nomes(&[(5, "omni-engine"), (6, "node")])).is_err());
+        assert!(verificar_arvore(&[5], &pares, 999, &nomes(&[(5, "omni-agents")])).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn servidor_filho_de_terminal_do_omni_pode_cair() {
+        // engine(5) -> pty/sh(6) -> npm(7) -> node(8). Cair o 7 não atinge o engine, que é só ancestral.
+        let pares = [(5, 1), (6, 5), (7, 6), (8, 7), (999, 1)];
+        let n = nomes(&[(5, "omni-engine"), (6, "sh"), (7, "npm"), (8, "node")]);
+        assert_eq!(verificar_arvore(&[8, 7], &pares, 999, &n), Ok(()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn confirmar_morte_acusa_quem_sobrou() {
+        assert_eq!(confirmar_morte(&[1, 2], |_| false), Ok(()));
+        let e = confirmar_morte(&[1, 2], |p| p == 2).unwrap_err();
+        assert!(e.contains('2') && e.contains("KILL"), "{e}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn derrubar_arvore_mata_ate_quem_ignora_term() {
+        use std::process::{Command, Stdio};
+        let mut filho = Command::new("sh").args(["-c", "trap '' TERM; while :; do sleep 1; done"]).stdout(Stdio::null()).spawn().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        derrubar_arvore(filho.id(), std::time::Duration::from_millis(300)).unwrap();
+        assert!(!vivo(filho.id()));
+        filho.wait().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saida_1_sem_nada_e_lista_vazia() {
+        assert_eq!(tratar_saida(false, b"", b"", "lsof"), Ok(String::new()));
+        assert!(tratar_saida(false, b"", b"lsof: boom\n", "lsof").unwrap_err().contains("boom"));
+        assert_eq!(tratar_saida(true, b"x", b"", "ps"), Ok("x".to_owned()));
     }
 }

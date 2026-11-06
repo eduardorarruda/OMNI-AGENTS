@@ -21,10 +21,9 @@ const PROGRAMAS_DE_DEV: &[&str] = &["node", "bun", "deno", "python", "pythonw", 
 /// Caminho de programa instalado ou ferramenta global, não de projeto (separador já normalizado
 /// para `\\`, minúsculo). Vale por trecho do comando: o `node.exe` mora em `Program Files`, mas o
 /// script que ele roda está na pasta do projeto.
-const FORA_DE_PROJETO: &[&str] = &[
-    // Windows
-    "\\program files", "\\appdata\\", "\\.vscode", "npm-cache", "\\_npx", "\\windows\\",
-    // Linux e macOS
+const FORA_NO_WINDOWS: &[&str] = &["\\program files", "\\appdata\\", "\\.vscode", "npm-cache", "\\_npx", "\\windows\\"];
+/// Só valem para caminho Unix: no Windows `D:\Library\app` é projeto.
+const FORA_NO_UNIX: &[&str] = &[
     "\\usr\\", "\\opt\\", "\\snap\\", "\\.nvm\\", "\\.cargo\\", "\\.rustup\\", "\\.local\\",
     "\\.npm\\", "\\.cache\\", "\\.config\\", "\\.volta\\", "\\.asdf\\", "\\.pyenv\\", "\\library\\", "\\applications\\",
 ];
@@ -58,9 +57,10 @@ fn caminho_absoluto(trecho: &str) -> Option<(String, bool)> {
     (b.len() >= 2 && b[0] == b'/').then(|| (trecho.to_owned(), false))
 }
 
-fn fora_de_projeto(caminho: &str) -> bool {
+fn fora_de_projeto(caminho: &str, windows: bool) -> bool {
     let normalizado = format!("{}\\", caminho.to_lowercase().replace('/', "\\"));
-    FORA_DE_PROJETO.iter().any(|marca| normalizado.contains(marca))
+    let marcas = if windows { FORA_NO_WINDOWS } else { FORA_NO_UNIX };
+    marcas.iter().any(|marca| normalizado.contains(marca))
 }
 
 /// Sobe de `base` até achar `package.json` (ou parecido), no máximo 6 níveis. Corta o texto no
@@ -85,7 +85,7 @@ fn projeto_do_comando(cmd: &str, pasta_do_processo: Option<&str>, existe: &impl 
     }
     let do_caminho = trechos.iter().find_map(|trecho| {
         let (caminho, windows) = caminho_absoluto(trecho.rsplit('=').next()?)?;
-        if fora_de_projeto(&caminho) { return None; }
+        if fora_de_projeto(&caminho, windows) { return None; }
         let separador = if windows { '\\' } else { '/' };
         let corte = format!("{separador}node_modules{separador}");
         let base = caminho.to_lowercase().find(&corte).map_or(caminho.as_str(), |i| &caminho[..i]);
@@ -93,7 +93,7 @@ fn projeto_do_comando(cmd: &str, pasta_do_processo: Option<&str>, existe: &impl 
     });
     do_caminho.or_else(|| {
         let (pasta, windows) = caminho_absoluto(pasta_do_processo?)?;
-        if fora_de_projeto(&pasta) { return None; }
+        if fora_de_projeto(&pasta, windows) { return None; }
         subir_ate_marca(&pasta, if windows { '\\' } else { '/' }, existe)
     })
 }
@@ -111,6 +111,8 @@ fn tipo(cmd: &str, programa: &str) -> String {
 fn programa(nome: &str) -> String {
     let minusculo = nome.to_lowercase();
     let sem_exe = minusculo.trim_end_matches(".exe");
+    // O kernel corta o nome em 15 caracteres: `next-server (v14.2.3)` chega como `next-server (v1`.
+    if sem_exe.starts_with("next-server") { return "next-server".to_owned(); }
     match sem_exe.strip_prefix("python") {
         Some(resto) if resto.chars().all(|c| c.is_ascii_digit() || c == '.') => "python".to_owned(),
         _ => sem_exe.to_owned(),
@@ -307,5 +309,19 @@ mod tests {
             {"pid":2,"nome":"node","cmd":"node /home/e/omni2/node_modules/vite/bin/vite.js"}]}"#;
         let r = unix(json, &["/home/e/omni", "/home/e/omni2"], Some("/home/e/omni/src-tauri/target/debug/omni-agents"));
         assert_eq!(r.iter().map(|x| (x.0.as_str(), x.3)).collect::<Vec<_>>(), vec![("omni", true), ("omni2", false)]);
+    }
+
+    #[test]
+    fn next_server_truncado_pelo_kernel_conta() {
+        let json = r#"{"c":[{"p":3000,"pid":1}],"p":[
+            {"pid":1,"nome":"next-server (v1","cmd":"next-server (v14.2.3)","pasta":"/home/e/site"}]}"#;
+        assert_eq!(unix(json, &["/home/e/site"], None), vec![("site".into(), "Next".into(), vec![3000], false)]);
+    }
+
+    #[test]
+    fn pasta_library_no_windows_continua_projeto() {
+        let json = r#"{"c":[{"p":3000,"pid":1}],"p":[
+            {"pid":1,"nome":"node.exe","cmd":"node D:\\Library\\app\\node_modules\\vite\\bin\\vite.js"}]}"#;
+        assert_eq!(unix(json, &["D:\\Library\\app"], None), vec![("app".into(), "Vite".into(), vec![3000], false)]);
     }
 }
