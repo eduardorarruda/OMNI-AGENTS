@@ -3,6 +3,7 @@
 //! `falha`, `atividade`, `aprovacao`, `subfluxo`, `aviso`.
 use super::*;
 use std::io::BufRead;
+use std::collections::HashMap;
 
 /// Quantos eventos uma leitura devolve no máximo.
 pub const MAXIMO_POR_LEITURA: usize = 500;
@@ -33,23 +34,56 @@ fn anexar(state: &EngineState, id: &str, evento: &Evento) -> Result<()> {
     Ok(())
 }
 
-/// Eventos com `seq` maior que `desde`, no máximo `MAXIMO_POR_LEITURA`. Lê em fluxo e para ao
-/// juntar o suficiente. Sem arquivo (execução antiga) devolve vazio. Linha quebrada (queda no meio
-/// da escrita) é pulada.
+/// Por arquivo: (último `seq` entregue, byte logo depois da linha dele). Uma leitura com cursor igual
+/// ou maior começa nesse byte, sem reler o que já passou. Cursor menor (ou engine religado, memória
+/// vazia) lê do começo.
+fn marcas() -> &'static Mutex<HashMap<PathBuf, (u64, u64)>> {
+    static M: std::sync::OnceLock<Mutex<HashMap<PathBuf, (u64, u64)>>> = std::sync::OnceLock::new();
+    M.get_or_init(Default::default)
+}
+
+/// Eventos com `seq` maior que `desde`, no máximo `MAXIMO_POR_LEITURA`. Sem arquivo (execução
+/// antiga) devolve vazio. Linha quebrada é pulada, e a última linha sem `\n` (escrita em andamento)
+/// fica para a próxima leitura.
 pub fn ler_desde(state: &EngineState, id: &str, desde: u64) -> Result<Vec<Evento>> {
     if !id_valido(id) { return Err(anyhow!("Id inválido")); }
-    let Ok(f) = fs::File::open(arquivo(state, id)) else { return Ok(Vec::new()) };
-    Ok(std::io::BufReader::new(f).lines().map_while(std::result::Result::ok)
-        .filter_map(|l| serde_json::from_str::<Evento>(&l).ok())
-        .filter(|e| e.seq > desde).take(MAXIMO_POR_LEITURA).collect())
+    let caminho = arquivo(state, id);
+    let Ok(mut f) = fs::File::open(&caminho) else { return Ok(Vec::new()) };
+    let marca = marcas().lock().ok().and_then(|m| m.get(&caminho).copied());
+    let mut posicao = match marca {
+        Some((seq, offset)) if desde >= seq && offset <= f.metadata().map_or(0, |m| m.len()) => offset,
+        _ => 0,
+    };
+    std::io::Seek::seek(&mut f, std::io::SeekFrom::Start(posicao))?;
+    let mut leitor = std::io::BufReader::new(f);
+    let (mut eventos, mut ultima, mut linha) = (Vec::new(), None, String::new());
+    while eventos.len() < MAXIMO_POR_LEITURA {
+        linha.clear();
+        let lidos = leitor.read_line(&mut linha)?;
+        if lidos == 0 || !linha.ends_with('\n') { break; }
+        posicao += lidos as u64;
+        let Ok(e) = serde_json::from_str::<Evento>(&linha) else { continue };
+        if e.seq > desde { ultima = Some((e.seq, posicao)); eventos.push(e); }
+    }
+    if let (Some(par), Ok(mut m)) = (ultima, marcas().lock()) { m.insert(caminho, par); }
+    Ok(eventos)
+}
+
+/// Separador no log do nó quando um participante da Sala fala numa rodada.
+pub fn separar_participante(state: &EngineState, id: &str, no: &str, quem: &str, rodada: u32) {
+    escrever_no_log(state, id, no, &json!({"type": "participante", "quem": quem, "rodada": rodada}));
 }
 
 /// Separador no log do nó quando ele roda de novo: o histórico mostra onde começa cada volta.
 pub fn separar_log(state: &EngineState, id: &str, no: &str, volta: u32) {
+    escrever_no_log(state, id, no, &json!({"type": "volta", "n": volta}));
+}
+
+fn escrever_no_log(state: &EngineState, id: &str, no: &str, linha: &Value) {
     let pasta = pasta_execucoes(state).join(id);
     let gravou = fs::create_dir_all(&pasta).and_then(|()| {
         let mut f = fs::OpenOptions::new().create(true).append(true).open(pasta.join(format!("{no}.log")))?;
-        writeln!(f, "{}", json!({"type": "volta", "n": volta}))
+        writeln!(f, "{linha}")
     });
-    if let Err(erro) = gravou { eprintln!("fluxos: não consegui separar a volta {volta} do nó {no} ({id}): {erro}"); }
+    if let Err(erro) = gravou { eprintln!("fluxos: não consegui separar o log do nó {no} ({id}): {erro}"); }
 }

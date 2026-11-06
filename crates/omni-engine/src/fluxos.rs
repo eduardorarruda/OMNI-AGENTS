@@ -314,7 +314,7 @@ fn processar(state: &Arc<EngineState>, v: &Viva, passo: &Passo) -> Result<()> {
         (no, ctx, e.pasta.clone(), e.projeto.clone(), e.id.clone())
     };
     let corrida = mexer(state, v, |e| {
-        let corrida = e.nos.get_mut(&no.id).map_or(0, |n| { n.status = "rodando".into(); n.inicio_ms = now_ms(); n.erro = None; n.corridas += 1; n.corridas });
+        let corrida = e.nos.get_mut(&no.id).map_or(0, |n| { n.status = "rodando".into(); n.inicio_ms = now_ms(); n.erro = None; n.atividade.clear(); n.corridas += 1; n.corridas });
         eventos::registrar(state, e, Some(&no.id), "inicio", &fluxos::rotulo(&no));
         corrida
     });
@@ -721,6 +721,7 @@ fn rodar_sala(state: &Arc<EngineState>, v: &Viva, no: &fluxos::No, ctx: &Context
     for rodada in 1..=rodadas {
         let mut todos = true;
         for quem in &participantes {
+            if let Ok(id) = v.lock().map(|e| e.id.clone()) { eventos::separar_participante(state, &id, &no.id, quem, rodada); }
             let prompt = fluxos::prompt_da_sala(&objetivo, &conversa, quem, rodada, rodadas);
             let fala = rodar_agente(state, v, &no.id, quem, &prompt, None, pasta, projeto, &Ajuste::limites_de(no))?;
             todos &= fluxos::concordou(&fala);
@@ -805,7 +806,9 @@ pub fn retomar(state: &Arc<EngineState>, id: &str) -> Result<()> {
 
 pub fn cancelar(state: &EngineState, id: &str) -> Result<()> {
     let v = viva(id)?;
-    mexer(state, &v, |e| { e.status = "cancelado".into(); e.fila.clear(); for n in e.nos.values_mut().filter(|n| n.status == "rodando" || n.status == "aguardando") { n.status = "pausado".into(); } });
+    mexer(state, &v, |e| { e.status = "cancelado".into(); e.fila.clear(); for n in e.nos.values_mut().filter(|n| n.status == "rodando" || n.status == "aguardando") { n.status = "pausado".into(); }
+        eventos::registrar(state, e, None, "aviso", "Execução cancelada");
+    });
     matar_processo(id);
     Ok(())
 }
@@ -839,6 +842,7 @@ pub fn historico(state: &EngineState, id: &str, no: &str) -> Result<Vec<Value>> 
         match ev["type"].as_str() {
             Some("assistant") | Some("user") => itens.extend(omni_core::feed::items(&ev, "claude").into_iter().map(|i| json!(i))),
             Some("volta") => itens.push(json!({"kind": "notice", "role": "assistant", "text": format!("Volta {}", ev["n"]), "separador": true})),
+            Some("participante") => itens.push(json!({"kind": "notice", "role": "assistant", "text": format!("{} · rodada {}", ev["quem"].as_str().unwrap_or_default(), ev["rodada"]), "separador": true})),
             Some("comando") => itens.push(json!({"kind": "notice", "role": "assistant", "text": ev["text"]})),
             Some("saida") => itens.push(json!({"kind": "tool", "role": "assistant", "tool": "›", "text": ev["text"]})),
             Some("result") => itens.push(json!({"kind": "notice", "role": "assistant", "text": format!("Terminou em {} turnos · US$ {:.2}", ev["num_turns"], ev["total_cost_usd"].as_f64().unwrap_or(0.0))})),

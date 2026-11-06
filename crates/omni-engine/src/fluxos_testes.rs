@@ -522,3 +522,68 @@ fn volta_nova_separa_o_log() {
     let pos = itens.iter().position(|i| i["separador"] == true).unwrap();
     assert!(pos > 0 && pos < itens.len() - 1, "o separador fica entre as duas voltas");
 }
+
+// ---- Correção 1: cursor em memória, Sala, atividade zerada, cancelar ----
+
+#[test]
+fn leitura_com_cursor_nao_toca_nas_linhas_anteriores() {
+    let amb = ambiente();
+    let id = amb.iniciar(fluxo_de_um_comando());
+    let mut e = ate_parar(&id);
+    e.id = "cursor".into();
+    e.evento_seq = 0;
+    for i in 0..5 { eventos::registrar(&amb.state, &mut e, Some("c"), "aviso", &format!("n{i}")); }
+    assert_eq!(so_eventos(&amb, "cursor", 0).len(), 5);
+    // Troca a 1ª linha (já lida) por outra de mesmo tamanho, mas com seq novo: relida, apareceria.
+    let arquivo = pasta_execucoes(&amb.state).join("cursor").join("eventos.jsonl");
+    let texto = fs::read_to_string(&arquivo).unwrap();
+    let primeira = texto.lines().next().unwrap();
+    let mut isca = eventos::Evento { seq: 99, ms: 0, no: None, tipo: "aviso".into(), texto: String::new() };
+    let vazio = serde_json::to_string(&isca).unwrap().len();
+    isca.texto = "z".repeat(primeira.len() - vazio);
+    let isca = serde_json::to_string(&isca).unwrap();
+    assert_eq!(isca.len(), primeira.len());
+    fs::write(&arquivo, texto.replacen(primeira, &isca, 1)).unwrap();
+    eventos::registrar(&amb.state, &mut e, Some("c"), "aviso", "novo1");
+    eventos::registrar(&amb.state, &mut e, Some("c"), "aviso", "novo2");
+    let novos = so_eventos(&amb, "cursor", 5);
+    assert_eq!(novos.iter().map(|e| e.texto.as_str()).collect::<Vec<_>>(), vec!["novo1", "novo2"]);
+    // Cursor antigo lê do começo: aí a linha trocada aparece.
+    assert!(so_eventos(&amb, "cursor", 0).iter().any(|e| e.seq == 99));
+}
+
+#[test]
+fn participante_da_sala_separa_o_log_com_nome_e_rodada() {
+    let amb = ambiente();
+    eventos::separar_participante(&amb.state, "exec-sala", "s", "claude", 1);
+    eventos::separar_participante(&amb.state, "exec-sala", "s", "codex", 2);
+    let itens = historico(&amb.state, "exec-sala", "s").unwrap();
+    let textos: Vec<&str> = itens.iter().filter(|i| i["separador"] == true).filter_map(|i| i["text"].as_str()).collect();
+    assert_eq!(textos, vec!["claude · rodada 1", "codex · rodada 2"]);
+}
+
+#[test]
+fn primeira_atividade_igual_a_da_corrida_anterior_vira_evento() {
+    let amb = ambiente();
+    let id = amb.iniciar(json!({"id": "v", "nome": "V", "na_pasta_do_projeto": true, "nos": [
+        {"id": "e", "tipo": "entrada"}, comando("c", &conta_e_exige("c", "libera")), {"id": "f", "tipo": "fim"}],
+        "conexoes": [{"de": "e", "para": "c"}, {"de": "c", "para": "f", "saida": "sim"}]}));
+    assert_eq!(ate_parar(&id).status, "falhou");
+    fs::write(amb.projeto.join("libera"), "").unwrap();
+    retomar(&amb.state, &id).unwrap();
+    ate_parar(&id);
+    let atividades = so_eventos(&amb, &id, 0).into_iter().filter(|e| e.tipo == "atividade" && e.no.as_deref() == Some("c")).count();
+    assert_eq!(atividades, 2, "uma por corrida");
+}
+
+#[test]
+fn cancelar_entra_na_linha_do_tempo() {
+    let amb = ambiente();
+    let id = amb.iniciar(json!({"id": "a", "nome": "A", "na_pasta_do_projeto": true, "nos": [
+        {"id": "e", "tipo": "entrada"}, {"id": "ap", "tipo": "aprovacao"}, {"id": "f", "tipo": "fim"}],
+        "conexoes": [{"de": "e", "para": "ap"}, {"de": "ap", "para": "f", "saida": "sim"}]}));
+    assert_eq!(ate_parar(&id).status, "aguardando");
+    cancelar(&amb.state, &id).unwrap();
+    let ultimo = so_eventos(&amb, &id, 0).pop().unwrap();
+    assert_eq!((ultimo.tipo.as_str(), ultimo.texto.as_str(), ultimo.no), ("aviso", "Execução cancelada", None));
+}

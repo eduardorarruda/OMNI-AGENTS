@@ -2801,6 +2801,23 @@ mod tests {
     #[test]
     fn rota_de_eventos_convive_com_as_acoes_da_execucao() { let _ = rotas(); }
 
+    /// A rota de verdade: cursor por `?desde=` e 400 para id fora do padrão.
+    #[tokio::test] async fn rota_de_eventos_responde_por_cursor_e_recusa_id_invalido() {
+        let (dir,state) = fixture();
+        let pasta = dir.path().join("execucoes").join("exec-1");
+        std::fs::create_dir_all(&pasta).unwrap();
+        let linhas: String = (1..=3).map(|n| format!("{}\n", json!({"seq":n,"ms":n,"no":"c","tipo":"aviso","texto":format!("t{n}")}))).collect();
+        std::fs::write(pasta.join("eventos.jsonl"), linhas).unwrap();
+        let EngineResponse::Api { status, body } = local(state.clone(),"GET","/fluxos/execucoes/exec-1/eventos?desde=1",None,None,vec![]).await else { panic!("não é Api") };
+        assert_eq!(status,200,"{body}");
+        let lidos: Vec<Value> = serde_json::from_str(&body).unwrap();
+        assert_eq!(lidos.iter().map(|e| e["seq"].as_u64().unwrap()).collect::<Vec<_>>(), vec![2,3]);
+        let EngineResponse::Api { status, .. } = local(state.clone(),"GET","/fluxos/execucoes/exec-1/eventos",None,None,vec![]).await else { panic!("não é Api") };
+        assert_eq!(status,200);
+        let EngineResponse::Api { status, .. } = local(state,"GET","/fluxos/execucoes/id.ruim/eventos?desde=0",None,None,vec![]).await else { panic!("não é Api") };
+        assert_eq!(status,400);
+    }
+
     #[cfg(not(windows))]
     #[test]
     fn agent_models_sem_cmd_fora_do_windows() {
