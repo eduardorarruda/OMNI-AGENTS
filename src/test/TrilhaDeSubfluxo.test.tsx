@@ -74,10 +74,37 @@ describe("trilha da cadeia", () => {
   });
 
   it("avô que sumiu fica como texto e o pai segue clicável", async () => {
-    obterExecucao.mockRejectedValue(new Error("Execução não encontrada"));
+    obterExecucao.mockImplementation(async (id: string) => {
+      if (id === "ex-y") return mapa["ex-y"];
+      throw new Error("Execução não encontrada");
+    });
     render(<TrilhaDeSubfluxo execucao={z} onAbrir={() => undefined} />);
     expect(await screen.findByRole("button", { name: "Y" })).toBeInTheDocument();
+    await waitFor(() => expect(obterExecucao).toHaveBeenCalledWith("ex-x"));
+    await act(async () => { await Promise.resolve(); });
     expect(screen.queryByRole("button", { name: "X" })).not.toBeInTheDocument();
+  });
+
+  it("pai apagado não vira botão", async () => {
+    obterExecucao.mockRejectedValue(new Error("Execução não encontrada"));
+    render(<TrilhaDeSubfluxo execucao={z} onAbrir={() => undefined} />);
+    await waitFor(() => expect(obterExecucao).toHaveBeenCalledWith("ex-y"));
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+  });
+
+  it("desmontar para a subida", async () => {
+    let soltar: (x: Execucao) => void = () => undefined;
+    obterExecucao.mockImplementation((id: string) => (id === "ex-y" ? new Promise((resolver) => { soltar = resolver; }) : Promise.resolve(mapa[id])));
+    const { unmount } = render(<TrilhaDeSubfluxo execucao={z} onAbrir={() => undefined} />);
+    unmount();
+    await act(async () => { soltar(mapa["ex-y"]); await Promise.resolve(); await Promise.resolve(); });
+    expect(obterExecucao).not.toHaveBeenCalledWith("ex-x");
+  });
+
+  it("raiz com o próprio nome na pilha não mostra trilha", () => {
+    const { container } = render(<TrilhaDeSubfluxo execucao={execucao("ex-x", { pilha: ["X"] })} onAbrir={() => undefined} />);
+    expect(container).toBeEmptyDOMElement();
   });
 
   it("execução sem pai não mostra trilha", () => {
@@ -121,6 +148,29 @@ describe("na tela de Fluxos", () => {
     await screen.findByText(x.fluxo.nome);
   };
   const noSub = { id: "s", tipo: "subfluxo", titulo: "Chamar Y", config: { fluxo: "y" }, x: 0, y: 0 };
+
+  it("raiz mostra o título, sem trilha", async () => {
+    await abrir(execucao("ex-raiz", { fluxo: fluxo("x", "X"), pilha: ["X"] }));
+    expect(screen.queryByRole("navigation", { name: "Cadeia de subfluxos" })).not.toBeInTheDocument();
+  });
+
+  const noAprovar = { id: "a", tipo: "aprovacao", titulo: "Pode?", config: {}, x: 0, y: 0 };
+  const parada = (status: Execucao["status"]) => execucao("ex-parada", { status, fluxo: fluxo("x", "X", [noAprovar]), nos: { a: { status: "aguardando" } as Execucao["nos"][string] } });
+
+  it("execução pausada não oferece Aprovar", async () => {
+    await abrir(parada("pausado"));
+    expect(screen.queryByText("Clique para aprovar ou recusar.")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "nó a" }));
+    expect(await screen.findByText(/a · aguardando|Pode\? · aguardando/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Aprovar" })).not.toBeInTheDocument();
+  });
+
+  it("execução aguardando oferece Aprovar", async () => {
+    await abrir(parada("aguardando"));
+    expect(screen.getByText("Clique para aprovar ou recusar.")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "nó a" }));
+    expect(await screen.findByRole("button", { name: "Aprovar" })).toBeInTheDocument();
+  });
 
   it("clicar no nó abre a filha", async () => {
     const pai = execucao("ex-pai", { fluxo: fluxo("x", "X", [noSub]), nos: { s: { status: "rodando", filha: "ex-filha" } as Execucao["nos"][string] } });

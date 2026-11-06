@@ -106,6 +106,18 @@ fn importa_markdown_do_cofre_com_frontmatter_e_e_idempotente() {
 }
 
 #[test]
+fn passada_nao_leva_segredo_do_titulo_para_o_slug() {
+    let pasta = tempfile::tempdir().unwrap();
+    let base = base(pasta.path());
+    let segredo = "ghp_abcdefghijklmnopqrstuvwxyz123456";
+    let resposta = json!({"notes": [{"op": "write", "title": format!("Chave {segredo} do deploy"), "body": "sempre publicar pela esteira"}]}).to_string();
+    assert_eq!(base.aplicar_passada(&resposta, "p", "c"), 1);
+    let indice = base.indice_de_notas("p", 5);
+    assert_eq!(indice.len(), 1);
+    assert!(!indice[0].0.contains("abcdefghijklmnop"), "{}", indice[0].0);
+}
+
+#[test]
 fn ganchos_entregam_contexto_guardam_o_resumo_e_respeitam_o_interruptor() {
     use crate::ganchos::{ligar_memoria, memoria_ligada, responder};
     let pasta = tempfile::tempdir().unwrap();

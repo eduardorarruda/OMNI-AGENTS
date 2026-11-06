@@ -36,6 +36,17 @@ it("faixa mostra o texto do que será aprovado", async () => {
   expect(screen.getByText("Publicar a versão 0.7.8?")).toBeInTheDocument();
 });
 
+it("etapa de tarefa de fora parada aparece na faixa, sem nó Aprovação", async () => {
+  const e = exec("e1", "Vinda de fora", [{ no: "c", pergunta: "" }]);
+  e.fluxo.nos[0] = { ...e.fluxo.nos[0], tipo: "comando", titulo: "Rodar script", config: { comando: "./deploy.sh" } };
+  servir(e);
+  await montar();
+  expect(screen.getByText(/Tarefa de fora: liberar “Rodar script”/)).toBeInTheDocument();
+  expect(screen.getByText(/deploy\.sh/)).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: /^Aprovar/ }));
+  expect(aprovarNo).toHaveBeenCalledWith("e1", "c", true);
+});
+
 it("Aprovar e Recusar têm nome acessível", async () => {
   servir(exec("e1", "Release", [{ no: "ok", pergunta: "Publicar?" }]));
   await montar();

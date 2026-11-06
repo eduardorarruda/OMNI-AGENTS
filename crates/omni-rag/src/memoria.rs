@@ -156,7 +156,7 @@ impl Base {
             let alvo = item["slug"].as_str().unwrap_or_default();
             if item["op"] == "append" && self.acrescentar_nota(alvo, corpo).unwrap_or(false) { mudadas += 1; continue; }
             let tags = item["tags"].as_array().into_iter().flatten().filter_map(Value::as_str).take(3).collect::<Vec<_>>().join(",");
-            let slug = slug_de(&titulo);
+            let slug = slug_de(&sem_segredos(&titulo));
             if self.nota(&slug).is_some() {
                 if self.acrescentar_nota(&slug, corpo).unwrap_or(false) { mudadas += 1; }
                 continue;

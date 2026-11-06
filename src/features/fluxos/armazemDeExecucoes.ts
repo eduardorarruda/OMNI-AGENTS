@@ -12,8 +12,8 @@ export interface LeituraDasExecucoes {
 }
 const VAZIA: LeituraDasExecucoes = { ativas: [], aguardando: [], erro: null };
 
-/** Devolve as execuções ativas, ou `null` quando nada mudou desde a última leitura (ETag/304). */
-export type Leitor = () => Promise<Execucao[] | null>;
+/** Devolve as execuções ativas. */
+export type Leitor = () => Promise<Execucao[]>;
 
 const separar = (ativas: Execucao[], erro: string | null): LeituraDasExecucoes =>
   ({ ativas, aguardando: ativas.filter((e) => e.status === "aguardando"), erro });
@@ -39,7 +39,6 @@ export function criarArmazem(leitor: Leitor) {
     try {
       const ativas = await leitor();
       if (minha !== geracao) return;
-      if (ativas === null) { if (leitura.erro !== null) publicar({ ...leitura, erro: null }); return; }
       publicar(separar(ativas, null));
     } catch (motivo) {
       if (minha !== geracao) return;

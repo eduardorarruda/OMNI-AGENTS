@@ -4,10 +4,10 @@
 use crate::{
     agora_ms,
     busca::{com_campos, data_curta, resposta_limpa, resumo_em_volta, rodape, termos_da_busca, Achados, Filtros, Trecho},
-    engine::Contexto, mcp_fluxos, mcp_historico, mcp_kanban, tarefas, Base,
+    engine::Contexto, marca_de_fora, mcp_fluxos, mcp_historico, mcp_kanban, tarefas, Base,
 };
 use serde_json::{json, Value};
-use std::{io::{BufRead, Write}, sync::atomic::Ordering};
+use std::io::{BufRead, Write};
 
 const RESULTADOS_PADRAO: u64 = 5;
 const RESULTADOS_MAXIMOS: u64 = 20;
@@ -106,13 +106,18 @@ pub(crate) fn chamar_em(base: &Base, contexto: &Contexto, nome: &str, argumentos
             let id = argumentos["id"].as_i64().ok_or("informe o id")?;
             resposta_limpa(argumentos, Ok(base.ler(id)?.unwrap_or_else(|| "Trecho não encontrado.".into())))
         }
-        "listar_tarefas" => Ok(tarefas::lista_resumida(&cache_de_tarefas(base), argumentos["busca"].as_str(), agora_ms(), crate::busca::mascara_dispensada(argumentos))),
+        "listar_tarefas" => {
+            let cache = cache_de_tarefas(base);
+            // O título já é texto de fora. Marca mesmo sem a sessão abrir a tarefa: parar a mais é o lado seguro.
+            if tarefas::tem_achadas(&cache, argumentos["busca"].as_str()) { marca_de_fora::marcar(contexto)?; }
+            Ok(tarefas::lista_resumida(&cache, argumentos["busca"].as_str(), agora_ms(), crate::busca::mascara_dispensada(argumentos)))
+        }
         "ler_tarefa" => {
             let id = tarefas::valor_em_texto(&argumentos["id"]).ok_or("informe o id")?;
             let cache = cache_de_tarefas(base);
             let achada = cache.tarefas.iter().find(|tarefa| tarefa.id == id);
-            // A sessão pegou tarefa de fora: daqui em diante o que ela iniciar para nas Aprovações.
-            if achada.is_some() { contexto.veio_de_fora.store(true, Ordering::SeqCst); }
+            // A sessão pegou tarefa de fora: daqui em diante o que ela iniciar espera um humano.
+            if achada.is_some() { marca_de_fora::marcar(contexto)?; }
             Ok(achada.map_or_else(|| tarefas::tarefa_fora_do_cache(&cache, agora_ms()), |tarefa| {
                 if crate::busca::mascara_dispensada(argumentos) { tarefas::texto_da_tarefa(tarefa) } else { tarefas::texto_da_tarefa(&tarefas::mascarada(tarefa)) }
             }))

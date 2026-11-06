@@ -764,7 +764,7 @@ fn derrubar_engine(amb: &Ambiente, x: &str, y: &str) {
 
 fn iniciar_como(amb: &Ambiente, fluxo: Value, origem: &str, veio_de_fora: bool) -> String {
     let fluxo: Fluxo = serde_json::from_value(fluxo).unwrap();
-    iniciar_com_origem(&amb.state, fluxo, amb.projeto.to_string_lossy().into(), "p".into(), "x".into(), Origem { origem: origem.into(), veio_de_fora }).unwrap().id
+    iniciar_com_origem(&amb.state, fluxo, amb.projeto.to_string_lossy().into(), "p".into(), "x".into(), Origem { origem: origem.into(), veio_de_fora, pasta: None }).unwrap().id
 }
 
 /// entrada → antes → ap → (sim: depois) / (nao: recusou)
@@ -813,8 +813,10 @@ fn corpo_sem_origem_vale_manual() {
 fn aprovacao_para_quando_veio_de_fora() {
     let amb = ambiente();
     let id = iniciar_como(&amb, aprovacao_com_saidas(), "mcp", true);
-    let e = ate_parar(&id);
-    assert_eq!((e.status.as_str(), e.nos["ap"].status.as_str()), ("aguardando", "aguardando"));
+    com_status(&id, "aguardando");
+    aprovar(&amb.state, &id, "antes", true).unwrap();
+    ate("a aprovação do fluxo parar", || no_em(&id, "ap", "aguardando"));
+    com_status(&id, "aguardando");
     assert_eq!(amb.linhas("depois.log"), 0);
     aprovar(&amb.state, &id, "ap", true).unwrap();
     assert_eq!(ate_parar(&id).status, "concluido");
@@ -838,6 +840,9 @@ fn subfluxo_herda_origem_e_marca() {
     com_status(&filha, "aguardando");
     let f = obter(&filha).unwrap();
     assert_eq!((f.origem.as_str(), f.veio_de_fora), ("mcp", true));
+    assert_eq!(amb.linhas("y.log"), 0, "a filha herda a parada antes da primeira etapa");
+    aprovar(&amb.state, &filha, "antes", true).unwrap();
+    ate("a aprovação da filha parar", || no_em(&filha, "ap", "aguardando"));
     assert_eq!(amb.linhas("y.log"), 1);
     cancelar(&amb.state, &marcada).unwrap();
 
@@ -857,10 +862,12 @@ fn subfluxo_herda_origem_e_marca() {
 }
 
 #[test]
-fn agente_de_execucao_marcada_recebe_a_variavel() {
+fn comando_de_execucao_marcada_recebe_a_variavel() {
     let amb = ambiente();
     let mostra = format!("echo \"marca=${}\" > env.txt", fluxos::VARIAVEL_DE_FORA);
     let id = iniciar_como(&amb, so_comando("c", "C", &mostra), "mcp", true);
+    com_status(&id, "aguardando");
+    aprovar(&amb.state, &id, "c", true).unwrap();
     assert_eq!(ate_parar(&id).status, "concluido");
     assert_eq!(fs::read_to_string(amb.projeto.join("env.txt")).unwrap().trim(), "marca=1", "comando");
 
@@ -868,15 +875,338 @@ fn agente_de_execucao_marcada_recebe_a_variavel() {
     let id = iniciar_como(&amb, so_comando("c", "C", &mostra), "mcp", false);
     ate_parar(&id);
     assert_eq!(fs::read_to_string(amb.projeto.join("env.txt")).unwrap().trim(), "marca=", "sem a marca, sem a variável");
+}
 
-    // A etapa de agente usa a mesma função na CLI que ela abre.
-    let saida = |marcada: bool| {
-        let mut c = Command::new("sh");
-        c.arg("-c").arg(format!("printf %s \"${}\"", fluxos::VARIAVEL_DE_FORA));
-        marcar_ambiente(&mut c, marcada);
-        String::from_utf8(c.output().unwrap().stdout).unwrap()
+const CLI_FALSA: &str = "OMNI_TESTE_CLI_FALSA";
+
+/// Uma CLI de mentira, chamada `claude`, que grava no projeto o que recebeu no ambiente.
+#[cfg(unix)]
+fn pasta_com_cli_falsa(raiz: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let pasta = raiz.join("bin");
+    fs::create_dir_all(&pasta).unwrap();
+    let arquivo = pasta.join("claude");
+    let script = format!("#!/bin/sh\ncat > /dev/null\necho \"marca=${}\" > agente-env.txt\necho '{{\"type\":\"result\",\"result\":\"feito\",\"total_cost_usd\":0}}'\n", fluxos::VARIAVEL_DE_FORA);
+    fs::write(&arquivo, script).unwrap();
+    fs::set_permissions(&arquivo, fs::Permissions::from_mode(0o755)).unwrap();
+    pasta
+}
+
+/// Roda de verdade em `rodar_na_conta`. O PATH e o HOME trocados valem só para o processo filho:
+/// neste aqui, os outros testes abrem `sh` e `git` ao mesmo tempo, e `agentes::listar` semeia o HOME.
+#[cfg(unix)]
+#[test]
+fn agente_de_execucao_marcada_recebe_a_variavel() {
+    let raiz = tempfile::tempdir().unwrap();
+    let cli = pasta_com_cli_falsa(raiz.path());
+    let caminho = std::env::join_paths(std::iter::once(cli).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap()))).unwrap();
+    let saida = Command::new(std::env::current_exe().unwrap()).args(["--exact", "fluxos::limites::etapa_de_agente_com_cli_falsa", "--ignored", "--nocapture"])
+        .env("PATH", caminho).env("HOME", raiz.path()).env(CLI_FALSA, "1").output().unwrap();
+    let texto = String::from_utf8_lossy(&saida.stdout);
+    assert!(saida.status.success() && texto.contains("1 passed"), "{texto}\n{}", String::from_utf8_lossy(&saida.stderr));
+}
+
+#[cfg(unix)]
+#[test]
+#[ignore = "roda como processo filho de agente_de_execucao_marcada_recebe_a_variavel"]
+fn etapa_de_agente_com_cli_falsa() {
+    assert!(std::env::var_os(CLI_FALSA).is_some(), "só vale com a CLI de mentira no PATH");
+    let fluxo = json!({"id": "g", "nome": "G", "na_pasta_do_projeto": true, "nos": [{"id": "e", "tipo": "entrada"}, {"id": "a", "tipo": "agente", "titulo": "a", "agente": "falso"}, {"id": "f", "tipo": "fim"}],
+        "conexoes": [{"de": "e", "para": "a"}, {"de": "a", "para": "f"}]});
+    let preparar = || {
+        let amb = ambiente();
+        let modelo = omni_core::agentes::ModeloDeAgente { name: "falso".into(), description: "d".into(), cli: "claude".into(), modelo: String::new(), esforco: String::new(), conta: String::new(), ferramentas: Vec::new(), saida: String::new(), instrucoes: "i".into() };
+        omni_core::agentes::salvar(&omni_core::agentes::pasta_do_projeto(&amb.projeto), &modelo).unwrap();
+        amb
     };
-    assert_eq!((saida(true).as_str(), saida(false).as_str()), ("1", ""));
+    let lido = |amb: &Ambiente| fs::read_to_string(amb.projeto.join("agente-env.txt")).unwrap();
+
+    let amb = preparar();
+    let id = iniciar_como(&amb, fluxo.clone(), "mcp", true);
+    com_status(&id, "aguardando");
+    assert!(!amb.projeto.join("agente-env.txt").exists(), "o agente não abre antes de aprovar");
+    aprovar(&amb.state, &id, "a", true).unwrap();
+    let e = ate_parar(&id);
+    assert_eq!(e.status, "concluido", "{:?}", e.erro);
+    assert_eq!(lido(&amb).trim(), "marca=1");
+
+    let amb = preparar();
+    let e = ate_parar(&iniciar_como(&amb, fluxo, "mcp", false));
+    assert_eq!(e.status, "concluido", "{:?}", e.erro);
+    assert_eq!(lido(&amb).trim(), "marca=", "sem a marca, sem a variável");
+}
+
+// ---- Tarefa de fora: para antes da primeira etapa que age ----
+
+/// entrada → primeiro → segundo → fim
+fn dois_comandos() -> Value {
+    json!({"id": "dois", "nome": "Dois", "na_pasta_do_projeto": true, "nos": [{"id": "e", "tipo": "entrada"}, comando("primeiro", &conta("primeiro")), comando("segundo", &conta("segundo")), {"id": "f", "tipo": "fim"}],
+        "conexoes": [{"de": "e", "para": "primeiro"}, {"de": "primeiro", "para": "segundo", "saida": "sim"}, {"de": "segundo", "para": "f", "saida": "sim"}]})
+}
+
+#[test]
+fn execucao_marcada_nao_roda_o_comando_ate_aprovar() {
+    let amb = ambiente();
+    let id = iniciar_como(&amb, dois_comandos(), "mcp", true);
+    let e = ate_parar(&id);
+    assert_eq!((e.status.as_str(), e.nos["primeiro"].status.as_str()), ("aguardando", "aguardando"));
+    assert_eq!(amb.linhas("primeiro.log"), 0, "parou antes de rodar");
+    assert_eq!(e.aviso.as_deref(), Some("aprovacao"), "a tela e o celular são avisados como numa Aprovação");
+    assert!(so_eventos(&amb, &id, 0).iter().any(|ev| ev.tipo == "aprovacao" && ev.no.as_deref() == Some("primeiro")));
+
+    aprovar(&amb.state, &id, "primeiro", true).unwrap();
+    let e = ate_parar(&id);
+    assert_eq!(e.status, "concluido", "{:?}", e.erro);
+    assert_eq!((amb.linhas("primeiro.log"), amb.linhas("segundo.log")), (1, 1), "só a primeira etapa pergunta");
+}
+
+#[test]
+fn execucao_sem_marca_roda_sem_parar() {
+    for origem in ["mcp", "manual"] {
+        let amb = ambiente();
+        let e = ate_parar(&iniciar_como(&amb, dois_comandos(), origem, false));
+        assert_eq!(e.status, "concluido", "{origem}: {:?}", e.erro);
+        assert_eq!(amb.linhas("primeiro.log"), 1, "{origem}");
+    }
+}
+
+#[test]
+fn recusar_a_etapa_segurada_cancela_sem_rodar() {
+    let amb = ambiente();
+    let id = iniciar_como(&amb, dois_comandos(), "mcp", true);
+    com_status(&id, "aguardando");
+    aprovar(&amb.state, &id, "primeiro", false).unwrap();
+    assert_eq!(ate_parar(&id).status, "cancelado");
+    assert_eq!((amb.linhas("primeiro.log"), amb.linhas("segundo.log")), (0, 0));
+    assert!(so_eventos(&amb, &id, 0).iter().any(|ev| ev.tipo == "aprovacao" && ev.texto == "Recusado"));
+}
+
+/// entrada → ap → (sim: depois) / (nao: recusou): a Aprovação do fluxo já é a parada.
+fn aprovacao_na_frente() -> Value {
+    json!({"id": "af", "nome": "Af", "na_pasta_do_projeto": true, "nos": [{"id": "e", "tipo": "entrada"}, {"id": "ap", "tipo": "aprovacao"}, comando("depois", &conta("depois")), comando("recusou", &conta("recusou")), {"id": "f", "tipo": "fim"}],
+        "conexoes": [{"de": "e", "para": "ap"}, {"de": "ap", "para": "depois", "saida": "sim"}, {"de": "ap", "para": "recusou", "saida": "nao"},
+            {"de": "depois", "para": "f", "saida": "sim"}, {"de": "recusou", "para": "f", "saida": "sim"}]})
+}
+
+#[test]
+fn aprovacao_na_frente_dispensa_a_parada() {
+    let amb = ambiente();
+    let id = iniciar_como(&amb, aprovacao_na_frente(), "mcp", true);
+    com_status(&id, "aguardando");
+    aprovar(&amb.state, &id, "ap", true).unwrap();
+    let e = ate_parar(&id);
+    assert_eq!(e.status, "concluido", "{:?}", e.erro);
+    assert_eq!(amb.linhas("depois.log"), 1);
+}
+
+/// Dizer não à Aprovação não é aprovar o que vem pela saída `nao`.
+#[test]
+fn recusa_na_aprovacao_nao_libera_a_saida_nao() {
+    let amb = ambiente();
+    let id = iniciar_como(&amb, aprovacao_na_frente(), "mcp", true);
+    com_status(&id, "aguardando");
+    aprovar(&amb.state, &id, "ap", false).unwrap();
+    ate("a saída nao parar", || no_em(&id, "recusou", "aguardando"));
+    assert_eq!(amb.linhas("recusou.log"), 0);
+    cancelar(&amb.state, &id).unwrap();
+}
+
+#[test]
+fn cada_ramo_marcado_para_na_sua_primeira_etapa() {
+    let amb = ambiente();
+    let id = iniciar_como(&amb, paralelo(&[("a", conta("a")), ("b", conta("b"))]), "mcp", true);
+    ate("os dois ramos pararem", || no_em(&id, "a", "aguardando") && no_em(&id, "b", "aguardando"));
+    assert_eq!((amb.linhas("a.log"), amb.linhas("b.log")), (0, 0));
+    aprovar(&amb.state, &id, "a", true).unwrap();
+    com_status(&id, "aguardando");
+    assert_eq!(amb.linhas("b.log"), 0, "aprovar um ramo não solta o outro");
+    aprovar(&amb.state, &id, "b", true).unwrap();
+    let e = ate_parar(&id);
+    assert_eq!(e.status, "concluido", "{:?}", e.erro);
+    assert_eq!((amb.linhas("a.log"), amb.linhas("b.log"), amb.linhas("depois.log")), (1, 1, 1));
+}
+
+#[test]
+fn subfluxo_marcado_para_na_filha() {
+    let amb = ambiente();
+    amb.salvar(so_comando("y", "Y", &conta("y")));
+    let id = iniciar_como(&amb, chama("x", "X", "y"), "mcp", true);
+    let filha = filha_de(&id, "s");
+    com_status(&filha, "aguardando");
+    assert_eq!(amb.linhas("y.log"), 0);
+    aprovar(&amb.state, &filha, "c", true).unwrap();
+    let e = ate_parar(&id);
+    assert_eq!(e.status, "concluido", "{:?}", e.erro);
+    assert_eq!(amb.linhas("y.log"), 1);
+}
+
+/// A resposta vale depois de religar o engine, e a etapa não pergunta de novo se falhar e voltar.
+#[test]
+fn parada_de_fora_sobrevive_a_religar_e_a_retomar() {
+    let amb = ambiente();
+    let id = iniciar_como(&amb, so_comando("c", "C", &conta_e_exige("c", "libera")), "mcp", true);
+    com_status(&id, "aguardando");
+    carregar(&amb.state);
+    assert_eq!(obter(&id).unwrap().status, "aguardando");
+    pausar(&amb.state, &id).unwrap();
+    assert!(aprovar(&amb.state, &id, "c", true).is_err(), "pausada não responde");
+    retomar(&amb.state, &id).unwrap();
+    assert_eq!((obter(&id).unwrap().status.as_str(), amb.linhas("c.log")), ("aguardando", 0), "retomar devolve a pergunta");
+    aprovar(&amb.state, &id, "c", true).unwrap();
+    assert_eq!(ate_parar(&id).status, "falhou");
+    fs::write(amb.projeto.join("libera"), "").unwrap();
+    retomar(&amb.state, &id).unwrap();
+    let e = ate_parar(&id);
+    assert_eq!(e.status, "concluido", "{:?}", e.erro);
+    assert_eq!(amb.linhas("c.log"), 2);
+}
+
+#[test]
+fn etapa_segurada_lembra_de_onde_veio() {
+    let amb = ambiente();
+    let id = iniciar_como(&amb, so_comando("c", "C", "echo ok"), "mcp", true);
+    com_status(&id, "aguardando");
+    let de = obter(&id).unwrap().nos["c"].esperou_de.clone();
+    assert_eq!(de.as_deref(), Some("e"), "sem isto o `{{anterior}}` chegaria vazio depois de aprovar");
+    cancelar(&amb.state, &id).unwrap();
+}
+
+fn iniciar_da_pasta(amb: &Ambiente, pasta: &Path) -> Execucao {
+    let fluxo: Fluxo = serde_json::from_value(aprovacao_na_frente()).unwrap();
+    let quem = Origem { origem: "mcp".into(), veio_de_fora: false, pasta: Some(pasta.to_string_lossy().into()) };
+    iniciar_com_origem(&amb.state, fluxo, amb.projeto.to_string_lossy().into(), "p".into(), "x".into(), quem).unwrap()
+}
+
+/// O MCP pode ter perdido a marca (`--resume`, CLI que filtra o ambiente): a pasta denuncia.
+#[test]
+fn rodar_de_dentro_de_execucao_marcada_nasce_marcado() {
+    let amb = ambiente();
+    let sub = amb.projeto.join("sub");
+    fs::create_dir_all(&sub).unwrap();
+    let outra = tempfile::tempdir().unwrap();
+    let limpa = iniciar_da_pasta(&amb, &amb.projeto);
+    assert!(!limpa.veio_de_fora, "nenhuma execução marcada aqui ainda");
+    cancelar(&amb.state, &limpa.id).unwrap();
+
+    let marcada = iniciar_como(&amb, so_comando("c", "C", "echo ok"), "mcp", true);
+    com_status(&marcada, "aguardando");
+    for pasta in [amb.projeto.as_path(), sub.as_path()] {
+        let e = iniciar_da_pasta(&amb, pasta);
+        assert!(e.veio_de_fora, "{}", pasta.display());
+        cancelar(&amb.state, &e.id).unwrap();
+    }
+    let e = iniciar_da_pasta(&amb, outra.path());
+    assert!(!e.veio_de_fora, "outra pasta não herda");
+    cancelar(&amb.state, &e.id).unwrap();
+
+    pausar(&amb.state, &marcada).unwrap();
+    let e = iniciar_da_pasta(&amb, &amb.projeto);
+    assert!(e.veio_de_fora, "pausada ainda pode voltar");
+    cancelar(&amb.state, &e.id).unwrap();
+
+    cancelar(&amb.state, &marcada).unwrap();
+    let e = iniciar_da_pasta(&amb, &amb.projeto);
+    assert!(!e.veio_de_fora, "execução que acabou não marca mais a pasta");
+    cancelar(&amb.state, &e.id).unwrap();
+}
+
+// ---- Parar uma cadeia funda: isto é tempo de resposta, não teto de profundidade ----
+
+/// Uma execução parada no mapa, sem thread: dá para montar cadeia funda sem esperar ela crescer.
+fn elo(amb: &Ambiente, id: &str, pai: Option<&str>, raiz: Option<&str>, status: &str) -> Viva {
+    let e: Execucao = serde_json::from_value(json!({"id": id, "projeto": amb.projeto, "projeto_id": "p", "entrada": "x", "pasta": amb.projeto, "status": status, "criado_ms": 0, "atualizado_ms": 0,
+        "fluxo": serde_json::from_value::<Value>(chama("x", "X", "x")).unwrap(), "nos": {"s": {"status": "rodando"}}, "fila": [], "raiz": raiz,
+        "pai": pai.map(|p| json!({"execucao": p, "no": "s"}))})).unwrap();
+    let v: Viva = Arc::new(Mutex::new(e));
+    execucoes().lock().unwrap().insert(id.to_owned(), v.clone());
+    v
+}
+
+fn montar_cadeia(amb: &Ambiente, prefixo: &str, tamanho: usize) -> Vec<String> {
+    let ids: Vec<String> = (0..tamanho).map(|n| format!("{prefixo}-{n}")).collect();
+    for (n, id) in ids.iter().enumerate() {
+        let pai = n.checked_sub(1).map(|anterior| ids[anterior].as_str());
+        elo(amb, id, pai, pai.map(|_| ids[0].as_str()), "rodando");
+    }
+    ids
+}
+
+const CADEIA_FUNDA: usize = 5_000;
+const TEMPO_DE_PARAR: Duration = Duration::from_secs(20);
+
+#[test]
+fn cancelar_cadeia_funda_volta_rapido_e_alcanca_o_fundo() {
+    let amb = ambiente();
+    let ids = montar_cadeia(&amb, "funda-c", CADEIA_FUNDA);
+    let inicio = std::time::Instant::now();
+    cancelar(&amb.state, &ids[0]).unwrap();
+    assert!(inicio.elapsed() < TEMPO_DE_PARAR, "demorou {:?}", inicio.elapsed());
+    assert!(ids.iter().all(|id| obter(id).unwrap().status == "cancelado"));
+}
+
+#[test]
+fn pausar_cadeia_funda_volta_rapido_e_alcanca_o_fundo() {
+    let amb = ambiente();
+    let ids = montar_cadeia(&amb, "funda-p", CADEIA_FUNDA);
+    let inicio = std::time::Instant::now();
+    pausar(&amb.state, &ids[0]).unwrap();
+    assert!(inicio.elapsed() < TEMPO_DE_PARAR, "demorou {:?}", inicio.elapsed());
+    assert!(ids.iter().all(|id| obter(id).unwrap().status == "pausado"));
+}
+
+#[test]
+fn cancelar_cadeia_nao_mexe_em_filha_concluida() {
+    let amb = ambiente();
+    elo(&amb, "fim-pai", None, None, "rodando");
+    elo(&amb, "fim-feita", Some("fim-pai"), Some("fim-pai"), "concluido");
+    elo(&amb, "fim-viva", Some("fim-pai"), Some("fim-pai"), "aguardando");
+    cancelar(&amb.state, "fim-pai").unwrap();
+    assert_eq!((obter("fim-feita").unwrap().status.as_str(), obter("fim-viva").unwrap().status.as_str()), ("concluido", "cancelado"));
+}
+
+#[test]
+fn raiz_parada_nao_deixa_abrir_filha_nova() {
+    for status in ["cancelado", "pausado"] {
+        let amb = ambiente();
+        amb.salvar(so_comando("y", "Y", "echo ok"));
+        let (raiz, meio) = (format!("raiz-{status}"), format!("meio-{status}"));
+        elo(&amb, &raiz, None, None, status);
+        let v = elo(&amb, &meio, Some(&raiz), Some(&raiz), "rodando");
+        let no: fluxos::No = serde_json::from_value(no_subfluxo("s", "y")).unwrap();
+        let ctx = Contexto { entrada: "x".into(), anterior: String::new(), saidas: HashMap::new() };
+        let erro = subfluxo::rodar_subfluxo(&amb.state, &v, &no, &ctx).unwrap_err();
+        assert_eq!(erro.to_string(), PAUSADO, "{status}");
+        assert!(filhas_de(&meio).is_empty(), "{status}: abriu filha com a raiz parada");
+    }
+}
+
+fn execucoes_do_projeto(amb: &Ambiente) -> Vec<Execucao> {
+    let vivas: Vec<Viva> = execucoes().lock().unwrap().values().cloned().collect();
+    vivas.iter().filter_map(|v| v.lock().ok().filter(|e| Path::new(&e.projeto) == amb.projeto).map(|e| e.clone())).collect()
+}
+
+/// Ciclo de verdade, com as threads esperando em cada nível.
+#[test]
+fn parar_ciclo_de_subfluxo_fundo_nao_deixa_filha_nova() {
+    const PROFUNDIDADE: usize = 300;
+    let amb = ambiente();
+    amb.salvar(chama("x", "X", "x"));
+    let id = amb.iniciar(chama("x", "X", "x"));
+    for _ in 0..3_000 {
+        if execucoes_do_projeto(&amb).len() >= PROFUNDIDADE { break; }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(execucoes_do_projeto(&amb).len() >= PROFUNDIDADE, "a cadeia não cresceu");
+
+    let inicio = std::time::Instant::now();
+    cancelar(&amb.state, &id).unwrap();
+    assert!(inicio.elapsed() < TEMPO_DE_PARAR, "demorou {:?}", inicio.elapsed());
+
+    let depois = execucoes_do_projeto(&amb).len();
+    std::thread::sleep(Duration::from_secs(2));
+    let todas = execucoes_do_projeto(&amb);
+    assert_eq!(todas.len(), depois, "abriu filha depois de cancelar");
+    assert!(todas.iter().all(|e| e.status == "cancelado"), "{:?}", todas.iter().filter(|e| e.status != "cancelado").map(|e| (&e.id, &e.status)).collect::<Vec<_>>());
 }
 
 #[test]

@@ -1,5 +1,5 @@
 //! Ferramentas de fluxos e histórico contra um engine falso, numa porta local, e pastas temporárias.
-use crate::{engine::{api, marcado_pelo_ambiente, segmento, Contexto}, mcp, mcp_fluxos, mcp_historico, tarefas, Base};
+use crate::{engine::{api, marcado_pelo_ambiente, segmento, Contexto}, marca_de_fora, mcp, mcp_fluxos, mcp_historico, tarefas, Base};
 use serde_json::{json, Value};
 use std::{
     fs,
@@ -8,6 +8,7 @@ use std::{
     path::Path,
     sync::{atomic::Ordering, Arc, Mutex},
     thread,
+    time::{Duration, SystemTime},
 };
 use tempfile::{tempdir, TempDir};
 
@@ -264,6 +265,93 @@ fn ler_tarefa_que_nao_existe_nao_marca() {
     let base = base_com_tarefa(local.contexto.pasta_atual.as_deref().expect("pasta"));
     mcp::chamar_em(&base, &local.contexto, "ler_tarefa", &json!({"id": "sumida"})).expect("responde");
     assert!(!local.contexto.veio_de_fora.load(Ordering::SeqCst));
+    assert!(!marca_de_fora::marcada(&outro_processo(&local.contexto)));
+}
+
+/// Outro processo do mesmo MCP: `--resume` e reconexão abrem um novo, sem a marca na memória.
+fn outro_processo(contexto: &Contexto) -> Contexto {
+    Contexto { pasta_do_engine: contexto.pasta_do_engine.clone(), porta: contexto.porta, fluxos_globais: contexto.fluxos_globais.clone(),
+        agentes_globais: contexto.agentes_globais.clone(), pasta_atual: contexto.pasta_atual.clone(), veio_de_fora: Arc::default() }
+}
+
+#[test]
+fn marca_de_ler_tarefa_sobrevive_a_outro_processo() {
+    let local = ambiente(1);
+    let base = base_com_tarefa(local.contexto.pasta_atual.as_deref().expect("pasta"));
+    assert!(!marca_de_fora::marcada(&outro_processo(&local.contexto)));
+    mcp::chamar_em(&base, &local.contexto, "ler_tarefa", &json!({"id": "7"})).expect("leu");
+    assert!(marca_de_fora::marcada(&outro_processo(&local.contexto)));
+    let outra_pasta = Contexto { pasta_atual: local.contexto.pasta_do_engine.parent().map(|raiz| raiz.join("outro")), ..outro_processo(&local.contexto) };
+    assert!(!marca_de_fora::marcada(&outra_pasta), "a marca é da pasta da conversa");
+}
+
+#[test]
+fn rodar_depois_de_novo_processo_continua_marcado() {
+    let semente = ambiente(1);
+    let pasta = semente.contexto.pasta_atual.clone().expect("pasta");
+    let (porta, pedidos) = engine_falso(rotas_para_rodar(&pasta));
+    let contexto = Contexto { porta, ..semente.contexto };
+    let base = base_com_tarefa(&pasta);
+    fluxo(&contexto, "criar_fluxo", json!({"fluxo": fluxo_de_comando()})).expect("salvou");
+    mcp::chamar_em(&base, &contexto, "ler_tarefa", &json!({"id": "7"})).expect("leu");
+    fluxo(&outro_processo(&contexto), "rodar_fluxo", json!({"id": "agente-teste-mcp", "entrada": "faça"})).expect("rodou");
+    assert_eq!(corpo_do_post(&pedidos)["veio_de_fora"], true);
+}
+
+#[test]
+fn marca_no_disco_vence_e_o_projeto_nao_fica_preso() {
+    let local = ambiente(1);
+    marca_de_fora::marcar(&local.contexto).expect("marcou");
+    let novo = outro_processo(&local.contexto);
+    let pasta_das_marcas = local.contexto.pasta_do_engine.join(marca_de_fora::PASTA_DAS_MARCAS);
+    let arquivo = fs::read_dir(&pasta_das_marcas).expect("marcas").next().expect("uma").expect("entrada").path();
+    let envelhecer = |idade: Duration| fs::File::options().write(true).open(&arquivo).expect("abre").set_modified(SystemTime::now() - idade).expect("data");
+
+    envelhecer(marca_de_fora::VALIDADE_DA_MARCA - Duration::from_secs(60));
+    assert!(marca_de_fora::marcada(&novo), "ainda dentro da validade");
+    envelhecer(marca_de_fora::VALIDADE_DA_MARCA + Duration::from_secs(60));
+    assert!(!marca_de_fora::marcada(&novo), "venceu");
+    assert_eq!(marca_de_fora::VALIDADE_DA_MARCA, Duration::from_secs(24 * 60 * 60));
+}
+
+/// Sem gravar a marca, a tarefa não sai: entregar o texto sem marcar é o erro que isto evita.
+#[test]
+fn sem_gravar_a_marca_a_tarefa_nao_sai() {
+    let local = ambiente(1);
+    let base = base_com_tarefa(local.contexto.pasta_atual.as_deref().expect("pasta"));
+    fs::write(local.contexto.pasta_do_engine.join(marca_de_fora::PASTA_DAS_MARCAS), "arquivo no lugar da pasta").expect("bloqueia");
+    let erro = mcp::chamar_em(&base, &local.contexto, "ler_tarefa", &json!({"id": "7"})).expect_err("recusa");
+    assert!(!erro.contains("Vinda de fora"), "{erro}");
+}
+
+#[test]
+fn listar_tarefas_com_itens_marca() {
+    let local = ambiente(1);
+    let base = base_com_tarefa(local.contexto.pasta_atual.as_deref().expect("pasta"));
+    assert!(mcp::chamar_em(&base, &local.contexto, "listar_tarefas", &json!({})).expect("lista").contains("Vinda de fora"));
+    assert!(marca_de_fora::marcada(&outro_processo(&local.contexto)));
+}
+
+#[test]
+fn listar_tarefas_sem_itens_nao_marca() {
+    let local = ambiente(1);
+    let base = base_com_tarefa(local.contexto.pasta_atual.as_deref().expect("pasta"));
+    mcp::chamar_em(&base, &local.contexto, "listar_tarefas", &json!({"busca": "nada-combina"})).expect("lista");
+    assert!(!marca_de_fora::marcada(&local.contexto));
+    let vazia = Base::abrir(&local.contexto.pasta_do_engine.join("rag-vazia/base.db")).expect("base");
+    mcp::chamar_em(&vazia, &local.contexto, "listar_tarefas", &json!({})).expect("lista");
+    assert!(!marca_de_fora::marcada(&local.contexto));
+}
+
+#[test]
+fn rodar_manda_a_pasta_da_conversa() {
+    let semente = ambiente(1);
+    let pasta = semente.contexto.pasta_atual.clone().expect("pasta");
+    let (porta, pedidos) = engine_falso(rotas_para_rodar(&pasta));
+    let contexto = Contexto { porta, ..semente.contexto };
+    fluxo(&contexto, "criar_fluxo", json!({"fluxo": fluxo_de_comando()})).expect("salvou");
+    fluxo(&contexto, "rodar_fluxo", json!({"id": "agente-teste-mcp", "entrada": "faça"})).expect("rodou");
+    assert_eq!(corpo_do_post(&pedidos)["pasta"], json!(pasta.to_string_lossy()));
 }
 
 #[test]

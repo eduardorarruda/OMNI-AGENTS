@@ -3,7 +3,7 @@ import { act, render, screen } from "@testing-library/react";
 
 const lerEventos = vi.fn();
 vi.mock("../features/fluxos/fluxosService", () => ({ lerEventos: (...a: unknown[]) => lerEventos(...a) }));
-const { LinhaDoTempo } = await import("../features/fluxos/LinhaDoTempo");
+const { LinhaDoTempo, MAX_EVENTOS_NA_TELA } = await import("../features/fluxos/LinhaDoTempo");
 
 const ev = (seq: number, texto: string) => ({ seq, ms: 1000 * seq, no: "a", tipo: "atividade", texto });
 beforeEach(() => vi.useFakeTimers());
@@ -16,6 +16,26 @@ it("LinhaDoTempo acrescenta sem repetir", async () => {
   await passa(0); await passa(1500);
   expect(screen.getAllByText("dois")).toHaveLength(1);
   expect(screen.getAllByRole("listitem").map((l) => l.textContent)).toEqual([expect.stringContaining("um"), expect.stringContaining("dois"), expect.stringContaining("três")]);
+});
+
+it("LinhaDoTempo guarda só os últimos eventos e avisa que os antigos saíram", async () => {
+  const pagina = (inicio: number) => Array.from({ length: 500 }, (_, i) => ev(inicio + i, `evento ${inicio + i}`));
+  const total = MAX_EVENTOS_NA_TELA + 500;
+  for (let inicio = 1; inicio <= total; inicio += 500) lerEventos.mockResolvedValueOnce(pagina(inicio));
+  lerEventos.mockResolvedValue([]);
+  render(<LinhaDoTempo execucaoId="x" viva={false} />);
+  await passa(0);
+  expect(screen.getAllByRole("listitem")).toHaveLength(MAX_EVENTOS_NA_TELA);
+  expect(screen.queryByText("evento 1")).not.toBeInTheDocument();
+  expect(screen.getByText(`evento ${total}`)).toBeInTheDocument();
+  expect(screen.getByText(/mais antigos saíram da tela/)).toBeInTheDocument();
+});
+
+it("LinhaDoTempo sem corte não mostra o aviso", async () => {
+  lerEventos.mockResolvedValueOnce([ev(9, "nove")]).mockResolvedValue([]);
+  render(<LinhaDoTempo execucaoId="x" viva={false} />);
+  await passa(0);
+  expect(screen.queryByText(/saíram da tela/)).not.toBeInTheDocument();
 });
 
 it("LinhaDoTempo pede a partir do último seq", async () => {

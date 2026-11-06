@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "../components/ui/Button";
+import { perguntaDoNo } from "../features/fluxos/execucaoModel";
 import { request } from "./api";
 import { avisarFluxos, novosAvisosDeFluxo, type AvisoDeFluxo } from "./notificacoes";
 
@@ -12,14 +13,14 @@ interface Execucao {
 const chaveDe = (p: { execucao: string; no: string }) => `${p.execucao}:${p.no}`;
 export interface Pendente { execucao: string; no: string; fluxo: string; pergunta: string; entrada: string; anterior: string }
 
-/** Todo nó de aprovação parado em cada execução que espera você (ramos em paralelo podem ter vários), com a saída da etapa que levou até ele. */
+/** Todo nó parado esperando você em cada execução que espera você (ramos em paralelo podem ter vários), com a saída da etapa que levou até ele. */
 export function pendentesDe(execucoes: Execucao[]): Pendente[] {
   return execucoes.flatMap((e) => {
-    return e.fluxo.nos.filter((n) => n.tipo === "aprovacao" && e.nos[n.id]?.status === "aguardando").map((no) => {
+    return e.fluxo.nos.filter((n) => e.nos[n.id]?.status === "aguardando").map((no) => {
       const antes = e.fluxo.conexoes.map((c) => c.para === no.id ? e.nos[c.de] : undefined).find((n) => n?.saida);
       return {
         execucao: e.id, no: no.id, fluxo: e.fluxo.nome, entrada: e.entrada, anterior: antes?.saida.slice(-1500) ?? "",
-        pergunta: String(no.config.pergunta || no.titulo || "Aprovar para seguir?"),
+        pergunta: perguntaDoNo(no),
       };
     });
   });
@@ -43,9 +44,10 @@ export function AprovacoesDeFluxo({ aoMudar }: { aoMudar?: (quantas: number) => 
         const lista = await request<(AvisoDeFluxo & { status: string })[]>("/fluxos/execucoes");
         avisarFluxos(novosAvisosDeFluxo(lista, avisosVistos.current, primeiraLeitura.current));
         primeiraLeitura.current = false;
-        const detalhes = await Promise.all(lista.filter((e) => e.status === "aguardando")
+        // allSettled: uma execução removida entre a lista e o detalhe não esconde as outras aprovações.
+        const detalhes = await Promise.allSettled(lista.filter((e) => e.status === "aguardando")
           .map((e) => request<Execucao>(`/fluxos/execucoes/${encodeURIComponent(e.id)}`)));
-        if (vivo) setPendentes(pendentesDe(detalhes));
+        if (vivo) setPendentes(pendentesDe(detalhes.flatMap((d) => (d.status === "fulfilled" ? [d.value] : []))));
       } catch { /* engine antigo ou fora do ar: a lista de conversas já avisa */ }
     }
     void ler();

@@ -54,6 +54,12 @@ pub struct EstadoDoNo {
     /// Execução filha aberta por um nó Subfluxo. Existindo, o nó espera por ela em vez de abrir outra.
     #[serde(default)]
     pub filha: Option<String>,
+    /// Tarefa de fora: um humano soltou esta etapa, que não pergunta de novo em retomar nem em volta de loop.
+    #[serde(default)]
+    pub liberada: bool,
+    /// Tarefa de fora: de onde a etapa vinha quando parou. Aprovar a devolve à fila com esta origem.
+    #[serde(default)]
+    pub esperou_de: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -94,7 +100,8 @@ pub struct Execucao {
     /// `manual` (tela) ou `mcp` (a IA iniciou). Subfluxo herda de quem chamou.
     #[serde(default = "origem_manual")]
     pub origem: String,
-    /// Nasceu de tarefa externa: a Aprovação para mesmo com origem `mcp`. Subfluxo herda.
+    /// Nasceu de tarefa externa: não passa sozinha pela Aprovação e para antes da primeira etapa que
+    /// age (`de_fora`). Subfluxo herda.
     #[serde(default)]
     pub veio_de_fora: bool,
     /// Sobe a cada evento que merece aviso, como o `attention_seq` das sessões; `aviso` diz qual foi.
@@ -111,6 +118,9 @@ pub struct Execucao {
     /// Nomes dos fluxos da raiz até esta execução: a trilha `X › Y › Z`.
     #[serde(default)]
     pub pilha: Vec<String>,
+    /// Só a execução filha tem: a execução que começou a cadeia.
+    #[serde(default)]
+    pub raiz: Option<String>,
 }
 
 type Viva = Arc<Mutex<Execucao>>;
@@ -181,13 +191,22 @@ fn resolver_pastas(fluxo: &Fluxo, projeto: &str) -> Result<Vec<String>> {
 
 fn novo_id() -> String { format!("exec-{}-{:04x}", now_ms(), rand::random::<u16>()) }
 
-/// Quem pediu a execução, como vem no corpo de `POST /fluxos/execucoes`. Sem os campos, é a tela.
+/// Quem pediu a execução, como vem no corpo de `POST /fluxos/execucoes`. Sem os campos, é a tela. Só o
+/// protocolo local é ouvido: pela rede a rota ignora tudo isto, ou `mcp` pularia as Aprovações.
 #[derive(Deserialize, Clone, Debug)]
 pub struct Origem {
     #[serde(default = "origem_manual")]
     pub origem: String,
     #[serde(default)]
     pub veio_de_fora: bool,
+    /// Pasta da conversa que pediu, pelo MCP. Marca a execução se houver outra marcada ali.
+    #[serde(default)]
+    pub pasta: Option<String>,
+}
+
+impl Origem {
+    /// Pedido da tela, ou de quem não pode dizer a própria origem.
+    pub fn da_tela() -> Self { Self { origem: origem_manual(), veio_de_fora: false, pasta: None } }
 }
 
 fn origem_manual() -> String { "manual".into() }
@@ -203,9 +222,10 @@ fn marcar_ambiente(c: &mut Command, marcada: bool) {
 
 fn marcada(v: &Viva) -> bool { v.lock().is_ok_and(|e| e.veio_de_fora) }
 
-/// Começa uma execução pedida na tela.
+/// Começa uma execução pedida na tela. Só os testes chamam: a rota passa por `iniciar_com_origem`.
+#[cfg(test)]
 pub fn iniciar(state: &Arc<EngineState>, fluxo: Fluxo, projeto: String, projeto_id: String, entrada: String) -> Result<Execucao> {
-    iniciar_com_origem(state, fluxo, projeto, projeto_id, entrada, Origem { origem: origem_manual(), veio_de_fora: false })
+    iniciar_com_origem(state, fluxo, projeto, projeto_id, entrada, Origem::da_tela())
 }
 
 /// Começa uma execução: prepara o worktree e solta a thread.
@@ -234,9 +254,10 @@ pub fn iniciar_com_origem(state: &Arc<EngineState>, fluxo: Fluxo, projeto: Strin
     let inicio = fluxos::entrada(&fluxo).ok_or_else(|| anyhow!("sem entrada"))?.id.clone();
     let nos = estados_iniciais(&fluxo);
     let pilha = vec![fluxo.nome.clone()];
+    let veio_de_fora = quem.veio_de_fora || quem.pasta.as_deref().is_some_and(de_fora::pasta_marcada);
     let e = Execucao { id: id.clone(), fluxo, projeto, projeto_id, entrada, pasta, branch, base, status: "rodando".into(), erro: None,
         criado_ms: agora, atualizado_ms: agora, nos, fila: vec![Passo { no: inicio, de: None }], pr_url: None, custo_usd: 0.0,
-        pastas_extras, origem: quem.origem, veio_de_fora: quem.veio_de_fora, aviso_seq: 0, aviso: None, evento_seq: 0, pai: None, pilha };
+        pastas_extras, origem: quem.origem, veio_de_fora, aviso_seq: 0, aviso: None, evento_seq: 0, pai: None, pilha, raiz: None };
     gravar(state, &e);
     execucoes().lock().map_err(|_| anyhow!("execucoes"))?.insert(id.clone(), Arc::new(Mutex::new(e.clone())));
     soltar(state.clone(), id);
@@ -347,6 +368,7 @@ fn processar(state: &Arc<EngineState>, v: &Viva, passo: &Passo) -> Result<()> {
             saidas: e.nos.iter().map(|(k, n)| (k.clone(), n.saida.clone())).collect() };
         (no, ctx, e.pasta.clone(), e.projeto.clone(), e.id.clone())
     };
+    if de_fora::segurar(state, v, &no.id, passo)? { return Ok(()); }
     let corrida = mexer(state, v, |e| {
         let corrida = e.nos.get_mut(&no.id).map_or(0, |n| { n.status = "rodando".into(); n.inicio_ms = now_ms(); n.erro = None; n.atividade.clear(); n.corridas += 1; n.corridas });
         eventos::registrar(state, e, Some(&no.id), "inicio", &fluxos::rotulo(&no));
@@ -892,32 +914,38 @@ pub fn retomar(state: &Arc<EngineState>, id: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn cancelar(state: &EngineState, id: &str) -> Result<()> {
-    let v = viva(id)?;
-    mexer(state, &v, |e| { e.status = "cancelado".into(); e.fila.clear(); for n in e.nos.values_mut().filter(|n| n.status == "rodando" || n.status == "aguardando") { n.status = "pausado".into(); }
+/// Cancela só esta execução. A cadeia é com `subfluxo::cancelar_filhas`.
+fn cancelar_uma(state: &EngineState, v: &Viva, id: &str) {
+    mexer(state, v, |e| { e.status = "cancelado".into(); e.fila.clear(); for n in e.nos.values_mut().filter(|n| n.status == "rodando" || n.status == "aguardando") { n.status = "pausado".into(); }
         eventos::registrar(state, e, None, "aviso", "Execução cancelada");
     });
     matar_processo(id);
+}
+
+pub fn cancelar(state: &EngineState, id: &str) -> Result<()> {
+    let v = viva(id)?;
+    cancelar_uma(state, &v, id);
     subfluxo::cancelar_filhas(state, id);
     Ok(())
 }
 
 pub fn aprovar(state: &Arc<EngineState>, id: &str, no: &str, sim: bool) -> Result<()> {
     let v = viva(id)?;
-    let ok = mexer(state, &v, |e| {
+    let resposta = mexer(state, &v, |e| {
         // O nó precisa esperar e a execução estar viva: com duas aprovações abertas ela já voltou a `rodando` quando a segunda
         // chega, mas `falhou`, `pausado` e `cancelado` só andam por `retomar`.
         let viva = matches!(e.status.as_str(), "rodando" | "aguardando");
-        let aguardando = viva && e.nos.get(no).is_some_and(|n| n.status == "aguardando");
-        if aguardando {
-            if let Some(n) = e.nos.get_mut(no) { n.status = "concluido".into(); n.fim_ms = now_ms(); }
-            if !e.nos.values().any(|n| n.status == "aguardando") { e.status = "rodando".into(); }
-            eventos::registrar(state, e, Some(no), "aprovacao", if sim { "Aprovado" } else { "Recusado" });
-        }
-        aguardando
+        if !viva || !e.nos.get(no).is_some_and(|n| n.status == "aguardando") { return None; }
+        let segurada = de_fora::esta_segurada(e, no);
+        eventos::registrar(state, e, Some(no), "aprovacao", if sim { "Aprovado" } else { "Recusado" });
+        if segurada && !sim { return Some(segurada); }
+        if segurada { de_fora::liberar(e, no); } else if let Some(n) = e.nos.get_mut(no) { n.status = "concluido".into(); n.fim_ms = now_ms(); }
+        if !e.nos.values().any(|n| n.status == "aguardando") { e.status = "rodando".into(); }
+        Some(segurada)
     });
-    if !ok { return Err(anyhow!("Este nó não está esperando aprovação")); }
-    seguir(state, &v, no, if sim { "sim" } else { "nao" });
+    let Some(segurada) = resposta else { return Err(anyhow!("Este nó não está esperando aprovação")) };
+    if segurada && !sim { return cancelar(state, id); }
+    if !segurada { seguir(state, &v, no, if sim { "sim" } else { "nao" }); }
     soltar(state.clone(), id.to_owned());
     Ok(())
 }
@@ -978,6 +1006,9 @@ pub mod eventos;
 
 #[path = "fluxos_subfluxo.rs"]
 pub mod subfluxo;
+
+#[path = "fluxos_de_fora.rs"]
+mod de_fora;
 #[cfg(test)]
 use subfluxo::filhas_de;
 

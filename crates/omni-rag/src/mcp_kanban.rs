@@ -5,17 +5,12 @@
 use crate::{
     busca::com_campos,
     engine::{api, segmento, Contexto},
+    marca_de_fora,
     mcp_fluxos::{escolher_projeto, limpo, projetos},
     tarefas::{cortar, entre_as_marcas, uma_linha},
 };
 use omni_core::kanban::{instante_agora, STATUS_VALIDOS};
 use serde_json::{json, Value};
-use std::sync::atomic::Ordering;
-
-/// Daqui em diante o que a sessão iniciar para nas Aprovações. Um ponto só: pegar e listar passam por aqui.
-fn marcar_sessao(contexto: &Contexto) {
-    contexto.veio_de_fora.store(true, Ordering::SeqCst);
-}
 
 const CARTOES_NA_LISTA: usize = 100;
 const TITULO_NA_LISTA: usize = 120;
@@ -94,7 +89,7 @@ fn listar(contexto: &Contexto, argumentos: &Value) -> Result<String, String> {
             linhas.push(format!("… e mais {} tarefas na triagem.", triagem.len() - CARTOES_NA_LISTA));
         }
     }
-    if mostra_triagem || mostrados.iter().any(|cartao| cartao["externa"].is_object()) { marcar_sessao(contexto); }
+    if mostra_triagem || mostrados.iter().any(|cartao| cartao["externa"].is_object()) { marca_de_fora::marcar(contexto)?; }
     Ok(if linhas.is_empty() { "Nenhum cartão.".into() } else { linhas.join("\n") })
 }
 
@@ -115,7 +110,7 @@ fn pegar(contexto: &Contexto, argumentos: &Value) -> Result<String, String> {
     let so_na_triagem = !itens(&quadro, "tarefas").iter().any(|cartao| cartao["id"] == id) && itens(&quadro, "triagem").iter().any(|tarefa| tarefa["id"] == id);
     if so_na_triagem { return Err(SO_O_USUARIO_ESCOLHE.into()); }
     let cartao = api(contexto, "POST", &format!("/kanban/cartoes/{}/pegar", segmento(id)?), None)?;
-    if cartao["externa"].is_object() { marcar_sessao(contexto); }
+    if cartao["externa"].is_object() { marca_de_fora::marcar(contexto)?; }
     Ok(texto_do_cartao(&cartao, argumentos))
 }
 

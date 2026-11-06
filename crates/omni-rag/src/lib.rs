@@ -5,6 +5,7 @@ pub mod engine;
 pub mod extrair;
 pub mod ganchos;
 pub mod grafo;
+pub mod marca_de_fora;
 pub mod mcp;
 pub mod mcp_fluxos;
 pub mod mcp_historico;
