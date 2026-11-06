@@ -1,3 +1,4 @@
+import { FaixaDeAprovacao } from "./FaixaDeAprovacao";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Background, BackgroundVariant, ConnectionLineType, Controls, MarkerType, MiniMap, ReactFlow, ReactFlowProvider, useReactFlow,
@@ -346,6 +347,7 @@ function Fluxos({ projectId, projectPath, onAbrirSessao, onClose }: Props) {
   return (
     <div className={`fx-tela${painelAberto ? " com-painel" : ""}`}>
       {/* A barra atravessa canvas e painel: abrir o painel não espreme os botões. */}
+      <FaixaDeAprovacao />
       <header className="fx-barra">
           <Suspenso titulo="Fluxos e execuções" rotulo={<><FolderIcon aria-hidden className="h-3.5 w-3.5" />Fluxos{algumaRodando && <span className="fx-ponto st-rodando" aria-label="Execução em andamento" />}</>}>
             {(fechar) => (

@@ -9,18 +9,19 @@ interface Execucao {
   fluxo: { nome: string; nos: { id: string; tipo: string; titulo: string; config: Record<string, unknown> }[]; conexoes: { de: string; para: string }[] };
   nos: Record<string, { status: string; saida: string }>;
 }
+const chaveDe = (p: { execucao: string; no: string }) => `${p.execucao}:${p.no}`;
 export interface Pendente { execucao: string; no: string; fluxo: string; pergunta: string; entrada: string; anterior: string }
 
-/** O nó de aprovação parado em cada execução que espera você, com a saída da etapa que levou até ele. */
+/** Todo nó de aprovação parado em cada execução que espera você (ramos em paralelo podem ter vários), com a saída da etapa que levou até ele. */
 export function pendentesDe(execucoes: Execucao[]): Pendente[] {
   return execucoes.flatMap((e) => {
-    const no = e.fluxo.nos.find((n) => n.tipo === "aprovacao" && e.nos[n.id]?.status === "aguardando");
-    if (!no) return [];
-    const antes = e.fluxo.conexoes.map((c) => c.para === no.id ? e.nos[c.de] : undefined).find((n) => n?.saida);
-    return [{
-      execucao: e.id, no: no.id, fluxo: e.fluxo.nome, entrada: e.entrada, anterior: antes?.saida.slice(-1500) ?? "",
-      pergunta: String(no.config.pergunta || no.titulo || "Aprovar para seguir?"),
-    }];
+    return e.fluxo.nos.filter((n) => n.tipo === "aprovacao" && e.nos[n.id]?.status === "aguardando").map((no) => {
+      const antes = e.fluxo.conexoes.map((c) => c.para === no.id ? e.nos[c.de] : undefined).find((n) => n?.saida);
+      return {
+        execucao: e.id, no: no.id, fluxo: e.fluxo.nome, entrada: e.entrada, anterior: antes?.saida.slice(-1500) ?? "",
+        pergunta: String(no.config.pergunta || no.titulo || "Aprovar para seguir?"),
+      };
+    });
   });
 }
 
@@ -31,7 +32,7 @@ export function pendentesDe(execucoes: Execucao[]): Pendente[] {
 export function AprovacoesDeFluxo({ aoMudar }: { aoMudar?: (quantas: number) => void }) {
   const [pendentes, setPendentes] = useState<Pendente[]>([]);
   const [respondendo, setRespondendo] = useState<string | null>(null);
-  const [erro, setErro] = useState<{ execucao: string; texto: string } | null>(null);
+  const [erro, setErro] = useState<{ chave: string; texto: string } | null>(null);
   const avisosVistos = useRef(new Map<string, number>());
   const primeiraLeitura = useRef(true);
 
@@ -54,12 +55,14 @@ export function AprovacoesDeFluxo({ aoMudar }: { aoMudar?: (quantas: number) => 
   useEffect(() => { aoMudar?.(pendentes.length); }, [pendentes.length, aoMudar]);
 
   async function responder(p: Pendente, sim: boolean) {
-    setRespondendo(p.execucao); setErro(null);    try {
+    const chave = chaveDe(p);
+    setRespondendo(chave); setErro(null);
+    try {
       await request(`/fluxos/execucoes/${encodeURIComponent(p.execucao)}/nos/${encodeURIComponent(p.no)}/aprovar`, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sim }),
       });
-      setPendentes((atual) => atual.filter((x) => x.execucao !== p.execucao));
-    } catch (motivo) { setErro({ execucao: p.execucao, texto: motivo instanceof Error ? motivo.message : String(motivo) }); }
+      setPendentes((atual) => atual.filter((x) => chaveDe(x) !== chave));
+    } catch (motivo) { setErro({ chave, texto: motivo instanceof Error ? motivo.message : String(motivo) }); }
     finally { setRespondendo(null); }
   }
 
@@ -67,16 +70,16 @@ export function AprovacoesDeFluxo({ aoMudar }: { aoMudar?: (quantas: number) => 
   return (
     <ul className="aprov-fluxo" aria-label="Fluxos esperando aprovação">
       {pendentes.map((p) => (
-        <li key={p.execucao} className="aprov-fluxo-item glass">
+        <li key={chaveDe(p)} className="aprov-fluxo-item glass">
           <span className="aprov-fluxo-rotulo">Fluxo · {p.fluxo}</span>
           <b className="aprov-fluxo-pergunta">{p.pergunta}</b>
           {p.entrada && <span className="aprov-fluxo-entrada">{p.entrada}</span>}
           {p.anterior && <details><summary>O que a etapa anterior entregou</summary><pre>{p.anterior}</pre></details>}
-          {erro?.execucao === p.execucao && <p role="alert" className="text-xs text-danger">{erro.texto}</p>}
+          {erro?.chave === chaveDe(p) && <p role="alert" className="text-xs text-danger">{erro.texto}</p>}
           <div className="aprov-fluxo-acoes">
             <Button size="sm" variant="ghost" disabled={respondendo !== null} onClick={() => void responder(p, false)}>Recusar</Button>
             <Button size="sm" variant="primary" disabled={respondendo !== null} onClick={() => void responder(p, true)}>
-              {respondendo === p.execucao ? "Enviando…" : "Aprovar"}
+              {respondendo === chaveDe(p) ? "Enviando…" : "Aprovar"}
             </Button>
           </div>
         </li>

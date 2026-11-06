@@ -816,10 +816,11 @@ pub fn cancelar(state: &EngineState, id: &str) -> Result<()> {
 pub fn aprovar(state: &Arc<EngineState>, id: &str, no: &str, sim: bool) -> Result<()> {
     let v = viva(id)?;
     let ok = mexer(state, &v, |e| {
-        let aguardando = e.status == "aguardando" && e.nos.get(no).is_some_and(|n| n.status == "aguardando");
+        // Só o estado do nó vale: com duas aprovações abertas, a execução já voltou a `rodando` quando a segunda chega.
+        let aguardando = e.nos.get(no).is_some_and(|n| n.status == "aguardando");
         if aguardando {
             if let Some(n) = e.nos.get_mut(no) { n.status = "concluido".into(); n.fim_ms = now_ms(); }
-            e.status = "rodando".into();
+            if !e.nos.values().any(|n| n.status == "aguardando") { e.status = "rodando".into(); }
             eventos::registrar(state, e, Some(no), "aprovacao", if sim { "Aprovado" } else { "Recusado" });
         }
         aguardando

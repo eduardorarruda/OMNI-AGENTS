@@ -2001,7 +2001,17 @@ body.redimensionando-lateral .xterm, body.redimensionando-lateral iframe { point
 .fx-no.st-concluido .fx-no-status { color: rgb(var(--c-accent)); border-color: rgb(var(--c-accent) / .6); }
 .fx-no.st-falhou { border-color: rgb(var(--c-danger)); }
 .fx-no.st-falhou .fx-no-status { color: rgb(var(--c-danger)); border-color: rgb(var(--c-danger)); }
-.fx-no.st-aguardando { border-color: rgb(var(--c-warning)); animation: fx-rodando 1.8s steps(9) infinite; }
+.fx-no.st-aguardando { border-color: rgb(var(--c-warning)); animation: fx-aguardando 1.2s ease-in-out infinite; }
+@keyframes fx-aguardando { 50% { box-shadow: 4px 4px 0 rgb(var(--c-outline)), 0 0 0 6px rgb(var(--c-warning) / .45); } }
+@media (prefers-reduced-motion: reduce) { .fx-no.st-aguardando { animation: none; box-shadow: 4px 4px 0 rgb(var(--c-outline)), 0 0 0 4px rgb(var(--c-warning) / .45); } }
+/* Faixa de aprovação: fixa no topo da tela de Fluxos, em cor de alerta. */
+.fx-faixa-aprovacao { grid-column: 1 / -1; position: sticky; top: 0; z-index: 20; display: flex; flex-direction: column; background: rgb(var(--c-warning) / .16); border-bottom: 2px solid rgb(var(--c-warning)); }
+.fx-faixa-item { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem 1rem; padding: .6rem .8rem; }
+.fx-faixa-item + .fx-faixa-item { border-top: 1px solid rgb(var(--c-warning) / .5); }
+.fx-faixa-texto { flex: 1 1 14rem; min-width: 0; display: flex; flex-direction: column; gap: .15rem; font-size: .875rem; color: rgb(var(--c-text-primary)); }
+.fx-faixa-acoes { display: flex; gap: .5rem; }
+.fx-faixa-acoes .btn { min-width: 6.5rem; min-height: 2.75rem; font-size: .875rem; }
+.fx-tela:has(.fx-faixa-aprovacao) { grid-template-rows: auto auto minmax(0, 1fr); }
 .fx-no.st-aguardando .fx-no-status { color: rgb(var(--c-warning)); border-color: rgb(var(--c-warning)); }
 .fx-painel-corpo { display: flex; flex-direction: column; gap: .75rem; }
 .fx-painel-vazio p { font-size: .75rem; color: rgb(var(--c-text-muted)); }
@@ -2023,6 +2033,7 @@ body.redimensionando-lateral .xterm, body.redimensionando-lateral iframe { point
 /* Painel estreito (fluxo num split): as laterais viram faixas em cima e embaixo do canvas. */
 @container (max-width: 760px) {
   .fx-tela, .fx-tela.com-painel { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(12rem, 1fr) auto; }
+  .fx-tela:has(.fx-faixa-aprovacao), .fx-tela.com-painel:has(.fx-faixa-aprovacao) { grid-template-rows: auto auto minmax(12rem, 1fr) auto; }
   .fx-painel { max-height: 40cqh; border-left: none; border-top: 2px solid rgb(var(--c-border-subtle)); }
   .fx-barra-divisor, .fx-sujo, .fx-minimapa { display: none; }
 }

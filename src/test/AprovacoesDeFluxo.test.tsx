@@ -39,3 +39,16 @@ it("engine sem as rotas de fluxo não mostra nada", async () => {
   await Promise.resolve();
   expect(container).toBeEmptyDOMElement();
 });
+
+it("celular lista todas as aprovações da execução", async () => {
+  const duas = {
+    ...execucao,
+    fluxo: { ...execucao.fluxo, nos: [...execucao.fluxo.nos, { id: "ok2", tipo: "aprovacao", titulo: "Avisar?", config: { pergunta: "Avisar o time?" } }] },
+    nos: { ...execucao.nos, ok2: { status: "aguardando", saida: "" } },
+  };
+  request.mockImplementation(async (path: string) => path === "/fluxos/execucoes" ? [{ id: "ex1", status: "aguardando" }] : duas);
+  render(<AprovacoesDeFluxo />);
+  expect(await screen.findByText("Publicar a versão?")).toBeInTheDocument();
+  expect(screen.getByText("Avisar o time?")).toBeInTheDocument();
+  expect(screen.getAllByRole("button", { name: "Aprovar" })).toHaveLength(2);
+});
