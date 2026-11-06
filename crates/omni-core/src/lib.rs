@@ -21,6 +21,7 @@ pub mod exportar;
 pub mod tokens;
 pub mod processos;
 pub mod kanban;
+pub mod segundo_plano;
 
 use serde::{Deserialize, Serialize};
 use std::{fs, path::{Path, PathBuf}};

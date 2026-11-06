@@ -405,3 +405,9 @@ export async function wslDistros(): Promise<string[]> {
   const distros = await invoke<string[]>("wsl_distros");
   return Array.isArray(distros) ? distros : [];
 }
+
+/** Para o agente da conversa (Esc e, no Claude, Ctrl+C se houver agente em segundo plano). */
+export async function pararConversa(conversaId: string): Promise<void> {
+  const r = await engineApi("POST", `/conversas/${encodeURIComponent(conversaId)}/parar`, "{}", { headers: [["Content-Type", "application/json"]] });
+  if (r.status >= 400) throw new Error((r.body ? JSON.parse(r.body)?.error : null) ?? `Falha HTTP ${r.status}`);
+}

@@ -9,6 +9,7 @@ export type PaneKind =
   | "kanban"
   | "grafo"
   | "fluxos"
+  | "execucao-projeto"
   | "logs"
   | "docker-logs";
 

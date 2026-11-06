@@ -12,6 +12,8 @@ vi.mock("../components/SkillsList", () => ({ SkillsList: () => null }));
 vi.mock("../components/KanbanPanel", () => ({ KanbanPanel: () => null }));
 vi.mock("../components/DockerPanel", () => ({ DockerPanel: () => null }));
 vi.mock("../hooks/useNotifications", () => ({ useNotifications: () => [] }));
+vi.mock("../features/segundoPlano/useSegundoPlano", () => ({ useSegundoPlano: vi.fn(() => ({ itens: [], erro: null })) }));
+vi.mock("../features/segundoPlano/SegundoPlanoPanel", () => ({ SegundoPlanoPanel: () => null }));
 
 function workspace(id: string, name: string): WorkspaceState {
   return { version: 1, id, name, projects: [], activeProjectId: null, updatedAt: "" };
@@ -82,6 +84,17 @@ function renderSidebar(overrides: Partial<React.ComponentProps<typeof Sidebar>> 
 }
 
 describe("Sidebar", () => {
+  it("contador aparece na aba", async () => {
+    const { useSegundoPlano } = vi.mocked(await import("../features/segundoPlano/useSegundoPlano"));
+    const itens = ["a", "b"].map((titulo) => ({ tipo: "subagente", titulo, atividade: "x", desde_ms: 1, projeto_id: "p", sessao: "c", execucao: null }));
+    useSegundoPlano.mockReturnValue({ itens, erro: null });
+    renderSidebar();
+    const aba = screen.getByRole("button", { name: /Tarefas em segundo plano/ });
+    expect(aba).toHaveAttribute("aria-label", expect.stringContaining("2 em andamento"));
+    expect(within(aba).getByText("2")).toBeInTheDocument();
+    useSegundoPlano.mockReturnValue({ itens: [], erro: null });
+  });
+
   it("fechar workspace só esconde; o + reabre um escondido ou cria um novo", async () => {
     const escondido = { ...workspace("ws-c", "Antigo"), hidden: true };
     const props = renderSidebar({ workspaces: [workspace("ws-a", "Cliente X"), workspace("ws-b", "Estudos"), escondido] });
