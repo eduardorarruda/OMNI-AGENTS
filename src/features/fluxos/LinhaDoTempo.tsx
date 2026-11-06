@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { lerEventos, type EventoDeFluxo } from "./fluxosService";
 
 const INTERVALO_MS = 1500;
+const PAGINA_CHEIA = 500;
 const ROTULO: Record<string, string> = {
   inicio: "início", fim: "fim", falha: "falhou", atividade: "", aprovacao: "aprovação", subfluxo: "subfluxo", aviso: "aviso",
 };
@@ -11,19 +12,27 @@ const hora = (ms: number) => new Date(ms).toLocaleTimeString("pt-BR", { hour: "2
  *  de consultar quando a execução termina (depois de uma última leitura). */
 export function LinhaDoTempo({ execucaoId, viva, titulos = {} }: { execucaoId: string; viva: boolean; titulos?: Record<string, string> }) {
   const [eventos, setEventos] = useState<EventoDeFluxo[]>([]);
+  const [falhou, setFalhou] = useState(false);
   const ultimo = useRef(0);
   const fim = useRef<HTMLLIElement>(null);
 
-  useEffect(() => { ultimo.current = 0; setEventos([]); }, [execucaoId]);
+  useEffect(() => { ultimo.current = 0; setEventos([]); setFalhou(false); }, [execucaoId]);
   useEffect(() => {
     let ativo = true;
     const ler = async () => {
       try {
-        const novos = (await lerEventos(execucaoId, ultimo.current)).filter((e) => e.seq > ultimo.current);
-        if (!ativo || novos.length === 0) return;
-        ultimo.current = Math.max(...novos.map((e) => e.seq));
-        setEventos((atuais) => [...atuais, ...novos]);
-      } catch { /* a próxima volta tenta de novo */ }
+        let cheia = true;
+        while (cheia && ativo) {
+          const lidos = await lerEventos(execucaoId, ultimo.current);
+          if (!ativo) return;
+          const novos = lidos.filter((e) => e.seq > ultimo.current);
+          cheia = lidos.length >= PAGINA_CHEIA;
+          if (novos.length === 0) break;
+          ultimo.current = Math.max(...novos.map((e) => e.seq));
+          setEventos((atuais) => [...atuais, ...novos]);
+        }
+        if (ativo) setFalhou(false);
+      } catch { if (ativo) setFalhou(true); }
     };
     void ler();
     const t = viva ? window.setInterval(ler, INTERVALO_MS) : undefined;
@@ -34,12 +43,13 @@ export function LinhaDoTempo({ execucaoId, viva, titulos = {} }: { execucaoId: s
   return (
     <section className="fx-tempo" aria-label="Linha do tempo">
       <p className="fx-rotulo">Linha do tempo</p>
+      {falhou && <p role="status" className="fx-dica">Não foi possível atualizar a linha do tempo. Tentando de novo…</p>}
       {eventos.length === 0 ? <p className="fx-dica">{viva ? "Começando…" : "Sem eventos."}</p> : (
         <ol className="fx-tempo-lista">
           {eventos.map((e) => (
             <li key={e.seq} className={`fx-tempo-item is-${e.tipo}`}>
               <time>{hora(e.ms)}</time>
-              <b>{titulos[e.no] ?? e.no}</b>
+              <b>{e.no ? (titulos[e.no] ?? e.no) : "Execução"}</b>
               {ROTULO[e.tipo] && <em>{ROTULO[e.tipo]}</em>}
               <span>{e.texto}</span>
             </li>

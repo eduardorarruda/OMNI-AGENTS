@@ -45,7 +45,7 @@ export interface ResumoDaExecucao {
 }
 export interface ItemDoHistorico { kind: "text" | "tool" | "command" | "notice"; role: string; text: string; tool?: string; /** "Volta N" ou "<quem> · rodada N": só divide o log. */ separador?: boolean }
 export type TipoDeEvento = "inicio" | "fim" | "falha" | "atividade" | "aprovacao" | "subfluxo" | "aviso";
-export interface EventoDeFluxo { seq: number; ms: number; no: string; tipo: TipoDeEvento; texto: string }
+export interface EventoDeFluxo { seq: number; ms: number; no: string | null; tipo: TipoDeEvento; texto: string }
 
 /** Saídas de cada tipo, na ordem em que aparecem no nó ("" = a saída normal). */
 export const SAIDAS: Record<TipoDeNo, string[]> = {

@@ -36,3 +36,49 @@ it("LinhaDoTempo para de consultar quando a execução termina", async () => {
   await passa(10000);
   expect(lerEventos.mock.calls.length).toBe(chamadas);
 });
+
+it("LinhaDoTempo mostra evento sem nó como Execução", async () => {
+  lerEventos.mockResolvedValue([{ seq: 1, ms: 1000, no: null, tipo: "fim", texto: "Execução cancelada" }]);
+  render(<LinhaDoTempo execucaoId="x" viva={false} />);
+  await passa(0);
+  expect(screen.getByText("Execução")).toBeInTheDocument();
+  expect(screen.getByText("Execução cancelada")).toBeInTheDocument();
+});
+
+it("LinhaDoTempo avisa quando a leitura falha e some na leitura boa", async () => {
+  lerEventos.mockRejectedValueOnce(new Error("fora")).mockResolvedValue([ev(1, "um")]);
+  render(<LinhaDoTempo execucaoId="x" viva />);
+  await passa(0);
+  expect(screen.getByRole("status")).toHaveTextContent("Não foi possível atualizar a linha do tempo");
+  await passa(1500);
+  expect(screen.queryByRole("status")).toBeNull();
+});
+
+it("LinhaDoTempo de execução terminada repete a leitura enquanto vier página cheia", async () => {
+  const pagina = Array.from({ length: 500 }, (_, i) => ev(i + 1, `e${i + 1}`));
+  lerEventos.mockResolvedValueOnce(pagina).mockResolvedValueOnce([ev(501, "último")]).mockResolvedValue([]);
+  render(<LinhaDoTempo execucaoId="x" viva={false} />);
+  await passa(0);
+  expect(lerEventos).toHaveBeenNthCalledWith(2, "x", 500);
+  expect(lerEventos).toHaveBeenCalledTimes(2);
+  expect(screen.getByText("último")).toBeInTheDocument();
+});
+
+it("LinhaDoTempo cursor reinicia ao trocar de execução", async () => {
+  lerEventos.mockResolvedValue([ev(9, "nove")]);
+  const { rerender } = render(<LinhaDoTempo execucaoId="x" viva />);
+  await passa(0);
+  rerender(<LinhaDoTempo execucaoId="y" viva />);
+  await passa(0);
+  expect(lerEventos).toHaveBeenLastCalledWith("y", 0);
+});
+
+it("LinhaDoTempo para de consultar ao desmontar", async () => {
+  lerEventos.mockResolvedValue([]);
+  const { unmount } = render(<LinhaDoTempo execucaoId="x" viva />);
+  await passa(0);
+  unmount();
+  const n = lerEventos.mock.calls.length;
+  await passa(10000);
+  expect(lerEventos.mock.calls.length).toBe(n);
+});
