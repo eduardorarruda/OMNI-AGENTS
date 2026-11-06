@@ -19,6 +19,7 @@ pub mod armazenamento;
 pub mod mestra;
 pub mod exportar;
 pub mod processos;
+pub mod kanban;
 
 use serde::{Deserialize, Serialize};
 use std::{fs, path::{Path, PathBuf}};

@@ -2,6 +2,7 @@ mod automatico;
 mod conta_gh;
 mod fluxos;
 mod interaction;
+mod kanban;
 mod mobile;
 mod previa;
 mod voz;
