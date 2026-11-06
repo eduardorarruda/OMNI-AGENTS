@@ -20,6 +20,10 @@ same-file = "1"
 # Codex 0.15x compacta rollouts antigos em `.jsonl.zst`.
 ruzstd = "0.8"
 
+# Lixeira do sistema fora do Windows (freedesktop no Linux, Finder no macOS). MIT, mantida (5.3.0 em 2026-11).
+[target.'cfg(not(windows))'.dependencies]
+trash = "5"
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Shell"] }
 

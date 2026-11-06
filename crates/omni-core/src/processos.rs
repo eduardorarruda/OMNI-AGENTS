@@ -18,6 +18,22 @@ pub fn descendentes(raiz: u32, pares: &[(u32, u32)]) -> Vec<u32> {
     ordem
 }
 
+/// Lê `(pid, ppid)` da saída de `ps -axo pid=,ppid=`; linha que não é número é ignorada.
+pub fn parse_ps_pares(saida: &str) -> Vec<(u32, u32)> {
+    saida.lines().filter_map(|l| {
+        let mut c = l.split_whitespace();
+        Some((c.next()?.parse().ok()?, c.next()?.parse().ok()?))
+    }).collect()
+}
+
+/// Pares `(pid, ppid)` de todos os processos do sistema (`ps` existe no Linux e no macOS).
+#[cfg(unix)]
+pub fn pares_do_sistema() -> Result<Vec<(u32, u32)>, String> {
+    let saida = std::process::Command::new("ps").args(["-axo", "pid=,ppid="]).output().map_err(|e| format!("ps: {e}"))?;
+    if !saida.status.success() { return Err(format!("ps saiu com {}", saida.status)); }
+    Ok(parse_ps_pares(&String::from_utf8_lossy(&saida.stdout)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -31,6 +47,11 @@ mod tests {
     fn descendentes_aguenta_ciclo_e_raiz_sem_filhos() {
         assert_eq!(descendentes(5, &[(1, 2)]), Vec::<u32>::new());
         assert_eq!(descendentes(1, &[(2, 1), (1, 2)]), vec![2]);
+    }
+
+    #[test]
+    fn parse_ps_pares_ignora_lixo() {
+        assert_eq!(parse_ps_pares("    1     0\n  200   1\nlixo\n"), vec![(1, 0), (200, 1)]);
     }
 
     #[test]

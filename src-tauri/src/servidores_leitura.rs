@@ -132,16 +132,11 @@ pub fn parse_lsof_cwd(saida: &str) -> Option<String> {
 /// Pares `(pid, ppid)` de todos os processos (`ps` existe no Linux e no macOS).
 #[cfg(unix)]
 fn pares_de_processos() -> Result<Vec<(u32, u32)>, String> {
-    Ok(parse_ps_pares(&rodar("ps", &["-axo", "pid=,ppid="])?))
+    omni_core::processos::pares_do_sistema()
 }
 
-#[allow(dead_code)]
-pub fn parse_ps_pares(saida: &str) -> Vec<(u32, u32)> {
-    saida.lines().filter_map(|l| {
-        let mut c = l.split_whitespace();
-        Some((c.next()?.parse().ok()?, c.next()?.parse().ok()?))
-    }).collect()
-}
+#[allow(unused_imports)]
+pub use omni_core::processos::parse_ps_pares;
 
 /// Vivo de verdade: zumbi (já morto, esperando o pai recolher) não conta.
 #[cfg(unix)]

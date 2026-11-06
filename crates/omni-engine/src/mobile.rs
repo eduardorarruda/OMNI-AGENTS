@@ -1850,10 +1850,23 @@ fn saida_agy_models(dir: &Path) -> String {
     saida_em_cache(dir, "modelos-antigravity.txt", comando, |texto| !omni_core::antigravity::variantes(texto).is_empty())
 }
 
-/// `agent models` (Cursor), guardado um dia como o do Antigravity. O `agent` é um `.cmd`: só pelo `cmd`.
+/// No Windows o `agent` é um `.cmd`: só pelo `cmd`. Fora dele é executável comum.
+fn comando_agent_models() -> std::process::Command {
+    #[cfg(windows)] {
+        let mut comando = std::process::Command::new("cmd");
+        comando.args(["/c", "agent", "models"]);
+        comando
+    }
+    #[cfg(not(windows))] {
+        let mut comando = std::process::Command::new("agent");
+        comando.arg("models");
+        comando
+    }
+}
+
+/// `agent models` (Cursor), guardado um dia como o do Antigravity.
 fn saida_agent_models(dir: &Path) -> String {
-    let mut comando = std::process::Command::new("cmd");
-    comando.args(["/c", "agent", "models"]);
+    let comando = comando_agent_models();
     saida_em_cache(dir, "modelos-cursor.txt", comando, |texto| !omni_core::cursor::modelos(texto).is_empty())
 }
 
@@ -2775,6 +2788,15 @@ async fn asset(request: Request) -> Response {
 mod tests {
     use super::*;
     use tower::ServiceExt;
+
+    #[cfg(not(windows))]
+    #[test]
+    fn agent_models_sem_cmd_fora_do_windows() {
+        let comando = comando_agent_models();
+        assert_eq!(comando.get_program(), "agent");
+        assert_eq!(comando.get_args().collect::<Vec<_>>(), ["models"]);
+    }
+
     use axum::body::{Body,to_bytes};
 
     fn fixture() -> (tempfile::TempDir, Arc<EngineState>) {

@@ -55,7 +55,10 @@ pub fn para_lixeira(caminho: &Path) -> io::Result<()> {
         }
         Ok(())
     }
-    #[cfg(not(windows))] { Err(io::Error::other(format!("sem Lixeira para {}", caminho.display()))) }
+    // Falhou na Lixeira: devolve o erro. Nunca cai para apagar em definitivo.
+    #[cfg(not(windows))] {
+        trash::delete(caminho).map_err(|erro| io::Error::other(format!("não deu para mandar {} para a Lixeira: {erro}", caminho.display())))
+    }
 }
 
 /// Liga `nome` ao arquivo `de`; em outro disco (hard link não atravessa volume), copia.
@@ -87,6 +90,23 @@ pub fn unificar(mestre: &Path, copias: &[PathBuf]) -> io::Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A Lixeira do teste mora numa pasta temporária (`XDG_DATA_HOME`), na mesma partição do arquivo:
+    /// a Lixeira real da pessoa não é tocada. Único teste que mexe nessa variável.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn lixeira_move_o_arquivo() {
+        let dir = tempfile::tempdir().unwrap();
+        let dados = dir.path().join("dados");
+        std::fs::create_dir_all(&dados).unwrap();
+        std::env::set_var("XDG_DATA_HOME", &dados);
+        let arquivo = dir.path().join("conversa.jsonl");
+        std::fs::write(&arquivo, "x").unwrap();
+        para_lixeira(&arquivo).unwrap();
+        assert!(!arquivo.exists(), "o original tem que sumir");
+        let guardado = std::fs::read_dir(dados.join("Trash/files")).unwrap().count();
+        assert_eq!(guardado, 1, "o arquivo foi movido para a Lixeira, não apagado");
+    }
 
     fn perfil(id: &str, criado: u64, builtin: bool) -> Profile {
         Profile { id: id.into(), provider: "claude".into(), name: id.into(), config_dir: String::new(), builtin,

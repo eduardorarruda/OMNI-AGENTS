@@ -1485,7 +1485,7 @@ fn close_session(state: &EngineState, session_id: &str) -> Result<EngineResponse
 
 /// No Windows o `kill` da PTY só derruba o shell: a CLI aberta nele (agy, claude, node) ficava viva,
 /// órfã, a cada aba fechada ou reiniciada. `taskkill /T` leva a árvore inteira.
-/// ponytail: no macOS/Linux o fim da PTY manda SIGHUP e a CLI sai; matar o grupo se aparecer órfão lá.
+/// Fora do Windows lê a árvore por `ps` e manda SIGKILL de baixo para cima (filhos antes dos pais).
 fn matar_arvore(pid: Option<u32>) {
     #[cfg(windows)]
     if let Some(pid) = pid {
@@ -1495,7 +1495,13 @@ fn matar_arvore(pid: Option<u32>) {
             .creation_flags(0x0800_0000).status();
     }
     #[cfg(not(windows))]
-    let _ = pid;
+    if let Some(raiz) = pid {
+        let Ok(pares) = omni_core::processos::pares_do_sistema() else { return };
+        let alvos: Vec<String> = omni_core::processos::descendentes(raiz, &pares).iter().map(u32::to_string).collect();
+        if alvos.is_empty() { return; }
+        let _ = std::process::Command::new("kill").arg("-KILL").args(&alvos)
+            .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
+    }
 }
 
 fn snapshot(state: &EngineState, session_id: &str, since: u64) -> Result<EngineResponse> {
@@ -1613,6 +1619,26 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn matar_arvore_derruba_o_filho() {
+        // Só o `sh` criado aqui e o `sleep` dele; nada além disso é tocado.
+        let mut pai = std::process::Command::new("sh").args(["-c", "sleep 60 & wait"]).spawn().unwrap();
+        let raiz = pai.id();
+        let filho = (0..50).find_map(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            omni_core::processos::descendentes(raiz, &omni_core::processos::pares_do_sistema().unwrap()).first().copied()
+        }).expect("o sleep devia aparecer como filho do sh");
+        matar_arvore(Some(raiz));
+        let _ = pai.wait();
+        // Morto de verdade: sumiu de /proc ou virou zumbi (o init recolhe).
+        let morto = (0..30).any(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            std::fs::read_to_string(format!("/proc/{filho}/stat")).map_or(true, |s| s.contains(") Z"))
+        });
+        assert!(morto, "o sleep (filho do sh) devia ter morrido junto");
+    }
 
     pub(crate) fn test_state() -> Arc<EngineState> {
         let dir = env::temp_dir().join(format!("omni-engine-test-{}-{:x}", now_ms(), rand::random::<u64>()));
