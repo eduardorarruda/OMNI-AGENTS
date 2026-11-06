@@ -4,22 +4,31 @@ import {
   AVISO_GRAVACAO_FALHOU,
   aplicarNoEngine,
   carregarKanbanComOrigem,
-  lerDoEngine,
+  type OrigemDoKanban,
 } from "../../services/kanbanService";
 import { definirAvisoDoKanban } from "./kanbanAviso";
 import { emptyKanban, kanbanReducer } from "./kanbanReducer";
 
 const REPETIR_CARGA_MS = 3_000;
 
+interface Operacao {
+  antes: KanbanState;
+  depois: KanbanState;
+}
+
 /** O reducer continua dono da tela: a mudança aparece na hora e é confirmada no engine, uma operação
- * de um cartão por vez e em ordem. Se o engine recusar, volta ao que ele guarda (ou ao estado de antes)
- * e avisa. Antes da carga inicial, ações são ignoradas para não serem pisadas por ela. */
+ * de um cartão por vez e em ordem. Se uma gravação falhar, o resto da fila é descartado (ele foi montado
+ * em cima de um estado que não existe no engine), o engine é relido uma vez e o aviso diz que as mudanças
+ * não gravadas foram desfeitas. Enquanto isso, e antes da carga inicial, ações novas são ignoradas.
+ * Com o quadro vindo só da cópia local (engine fora, ou migração que falhou), nada é gravado. */
 export function useKanban() {
   const [kanban, setKanban] = useState<KanbanState>(emptyKanban);
   const [carregado, setCarregado] = useState(false);
   const atual = useRef(kanban);
-  const fila = useRef<Promise<void>>(Promise.resolve());
-  const carregadoRef = useRef(false);
+  const pendentes = useRef<Operacao[]>([]);
+  const drenando = useRef(false);
+  const aceitando = useRef(false);
+  const origem = useRef<OrigemDoKanban>("engine");
 
   const trocar = useCallback((estado: KanbanState) => {
     atual.current = estado;
@@ -30,14 +39,19 @@ export function useKanban() {
     let vivo = true;
     let temporizador: number | undefined;
     async function carregar() {
-      const { estado, origem } = await carregarKanbanComOrigem();
+      if (drenando.current) {
+        temporizador = window.setTimeout(() => void carregar(), REPETIR_CARGA_MS);
+        return;
+      }
+      const resultado = await carregarKanbanComOrigem();
       if (!vivo) return;
-      // Cópia local só serve para olhar: depois da primeira carga não é reposta por cima do que o usuário fez.
-      if (origem === "engine" || !carregadoRef.current) trocar(estado);
-      carregadoRef.current = true;
+      origem.current = resultado.origem;
+      // Cópia local só serve para olhar: depois da primeira carga não é reposta por cima do que está na tela.
+      if (resultado.origem === "engine" || !aceitando.current) trocar(resultado.estado);
+      aceitando.current = true;
       setCarregado(true);
-      // Engine fora do ar na partida: tenta de novo até ele responder.
-      if (origem === "local") temporizador = window.setTimeout(() => void carregar(), REPETIR_CARGA_MS);
+      // Engine fora do ar (ou migração caída): tenta de novo até dar certo.
+      if (resultado.origem === "local") temporizador = window.setTimeout(() => void carregar(), REPETIR_CARGA_MS);
     }
     void carregar();
     return () => {
@@ -46,28 +60,43 @@ export function useKanban() {
     };
   }, [trocar]);
 
+  const drenar = useCallback(async () => {
+    if (drenando.current) return;
+    drenando.current = true;
+    let falhou = false;
+    while (pendentes.current.length > 0) {
+      const operacao = pendentes.current.shift()!;
+      if (falhou) continue;
+      try {
+        if (origem.current === "local") throw new Error("Kanban sem engine para gravar");
+        await aplicarNoEngine(operacao.antes, operacao.depois);
+      } catch {
+        falhou = true;
+        aceitando.current = false;
+      }
+    }
+    if (falhou) {
+      const resultado = await carregarKanbanComOrigem();
+      origem.current = resultado.origem;
+      trocar(resultado.estado);
+      if (resultado.origem === "engine") definirAvisoDoKanban(AVISO_GRAVACAO_FALHOU);
+      aceitando.current = true;
+    }
+    drenando.current = false;
+  }, [trocar]);
+
   const dispatch = useCallback(
     (acao: KanbanAction) => {
-      if (!carregadoRef.current) return;
+      if (!aceitando.current) return;
       const antes = atual.current;
       const depois = kanbanReducer(antes, acao);
       if (depois === antes) return;
       trocar(depois);
       if (acao.type === "REPLACE_STATE") return;
-      fila.current = fila.current.then(async () => {
-        try {
-          await aplicarNoEngine(antes, depois);
-        } catch {
-          definirAvisoDoKanban(AVISO_GRAVACAO_FALHOU);
-          try {
-            trocar(await lerDoEngine());
-          } catch {
-            trocar(antes);
-          }
-        }
-      });
+      pendentes.current.push({ antes, depois });
+      void drenar();
     },
-    [trocar],
+    [drenar, trocar],
   );
 
   return { kanban, dispatch, carregado };

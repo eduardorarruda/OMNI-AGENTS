@@ -8,6 +8,7 @@ import {
   KANBAN_STORAGE_KEY,
   aplicarNoEngine,
   carregarKanban,
+  carregarKanbanComOrigem,
   migrarSePreciso,
 } from "../services/kanbanService";
 import type { KanbanState } from "../types/kanban";
@@ -25,18 +26,18 @@ function cartao(id: string, extra: Record<string, unknown> = {}) {
 }
 
 /** Engine de mentira em memória, com as mesmas rotas do real. */
-function engineFalso(inicial: { tarefas?: unknown[]; ajustes?: Record<string, unknown> } = {}) {
-  const quadro = { versao: 1, tarefas: [...(inicial.tarefas ?? [])] as Record<string, unknown>[], triagem: [], ajustes: { ...(inicial.ajustes ?? {}) } };
+function engineFalso(inicial: { tarefas?: unknown[]; ajustes?: Record<string, unknown>; migrado?: boolean } = {}) {
+  const quadro = { versao: 1, tarefas: [...(inicial.tarefas ?? [])] as Record<string, unknown>[], triagem: [], migrado: inicial.migrado ?? false, ajustes: { ...(inicial.ajustes ?? {}) } };
   const chamadas: { metodo: string; caminho: string; corpo: unknown }[] = [];
   api.mockImplementation(async (metodo, caminho, corpo) => {
     const json = corpo ? JSON.parse(corpo) : null;
     chamadas.push({ metodo, caminho, corpo: json });
     const ok = (body: unknown, status = 200) => ({ type: "api" as const, status, body: JSON.stringify(body) });
     if (metodo === "GET" && caminho === "/kanban") return ok(quadro);
-    if (metodo === "POST" && caminho === "/kanban/cartoes") { quadro.tarefas.push(json); return ok(json, 201); }
+    if (metodo === "POST" && caminho === "/kanban/cartoes") { quadro.tarefas.push(json); quadro.migrado = true; return ok(json, 201); }
     if (metodo === "POST" && caminho === "/kanban/migrar") {
-      const vazio = quadro.tarefas.length === 0 && Object.keys(quadro.ajustes).length === 0;
-      if (vazio) { quadro.tarefas.push(...json.tarefas); Object.assign(quadro.ajustes, json.ajustes); }
+      const vazio = !quadro.migrado && quadro.tarefas.length === 0 && Object.keys(quadro.ajustes).length === 0;
+      if (vazio) { quadro.tarefas.push(...json.tarefas); Object.assign(quadro.ajustes, json.ajustes); quadro.migrado = true; }
       return ok({ migrou: vazio, quadro });
     }
     const m = caminho.match(/^\/kanban\/cartoes\/(.+)$/);
@@ -111,7 +112,64 @@ describe("migração do Kanban", () => {
   });
 });
 
+describe("migração que não pode perder nem ressuscitar", () => {
+  it("apagar todos os cartões depois de migrar não traz a cópia antiga de volta", async () => {
+    localStorage.setItem(KANBAN_STORAGE_KEY, JSON.stringify(antigo));
+    const { chamadas } = engineFalso({ tarefas: [], migrado: true });
+    expect((await carregarKanban()).tasks).toEqual([]);
+    expect(await migrarSePreciso()).toBe("nada");
+    expect(chamadas.find((c) => c.caminho === "/kanban/migrar")).toBeUndefined();
+  });
+
+  it("migração que falha com o engine de pé e vazio mostra a cópia local, avisa e não aceita cartão novo", async () => {
+    localStorage.setItem(KANBAN_STORAGE_KEY, JSON.stringify(antigo));
+    const { quadro, chamadas } = engineFalso();
+    const normal = api.getMockImplementation()!;
+    api.mockImplementation(async (metodo, caminho, corpo, extra) => {
+      if (caminho === "/kanban/migrar") throw new Error("queda no meio");
+      return normal(metodo, caminho, corpo, extra);
+    });
+    const { estado, origem } = await carregarKanbanComOrigem();
+    expect(origem).toBe("local");
+    expect(estado.tasks.map((t) => t.id)).toEqual(["a", "b"]);
+    expect(avisoDoKanban()).toMatch(/migra/i);
+
+    const { result } = renderHook(() => useKanban());
+    await waitFor(() => expect(result.current.carregado).toBe(true));
+    expect(result.current.kanban.tasks).toHaveLength(2);
+    act(() => result.current.dispatch({ type: "CREATE_TASK", projectId: "p", title: "Nova", description: "" }));
+    await waitFor(() => expect(avisoDoKanban()).toMatch(/não foi possível/i));
+    await waitFor(() => expect(result.current.kanban.tasks).toHaveLength(2));
+    expect(quadro.tarefas).toHaveLength(0);
+    expect(chamadas.find((c) => c.caminho === "/kanban/cartoes")).toBeUndefined();
+    expect(localStorage.getItem(KANBAN_STORAGE_KEY)).toBe(JSON.stringify(antigo));
+  });
+});
+
 describe("gravação por cartão", () => {
+  it("falha na primeira de duas ações em voo descarta a segunda e relê o engine uma vez", async () => {
+    const { quadro, chamadas } = engineFalso({ tarefas: [cartao("base")], migrado: true });
+    const { result } = renderHook(() => useKanban());
+    await waitFor(() => expect(result.current.carregado).toBe(true));
+    const normal = api.getMockImplementation()!;
+    api.mockImplementation(async (metodo, caminho, corpo, extra) => {
+      if (metodo === "POST" && caminho === "/kanban/cartoes" && corpo?.includes("Ruim1")) throw new Error("disco cheio");
+      return normal(metodo, caminho, corpo, extra);
+    });
+    chamadas.length = 0;
+    act(() => {
+      result.current.dispatch({ type: "CREATE_TASK", projectId: "p", title: "Ruim1", description: "" });
+      result.current.dispatch({ type: "CREATE_TASK", projectId: "p", title: "Ruim2", description: "" });
+    });
+    expect(result.current.kanban.tasks).toHaveLength(3);
+    await waitFor(() => expect(result.current.kanban.tasks).toHaveLength(1));
+    expect(result.current.kanban.tasks[0].id).toBe("base");
+    expect(quadro.tarefas).toHaveLength(1);
+    expect(chamadas.filter((c) => c.metodo === "POST")).toHaveLength(0); // a primeira caiu antes de chegar; a segunda nem foi tentada
+    expect(chamadas.filter((c) => c.metodo === "GET" && c.caminho === "/kanban")).toHaveLength(1); // relê uma vez
+    expect(avisoDoKanban()).toMatch(/não gravadas|desfeit/i);
+  });
+
   it("cada ação vira uma operação de um cartão", async () => {
     const { chamadas } = engineFalso();
     let estado: KanbanState = emptyKanban();

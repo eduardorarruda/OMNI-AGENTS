@@ -66,6 +66,10 @@ pub struct Quadro {
     pub triagem: Vec<CartaoExterno>,
     #[serde(default = "objeto_vazio")]
     pub ajustes: Value,
+    /// Vira `true` na primeira migração ou no primeiro cartão criado. Daí em diante a cópia antiga do
+    /// `localStorage` nunca mais volta, nem se o usuário apagar todos os cartões (quadro "vazio" de novo).
+    #[serde(default)]
+    pub migrado: bool,
 }
 
 fn objeto_vazio() -> Value {
@@ -74,7 +78,7 @@ fn objeto_vazio() -> Value {
 
 impl Default for Quadro {
     fn default() -> Self {
-        Self { versao: 1, tarefas: Vec::new(), triagem: Vec::new(), ajustes: objeto_vazio() }
+        Self { versao: 1, tarefas: Vec::new(), triagem: Vec::new(), ajustes: objeto_vazio(), migrado: false }
     }
 }
 
@@ -120,6 +124,7 @@ pub fn criar(quadro: &mut Quadro, cartao: Cartao) -> Result<Cartao, ErroKanban> 
         return Err(ErroKanban::Conflito("Já existe um cartão com esse id".into()));
     }
     quadro.tarefas.push(cartao.clone());
+    quadro.migrado = true;
     Ok(cartao)
 }
 
@@ -175,7 +180,7 @@ pub fn ajustar(quadro: &mut Quadro, mudancas: &Value) -> Result<(), ErroKanban> 
 /// Migração única do `localStorage`: só escreve se o quadro do engine estiver vazio. Cartão inválido
 /// do material de origem é descartado sozinho. Devolve `true` se migrou.
 pub fn migrar(quadro: &mut Quadro, origem: Quadro) -> bool {
-    if !quadro.vazio() {
+    if quadro.migrado || !quadro.vazio() {
         return false;
     }
     let mut novo = Quadro::default();
@@ -189,6 +194,7 @@ pub fn migrar(quadro: &mut Quadro, origem: Quadro) -> bool {
     if novo.tarefas.is_empty() && novo.ajustes.as_object().is_none_or(Map::is_empty) {
         return false;
     }
+    novo.migrado = true;
     *quadro = novo;
     true
 }
@@ -251,6 +257,26 @@ mod tests {
         assert_eq!(q.tarefas.len(), 1);
         assert!(!migrar(&mut q, Quadro { tarefas: vec![cartao("z")], ..Quadro::default() }));
         assert_eq!(q.tarefas[0].id, "a");
+    }
+
+    #[test]
+    fn apagar_todos_os_cartoes_nao_ressuscita_a_copia_antiga() {
+        let mut q = Quadro::default();
+        assert!(migrar(&mut q, Quadro { tarefas: vec![cartao("a")], ..Quadro::default() }));
+        assert!(q.migrado);
+        assert!(remover(&mut q, "a"));
+        assert!(q.vazio());
+        assert!(!migrar(&mut q, Quadro { tarefas: vec![cartao("a")], ..Quadro::default() }));
+        assert!(q.tarefas.is_empty());
+    }
+
+    #[test]
+    fn primeiro_cartao_novo_tambem_marca_migrado() {
+        let mut q = Quadro::default();
+        criar(&mut q, cartao("n")).unwrap();
+        remover(&mut q, "n");
+        assert!(q.migrado);
+        assert!(!migrar(&mut q, Quadro { tarefas: vec![cartao("velho")], ..Quadro::default() }));
     }
 
     #[test]

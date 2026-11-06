@@ -104,6 +104,18 @@ async fn migrar(State(state): State<Arc<EngineState>>, Json(origem): Json<Quadro
     Ok(Json(json!({"migrou": migrou, "quadro": quadro})))
 }
 
+/// Só entra no servidor HTTP (celular e web), nunca no `local` do desktop: o token de dispositivo lê o
+/// Kanban, mas quem escreve é o desktop. Web e celular não usam o Kanban.
+pub(crate) async fn somente_leitura_no_http(request: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let caminho = request.uri().path();
+    let do_kanban = caminho == "/kanban" || caminho.starts_with("/kanban/");
+    if do_kanban && request.method() != axum::http::Method::GET {
+        return erro(StatusCode::FORBIDDEN, "O Kanban só é alterado pelo app do computador").into_response();
+    }
+    next.run(request).await
+}
+
 pub(crate) fn rotas() -> Router<Arc<EngineState>> {
     Router::new()
         .route("/kanban", get(kanban_ler))
@@ -119,7 +131,7 @@ pub(crate) fn rotas() -> Router<Arc<EngineState>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mobile::router;
+    use crate::mobile::{rotas, router};
     use axum::{body::{to_bytes, Body}, http::Request};
     use tower::ServiceExt;
 
@@ -137,6 +149,11 @@ mod tests {
             id_sequence: AtomicU64::new(1),
         });
         (dir, state)
+    }
+
+    /// As rotas como o desktop as chama (`mobile::local`): sem token de dispositivo, com o limite global de 32 KB.
+    fn app_local(state: Arc<EngineState>) -> Router {
+        rotas().layer(DefaultBodyLimit::max(32 * 1024)).with_state(state)
     }
 
     fn pedido(metodo: &str, uri: &str, corpo: &str, token: Option<&str>) -> Request<Body> {
@@ -168,7 +185,7 @@ mod tests {
     #[tokio::test]
     async fn criar_e_ler_cartao() {
         let (_dir, state) = fixture();
-        let app = router(state);
+        let app = app_local(state);
         let (status, criado) = chamar(&app, "POST", "/kanban/cartoes", &cartao("a").to_string()).await;
         assert_eq!(status, StatusCode::CREATED);
         assert_eq!(criado["id"], "a");
@@ -185,7 +202,7 @@ mod tests {
     #[tokio::test]
     async fn editar_um_cartao_nao_afeta_outro() {
         let (_dir, state) = fixture();
-        let app = router(state);
+        let app = app_local(state);
         chamar(&app, "POST", "/kanban/cartoes", &cartao("a").to_string()).await;
         chamar(&app, "POST", "/kanban/cartoes", &cartao("b").to_string()).await;
         let (status, editado) = chamar(&app, "PATCH", "/kanban/cartoes/a", r#"{"status":"ready","title":"Nova"}"#).await;
@@ -239,7 +256,7 @@ mod tests {
     #[tokio::test]
     async fn migrar_so_vale_com_quadro_vazio() {
         let (_dir, state) = fixture();
-        let app = router(state);
+        let app = app_local(state);
         let primeiro = json!({"versao":1,"tarefas":[cartao("a"),cartao("b")],"ajustes":{"dispatcherEnabled":true}});
         let (status, r) = chamar(&app, "POST", "/kanban/migrar", &primeiro.to_string()).await;
         assert_eq!(status, StatusCode::OK);
@@ -257,7 +274,7 @@ mod tests {
     async fn arquivo_corrompido_vira_copia_e_nao_apaga() {
         let (dir, state) = fixture();
         fs::write(dir.path().join("kanban.json"), b"{ isto nao e json").unwrap();
-        let app = router(state);
+        let app = app_local(state);
         let (status, quadro) = chamar(&app, "GET", "/kanban", "").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(quadro["tarefas"].as_array().unwrap().len(), 0);
@@ -268,6 +285,66 @@ mod tests {
         // e o Kanban volta a funcionar
         let (status, _) = chamar(&app, "POST", "/kanban/cartoes", &cartao("a").to_string()).await;
         assert_eq!(status, StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn quadro_grande_passa_pelo_limite_global_de_32kb() {
+        let (_dir, state) = fixture();
+        let app = app_local(state);
+        let cartoes: Vec<Value> = (0..60)
+            .map(|n| {
+                let mut c = cartao(&format!("c{n}"));
+                c["description"] = json!("ç".repeat(1000));
+                c
+            })
+            .collect();
+        let corpo = json!({"versao":1,"tarefas":cartoes,"ajustes":{}}).to_string();
+        assert!(corpo.len() > 100 * 1024, "o corpo precisa passar bem de 32 KB");
+        let (status, r) = chamar(&app, "POST", "/kanban/migrar", &corpo).await;
+        assert_eq!(status, StatusCode::OK, "{r}");
+        assert_eq!(r["migrou"], true);
+        let mut grande = cartao("g");
+        grande["description"] = json!("ç".repeat(15_000));
+        let (status, _) = chamar(&app, "POST", "/kanban/cartoes", &grande.to_string()).await;
+        assert_eq!(status, StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn apagar_tudo_depois_de_migrar_nao_ressuscita_a_copia_antiga() {
+        let (_dir, state) = fixture();
+        let app = app_local(state);
+        let origem = json!({"versao":1,"tarefas":[cartao("a")],"ajustes":{}}).to_string();
+        let (_, r) = chamar(&app, "POST", "/kanban/migrar", &origem).await;
+        assert_eq!(r["migrou"], true);
+        chamar(&app, "DELETE", "/kanban/cartoes/a", "").await;
+        let (_, quadro) = chamar(&app, "GET", "/kanban", "").await;
+        assert_eq!(quadro["migrado"], true);
+        let (_, r) = chamar(&app, "POST", "/kanban/migrar", &origem).await;
+        assert_eq!(r["migrou"], false);
+        let (_, quadro) = chamar(&app, "GET", "/kanban", "").await;
+        assert_eq!(quadro["tarefas"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn token_do_celular_so_le_o_kanban() {
+        let (_dir, state) = fixture();
+        state.mobile.config.lock().unwrap().token = "segredo".into();
+        let app = router(state);
+        let r = app.clone().oneshot(pedido("GET", "/kanban", "", Some("segredo"))).await.unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        for (metodo, uri, corpo) in [
+            ("POST", "/kanban/cartoes", cartao("x").to_string()),
+            ("PATCH", "/kanban/cartoes/x", r#"{"title":"y"}"#.to_string()),
+            ("DELETE", "/kanban/cartoes/x", String::new()),
+            ("PATCH", "/kanban/ajustes", r#"{"dispatcherEnabled":true}"#.to_string()),
+            ("POST", "/kanban/migrar", r#"{"versao":1}"#.to_string()),
+        ] {
+            let r = app.clone().oneshot(pedido(metodo, uri, &corpo, Some("segredo"))).await.unwrap();
+            assert_eq!(r.status(), StatusCode::FORBIDDEN, "{metodo} {uri} com token de dispositivo");
+        }
+        let r = app.oneshot(pedido("GET", "/kanban", "", Some("segredo"))).await.unwrap();
+        let corpo = to_bytes(r.into_body(), 1 << 20).await.unwrap();
+        assert_eq!(serde_json::from_slice::<Value>(&corpo).unwrap()["tarefas"].as_array().unwrap().len(), 0);
     }
 
     #[tokio::test]

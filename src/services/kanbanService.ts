@@ -8,7 +8,10 @@ export const KANBAN_STORAGE_KEY = "omni-agents-kanban";
 
 export const AVISO_ENGINE_FORA =
   "O engine do OMNI está fora do ar: mostrando o Kanban salvo neste computador. Mudanças só serão gravadas quando ele voltar.";
-export const AVISO_GRAVACAO_FALHOU = "Não foi possível gravar a mudança no Kanban. Ela foi desfeita.";
+export const AVISO_MIGRACAO_FALHOU =
+  "Não foi possível levar o Kanban deste computador para o engine. Mostrando a cópia local; novas mudanças só serão aceitas depois que a migração passar.";
+export const AVISO_GRAVACAO_FALHOU =
+  "Não foi possível gravar no Kanban. As mudanças que não foram gravadas foram desfeitas.";
 
 function isTask(value: unknown): value is KanbanTask {
   if (!value || typeof value !== "object") return false;
@@ -58,6 +61,7 @@ export function loadKanban(): KanbanState {
 
 interface QuadroDoEngine {
   versao: number;
+  migrado?: boolean;
   tarefas: unknown[];
   triagem?: unknown[];
   ajustes?: Record<string, unknown>;
@@ -82,9 +86,18 @@ function ajustesDoEstado(estado: KanbanState): Record<string, unknown> {
   return Object.fromEntries(AJUSTES.map((chave) => [chave, estado[chave]]));
 }
 
+function lerQuadro(): Promise<QuadroDoEngine> {
+  return chamar<QuadroDoEngine>("GET", "/kanban");
+}
+
 /** Lê o quadro que o engine guarda. Lança se o engine não responder. */
 export async function lerDoEngine(): Promise<KanbanState> {
-  return quadroParaEstado(await chamar<QuadroDoEngine>("GET", "/kanban"));
+  return quadroParaEstado(await lerQuadro());
+}
+
+/** O engine já tem dono do quadro: tem cartão, ou já migrou/recebeu cartão alguma vez (então vazio é vazio de verdade). */
+function quadroJaTemDono(quadro: QuadroDoEngine): boolean {
+  return quadro.migrado === true || quadro.tarefas.length > 0 || (quadro.triagem?.length ?? 0) > 0;
 }
 
 function temAlgoParaMigrar(local: KanbanState): boolean {
@@ -98,6 +111,15 @@ function temAlgoParaMigrar(local: KanbanState): boolean {
 /** Leva o quadro do `localStorage` para o engine, uma vez. O engine só aceita com o quadro dele vazio;
  * a chave antiga nunca é apagada. */
 export async function migrarSePreciso(): Promise<"migrou" | "nada" | "falhou"> {
+  try {
+    return await migrarSeVazio(await lerQuadro());
+  } catch {
+    return "falhou";
+  }
+}
+
+async function migrarSeVazio(quadro: QuadroDoEngine): Promise<"migrou" | "nada" | "falhou"> {
+  if (quadroJaTemDono(quadro)) return "nada";
   const local = loadKanban();
   if (!temAlgoParaMigrar(local)) return "nada";
   try {
@@ -117,18 +139,24 @@ export type OrigemDoKanban = "engine" | "local";
 /** Carrega o quadro: do engine (migrando o antigo se ele estiver vazio) ou, com o engine fora do ar,
  * da cópia local, avisando. */
 export async function carregarKanbanComOrigem(): Promise<{ estado: KanbanState; origem: OrigemDoKanban }> {
-  let estado: KanbanState;
+  let quadro: QuadroDoEngine;
   try {
-    estado = await lerDoEngine();
+    quadro = await lerQuadro();
   } catch {
     definirAvisoDoKanban(AVISO_ENGINE_FORA);
     return { estado: loadKanban(), origem: "local" };
   }
-  if (estado.tasks.length === 0) {
-    const resultado = await migrarSePreciso();
+  if (!quadroJaTemDono(quadro)) {
+    const resultado = await migrarSeVazio(quadro);
+    if (resultado === "falhou") {
+      // Engine de pé e vazio, mas a migração caiu: a tela fica com a cópia local e NÃO aceita cartão novo,
+      // senão o primeiro cartão novo marcaria o engine como migrado e os antigos nunca mais subiriam.
+      definirAvisoDoKanban(AVISO_MIGRACAO_FALHOU);
+      return { estado: loadKanban(), origem: "local" };
+    }
     if (resultado === "migrou") {
       try {
-        estado = await lerDoEngine();
+        quadro = await lerQuadro();
       } catch {
         definirAvisoDoKanban(AVISO_ENGINE_FORA);
         return { estado: loadKanban(), origem: "local" };
@@ -136,7 +164,7 @@ export async function carregarKanbanComOrigem(): Promise<{ estado: KanbanState; 
     }
   }
   limparAvisoDoKanban();
-  return { estado, origem: "engine" };
+  return { estado: quadroParaEstado(quadro), origem: "engine" };
 }
 
 export async function carregarKanban(): Promise<KanbanState> {

@@ -557,7 +557,7 @@ pub fn start(state: Arc<EngineState>) {
 
 /// As rotas da API, sem o bundle e sem a checagem de origem/token do celular — esta parte é comum
 /// ao servidor HTTP (`router`) e ao desktop (`local`).
-fn rotas() -> Router<Arc<EngineState>> {
+pub(crate) fn rotas() -> Router<Arc<EngineState>> {
     Router::new().route("/conversas",get(conversations))
         .route("/projetos",get(projects))
         .route("/projetos/{id}/icone",get(icone_do_projeto))
@@ -625,6 +625,7 @@ fn rotas() -> Router<Arc<EngineState>> {
 pub(crate) fn router(state: Arc<EngineState>) -> Router {
     rotas()
         .fallback(get(asset)).layer(DefaultBodyLimit::max(32 * 1024))
+        .layer(middleware::from_fn(crate::kanban::somente_leitura_no_http))
         .layer(middleware::from_fn_with_state(state.clone(),same_origin)).with_state(state)
 }
 
