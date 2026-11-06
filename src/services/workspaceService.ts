@@ -10,6 +10,7 @@ const PANE_KINDS = new Set([
   "git-diff",
   "git-graph",
   "kanban",
+  "grafo",
   "fluxos",
   "logs",
   "docker-logs",

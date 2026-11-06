@@ -5,7 +5,7 @@ import { AgentIcon, AntigravityIcon, CursorIcon, GptIcon } from "../../component
 import { OmniLogo } from "../../components/ui/OmniLogo";
 import {
   BlocksIcon, ChartLineIcon, CloseIcon, CodeIcon, EyeIcon, FileIcon, FileTextIcon, FolderIcon, GitBranchIcon,
-  KanbanIcon, RobotIcon, SearchIcon, TerminalIcon,
+  KanbanIcon, ShapesIcon, RobotIcon, SearchIcon, TerminalIcon,
 } from "../../components/ui/PixelIcon";
 import { shortcutFor } from "../../lib/shortcuts";
 import { motionOn } from "../../lib/motion";
@@ -20,7 +20,7 @@ const ESTADO: Record<string, string> = {
 };
 const ICONE_DA_ABA: Partial<Record<PaneKind, typeof FileIcon>> = {
   agent: RobotIcon, terminal: TerminalIcon,
-  markdown: FileTextIcon, "git-diff": GitBranchIcon, "git-graph": GitBranchIcon, kanban: KanbanIcon, fluxos: BlocksIcon, logs: ChartLineIcon, "docker-logs": ChartLineIcon, command: TerminalIcon,
+  markdown: FileTextIcon, "git-diff": GitBranchIcon, "git-graph": GitBranchIcon, kanban: KanbanIcon, grafo: ShapesIcon, fluxos: BlocksIcon, logs: ChartLineIcon, "docker-logs": ChartLineIcon, command: TerminalIcon,
 };
 const ZOOM_MIN = 0.3;
 const ZOOM_MAX = 1.6;
