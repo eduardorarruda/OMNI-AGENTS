@@ -596,7 +596,7 @@ export function Composer({ texto, onTexto, anexos, onAdicionar, onRemover, onEnv
 
   // Com texto escrito, o principal continua sendo enviar (a mensagem entra na fila do agente).
   // Agente trabalhando: o Parar fica sempre à mão, e o Enviar aparece ao lado assim que há algo
-  // escrito — a mensagem entra na fila da CLI, como digitar no terminal durante o turno.
+  // escrito — a mensagem fica na fila do OMNI e entra quando o turno acabar.
   const parar = Boolean(onParar);
   const enviarJunto = !parar || texto.trim().length > 0 || anexos.length > 0;
 

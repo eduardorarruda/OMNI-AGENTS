@@ -460,8 +460,6 @@ interface Enviado {
   /** Índice da última mensagem já vista no envio. Qualquer mensagem do usuário depois dela é esta. */
   base: number;
   anexos: { nome: string; previa: string | null }[];
-  /** Saiu do balão comum para a fila: é a mais antiga, então chega pela ordem, sem comparar o texto. */
-  porOrdem?: boolean;
 }
 
 /** Ritmo do polling com o agente ativo. 5 s faz a conversa parecer travada; 1,2 s parece ao vivo.
@@ -475,6 +473,10 @@ const POLL_PARADO_LEVE_MS = 6_000;
 /** Quanto esperar a mensagem enviada aparecer no transcript antes de desistir do balão otimista.
  *  Sem isto, uma mensagem que a CLI não aceitou deixava o "trabalhando" girando para sempre. */
 const LIMITE_DE_CONFIRMACAO_MS = 120_000;
+/** De quanto em quanto conferir de novo, vencido o limite, com o agente ainda no turno. */
+const RECONFERIR_CONFIRMACAO_MS = 5_000;
+/** Sem leitura boa há este tempo, o "trabalhando" na tela é velho e não adia mais o aviso. */
+const LEITURA_VELHA_MS = 15_000;
 
 /** Distância do fim (px) que ainda conta como "lendo o fim": a tela acompanha o que chega. */
 const PERTO_DO_FIM_PX = 120;
@@ -568,8 +570,6 @@ export const ConversationDetail = memo(function ConversationDetail({ conversatio
   // Altura da conversa antes de pôr as antigas em cima: a tela fica onde quem lia estava.
   const ancora = useRef<{ altura: number; topo: number } | null>(null);
   const [enviado, setEnviado] = useState<Enviado | null>(null);
-  // Mensagens mandadas com o agente trabalhando: estão na fila da CLI e entram quando o turno acabar.
-  const [fila, setFila] = useState<Enviado[]>([]);
   /** O último texto mandado, para voltar ao campo quando o "parar" o tira do campo da CLI. */
   const ultimoTexto = useRef("");
   const [novidades, setNovidades] = useState(false);
@@ -582,6 +582,7 @@ export const ConversationDetail = memo(function ConversationDetail({ conversatio
   anexosVivos.current = anexos;
   const enviadoVivo = useRef<Enviado | null>(null);
   enviadoVivo.current = enviado;
+  const lidoEm = useRef(0);
 
   // O estado que veio com a timeline é mais novo que o da lista (que anda a cada 5 s). Conversa só
   // do histórico não tem estado vivo; fica o da lista.
@@ -594,8 +595,9 @@ export const ConversationDetail = memo(function ConversationDetail({ conversatio
     enviadoVivo.current?.anexos.forEach(a => a.previa && URL.revokeObjectURL(a.previa));
   }, []);
 
-  const agenteAceitaFila = Boolean(conversation.capabilities?.enfileirar);
   const trabalhando = conversation.state === "working";
+  const trabalhandoVivo = useRef(false);
+  trabalhandoVivo.current = trabalhando;
   const ativo = trabalhando || enviado !== null;
   if (ativo && trabalhandoDesde.current === null) trabalhandoDesde.current = enviado?.em ?? Date.now();
   if (!ativo) trabalhandoDesde.current = null;
@@ -607,6 +609,7 @@ export const ConversationDetail = memo(function ConversationDetail({ conversatio
   const ler = useCallback(async () => {
     if (urlCarregada.current !== url) esquecerVersao(url);
     const resultado = await requestSeMudou<Timeline>(url);
+    lidoEm.current = Date.now();
     urlCarregada.current = url;
     if (!resultado) return;
     // No desktop não há `ETag`: toda leitura traz o corpo, e timeline igual não pode virar render.
@@ -734,37 +737,22 @@ export const ConversationDetail = memo(function ConversationDetail({ conversatio
     const acao = data?.actions.find(a => a.id === enviado.acao);
     if (chegou) { descartarEnviado(null); return; }
     if (acao?.state === "rejected") { descartarEnviado(`Não foi enviado: ${acao.error ?? "o agente recusou a entrada"}`); return; }
-    // O agente começou a trabalhar depois da leitura que decidiu o envio: a mensagem espera na fila
-    // da CLI e pode levar um turno inteiro. Fica na fila, sem o relógio de 2 minutos do balão.
-    if (agenteAceitaFila) {
-      setEnviado(null);
-      setFila((atual) => [{ ...enviado, porOrdem: true }, ...atual]);
-    }
-  }, [data, enviado, mensagens, descartarEnviado, agenteAceitaFila]);
-
-  // Item da fila sai quando a mensagem aparece no transcript (a CLI a consumiu) ou é recusado.
-  useEffect(() => {
-    if (fila.length === 0) return;
-    const restantes = fila.filter((item) => {
-      const chegou = mensagens.some(m => m.role === "user" && (m.kind ?? "text") === "text"
-        && indiceDaMensagem(m.id) > item.base && (item.porOrdem || m.text.trim() === item.texto.trim()));
-      const acao = data?.actions.find(a => a.id === item.acao);
-      if (acao?.state === "rejected") setFalhaEnvio(`Não entrou na fila: ${acao.error ?? "o agente recusou a entrada"}`);
-      // Fila parada há muito tempo (o turno caiu, a sessão fechou): some em vez de mentir.
-      return !chegou && acao?.state !== "rejected" && Date.now() - item.em < 30 * 60_000;
-    });
-    if (restantes.length !== fila.length) setFila(restantes);
-  }, [data, fila, mensagens]);
+    // O agente começou a trabalhar antes da colagem: o engine guardou, e ela aparece pela fila dele.
+    if (acao?.state === "guardada") { ultimoTexto.current = ""; descartarEnviado(null); }
+  }, [data, enviado, mensagens, descartarEnviado]);
 
   // Rede de segurança com relógio próprio: sem rede não há polling, e era justamente aí que o
-  // "trabalhando" ficava girando para sempre.
+  // "trabalhando" ficava girando para sempre. Com o agente no turno e a leitura em dia, a mensagem
+  // colada pode só aparecer no fim dele: espera, sem aviso falso.
   useEffect(() => {
     if (!enviado) return;
-    const restante = Math.max(0, enviado.em + LIMITE_DE_CONFIRMACAO_MS - Date.now());
-    const timer = window.setTimeout(
-      () => descartarEnviado("Não consegui confirmar o envio desta mensagem. Veja no PC se ela chegou ao agente."),
-      restante,
-    );
+    let timer = 0;
+    const conferir = () => {
+      const leituraEmDia = Date.now() - lidoEm.current < LEITURA_VELHA_MS;
+      if (trabalhandoVivo.current && leituraEmDia) { timer = window.setTimeout(conferir, RECONFERIR_CONFIRMACAO_MS); return; }
+      descartarEnviado("Não consegui confirmar o envio desta mensagem. Veja no PC se ela chegou ao agente.");
+    };
+    timer = window.setTimeout(conferir, Math.max(0, enviado.em + LIMITE_DE_CONFIRMACAO_MS - Date.now()));
     return () => window.clearTimeout(timer);
   }, [enviado, descartarEnviado]);
 
@@ -880,12 +868,12 @@ export const ConversationDetail = memo(function ConversationDetail({ conversatio
     const capability = conversation.capabilities!;
     const signature = JSON.stringify([kind, body]);
     if (pending.current?.signature !== signature) pending.current = { signature, key: actionKey(), revision: capability.revision };
-    const enviar = () => request<{ id?: string }>(`/conversas/${encodeURIComponent(conversation.id)}/${kind}`, {
+    const enviar = () => request<{ id?: string; state?: string }>(`/conversas/${encodeURIComponent(conversation.id)}/${kind}`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Idempotency-Key": pending.current!.key, "If-Match": pending.current!.revision },
       body: JSON.stringify(body),
     });
-    let acao: { id?: string };
+    let acao: { id?: string; state?: string };
     try {
       acao = await enviar();
     } catch (reason) {
@@ -1003,19 +991,32 @@ export const ConversationDetail = memo(function ConversationDetail({ conversatio
   async function interromper() {
     setError(null);
     try {
-      const parou = await request<{ limpou?: boolean; parou?: boolean }>(`/conversas/${encodeURIComponent(conversation.id)}/parar`, { method: "POST" });
+      const parou = await request<{ limpou?: boolean; parou?: boolean; voltou_para_fila?: boolean }>(`/conversas/${encodeURIComponent(conversation.id)}/parar`, { method: "POST" });
       // Em `falhaEnvio`, não em `error`: a leitura periódica limpa o `error` em segundos.
       if (parou?.parou === false) setFalhaEnvio("O agente não parou: ele segue trabalhando no terminal. Tente Parar de novo ou encerre pelo terminal.");
-      // A CLI devolveu o prompt ao campo dela e o engine o apagou lá: ele volta para este campo.
-      if (parou?.limpou && ultimoTexto.current) {
+      // A CLI devolveu o prompt ao campo dela e o engine o apagou lá: ele volta para este campo. Se era
+      // uma entrega da fila, ela voltou para a fila, e `ultimoTexto` é outra mensagem.
+      if (parou?.limpou && !parou.voltou_para_fila && ultimoTexto.current) {
         const texto = ultimoTexto.current;
         setText((atual) => atual.trim() ? atual : texto);
         descartarEnviado(null);
-        setFila((atual) => atual.filter((item) => !item.porOrdem));
       }
       await ler();
     }
     catch (reason) { setError(String(reason)); }
+  }
+
+  /** O X da mensagem na fila. Quem decide é o engine: sem a resposta dele, a mensagem fica na tela. */
+  async function tirarDaFila(item: string) {
+    setFalhaEnvio(null);
+    try {
+      await request(`/conversas/${encodeURIComponent(conversation.id)}/fila/${encodeURIComponent(item)}`, { method: "DELETE" });
+    } catch (reason) {
+      const jaFoi = reason instanceof ApiError && reason.status === 409;
+      const motivo = reason instanceof Error ? reason.message : String(reason);
+      setFalhaEnvio(jaFoi ? "Essa mensagem já foi entregue ao agente." : `Não consegui tirar da fila: ${motivo}. A mensagem continua lá.`);
+    }
+    await ler().catch(() => undefined);
   }
 
   /** O "Bifurcar" da lateral do PC: conversa nova com todo o histórico desta, e a tela vai para ela. */
@@ -1059,8 +1060,6 @@ export const ConversationDetail = memo(function ConversationDetail({ conversatio
 
   async function enviarPrompt() {
     if (!conversation.capabilities || busy) return;
-    // Agente no meio do turno: a mensagem vai para a fila da CLI, como digitar no terminal.
-    const paraFila = !conversation.capabilities.prompt && Boolean(conversation.capabilities.enfileirar);
     setBusy(true); setError(null); setFalhaEnvio(null);
     const lista = anexosVivos.current;
     try {
@@ -1081,17 +1080,19 @@ export const ConversationDetail = memo(function ConversationDetail({ conversatio
         }
       }
       const texto = montarPrompt(text, caminhos);
-      const acao = await post("prompt", paraFila ? { texto, fila: true } : { texto });
-      const item: Enviado = {
-        texto, em: Date.now(), acao: acao?.id ?? null,
-        base: Math.max(-1, ...mensagens.map(m => indiceDaMensagem(m.id))),
-        // As prévias passam para o balão otimista; quem revoga é ele, quando o transcript chegar.
-        anexos: lista.map(a => ({ nome: a.arquivo.name || "anexo", previa: a.previa })),
-      };
-      // Atrás de outra ainda não confirmada, esta espera a vez: no balão comum ela apagaria a anterior,
-      // e a chegada da anterior a tiraria da tela.
-      if (paraFila || enviadoVivo.current || fila.length > 0) setFila((atual) => [...atual, item]); else setEnviado(item);
-      ultimoTexto.current = text;
+      const acao = await post("prompt", { texto });
+      // O engine decide: guardada, ela aparece pela fila dele, com os anexos como cartões do texto.
+      if (acao?.state === "guardada") lista.forEach(descartarAnexo);
+      else {
+        enviadoVivo.current?.anexos.forEach(a => a.previa && URL.revokeObjectURL(a.previa));
+        setEnviado({
+          texto, em: Date.now(), acao: acao?.id ?? null,
+          base: Math.max(-1, ...mensagens.map(m => indiceDaMensagem(m.id))),
+          // As prévias passam para o balão otimista; quem revoga é ele, quando o transcript chegar.
+          anexos: lista.map(a => ({ nome: a.arquivo.name || "anexo", previa: a.previa })),
+        });
+        ultimoTexto.current = text;
+      }
       setText("");
       setAnexos([]);
       grudado.current = true;
@@ -1104,7 +1105,12 @@ export const ConversationDetail = memo(function ConversationDetail({ conversatio
   const capability = conversation.capabilities;
   const temConteudo = text.trim().length > 0 || anexos.length > 0;
   const anexoGrande = anexos.some(a => a.arquivo.size > ANEXO_MAX_BYTES);
-  const podeEnviar = Boolean(capability?.prompt || capability?.enfileirar) && !busy && temConteudo && !anexoGrande;
+  // Com sessão aberta a mensagem sempre tem lugar: o que não entra agora fica na fila do engine. Só a
+  // pergunta aberta segura o campo, porque sem a resposta o agente não anda.
+  const podeEnviar = Boolean(capability) && !capability?.approve && !capability?.escolha && !busy && temConteudo && !anexoGrande;
+  const filaDoEngine = data?.fila;
+  const fila = filaDoEngine?.itens ?? [];
+  const entregando = filaDoEngine?.entregando ?? null;
   const timeline = data?.timeline;
   const ultimoBloco = blocos[blocos.length - 1];
 
@@ -1164,7 +1170,7 @@ export const ConversationDetail = memo(function ConversationDetail({ conversatio
 
     <div className="chat" aria-label="Mensagens">
       {!data && <Vazio>Carregando conversa…</Vazio>}
-      {data && mensagens.length === 0 && !enviado && !ativo && !timeline?.unavailable_segments.length &&
+      {data && mensagens.length === 0 && !enviado && !ativo && fila.length === 0 && !timeline?.unavailable_segments.length &&
         <Vazio>Nenhuma mensagem ainda. Mande o primeiro prompt abaixo.</Vazio>}
       {listaDeBlocos}
       {enviado && <MessageBubble lado="user" pendente texto={enviado.texto}
@@ -1181,12 +1187,13 @@ export const ConversationDetail = memo(function ConversationDetail({ conversatio
         onEscolher={(opcao) => void escolher(opcao)} onAvancar={() => void escolher("avancar")} onVoltar={() => void escolher("voltar")} />}
       {ativo && !capability?.approve &&
         <AgentWorking desde={trabalhandoDesde.current ?? Date.now()} provider={conversation.provider} tokens={conversation.tokens ?? null} />}
-      {fila.length > 0 && (
+      {(fila.length > 0 || entregando) && (
         <div className="chat-fila" aria-label="Mensagens na fila">
-          <p className="chat-fila-rotulo">Na fila · entram quando o agente terminar</p>
+          <p className="chat-fila-rotulo">{filaDoEngine?.pausada ? "Fila pausada · mande algo novo para continuar" : "Na fila · entram quando o agente terminar"}</p>
+          {filaDoEngine?.aviso && <p className="m-aviso">{filaDoEngine.aviso}</p>}
+          {entregando && <MessageBubble key={entregando.id} lado="user" pendente="entrando…" texto={entregando.texto} />}
           {fila.map((item) => (
-            <MessageBubble key={item.em} lado="user" pendente="na fila" texto={item.texto}
-              anexosLocais={item.anexos.length ? item.anexos : undefined} />
+            <MessageBubble key={item.id} lado="user" pendente="na fila" texto={item.texto} onRemover={() => void tirarDaFila(item.id)} />
           ))}
         </div>
       )}
@@ -1205,10 +1212,10 @@ export const ConversationDetail = memo(function ConversationDetail({ conversatio
 
     <Composer texto={text} onTexto={setText} anexos={anexos} onAdicionar={adicionar} onRemover={remover}
       historico={historicoEnviado} onEnviar={() => void enviarPrompt()} podeEnviar={podeEnviar} ocupado={busy}
-      placeholder={!capability?.prompt ? (capability?.escolha ? "Responda a pergunta acima para continuar"
-        : capability?.enfileirar ? "Agente trabalhando… sua mensagem entra na fila"
-        : trabalhando ? "Agente trabalhando… escreva a próxima mensagem"
-        : conversation.capabilities ? "Sem sessão ativa" : "Conversa fechada — escolha conta, modelo e esforço e retome abaixo") : "Mensagem para o agente…"}
+      placeholder={!capability?.prompt ? (capability?.escolha || capability?.approve ? "Responda a pergunta acima para continuar"
+        : trabalhando ? "Agente trabalhando… sua mensagem entra na fila"
+        : capability ? "Sua mensagem entra na fila e vai quando o agente ficar livre"
+        : "Conversa fechada — escolha conta, modelo e esforço e retome abaixo") : "Mensagem para o agente…"}
       toolbar={editandoNome ? <RenomearConversa nome={conversation.title} onFechar={() => setEditandoNome(false)}
         onSalvar={(nome) => { setEditandoNome(false); void renomear(nome); }} /> : null}
       chips={<>

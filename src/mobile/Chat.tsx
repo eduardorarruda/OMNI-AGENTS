@@ -8,7 +8,7 @@ import { AgentIcon } from "../components/ui/AgentIcon";
 import { useModoLeve } from "../lib/modoLeve";
 import { OmniLogo } from "../components/ui/OmniLogo";
 import {
-  BookIcon, CheckIcon, CopyIcon, EditIcon, FileTextIcon, GlobeIcon, ListIcon, RobotIcon, SearchIcon, ToolsIcon,
+  BookIcon, CheckIcon, CloseIcon, CopyIcon, EditIcon, FileTextIcon, GlobeIcon, ListIcon, RobotIcon, SearchIcon, ToolsIcon,
   ReloadIcon,
 } from "../components/ui/PixelIcon";
 import { iconForPath, iconStyle } from "../features/files/fileIcons";
@@ -152,6 +152,8 @@ interface MessageBubbleProps {
   imagens?: ImagensDaMensagem;
   /** Chegou agora (não estava na tela ao abrir): entra animado e o texto do agente se revela. */
   entra?: boolean;
+  /** Mensagem ainda na fila: mostra o X que a tira antes de ela entrar. */
+  onRemover?: () => void;
 }
 
 /**
@@ -161,7 +163,7 @@ interface MessageBubbleProps {
  * com o mesmo `rehype-sanitize`. Mensagem do usuário fica em texto puro — reinterpretar o que a
  * pessoa digitou mudaria o que ela vê do próprio prompt — e a lista de anexos vira cartões.
  */
-export const MessageBubble = memo(function MessageBubble({ lado, provider, texto, horario, pendente, anexosLocais, continua, imagens, entra }: MessageBubbleProps) {
+export const MessageBubble = memo(function MessageBubble({ lado, provider, texto, horario, pendente, anexosLocais, continua, imagens, entra, onRemover }: MessageBubbleProps) {
   const doUsuario = lado === "user";
   const separado = doUsuario ? separarAnexos(texto) : { texto, anexos: [] as string[] };
   const corpo = doUsuario ? semMarcasDeImagem(separado.texto) : separado.texto;
@@ -183,6 +185,11 @@ export const MessageBubble = memo(function MessageBubble({ lado, provider, texto
       <header className="bubble-author">
         <span>{autor}</span>
         {pendente ? <span className="bubble-time">{typeof pendente === "string" ? pendente : "enviando…"}</span> : hora && <time className="bubble-time">{hora}</time>}
+        {onRemover && (
+          <button type="button" className="bubble-tirar" aria-label="Tirar da fila" title="Tirar da fila" onClick={onRemover}>
+            <CloseIcon aria-hidden className="h-3.5 w-3.5" />
+          </button>
+        )}
       </header>
       {corpo && (doUsuario
         ? <div className="mobile-message">{corpo}</div>

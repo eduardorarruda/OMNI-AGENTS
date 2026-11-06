@@ -8,7 +8,7 @@ export interface Conversation {
     prompt: boolean; approve: boolean; revision: string; approval_text: string | null; reason: string | null;
     /** O que identifica a pergunta aberta, sem o resto da tela. Nulo: não dá para saber; relendo, recusa. */
     approval_id?: string | null;
-    /** Agente no meio do turno com o campo livre: mensagem mandada agora entra na fila da CLI. */
+    /** Agente no meio do turno com o campo livre. Mensagem mandada agora fica na fila do OMNI. */
     enfileirar?: boolean;
     /** Menu da CLI ou pergunta do agente travando o campo: responde-se pelo número. */
     escolha?: Escolha | null;
@@ -55,6 +55,17 @@ export interface Projects {
   /** Aparência publicada pelo PC. `null` quando o PC é de uma versão que ainda não publicava. */
   theme: TemaPublicado | null;
 }
+/** Mensagem guardada pelo engine até o agente ficar livre. O `id` é o da resposta do envio. */
+export interface ItemDaFila { id: string; texto: string; anexos: string[]; em_ms: number }
+export interface FilaDoEngine {
+  itens: ItemDaFila[];
+  /** Já saiu da fila e está sendo colada: não dá mais para tirar. */
+  entregando: ItemDaFila | null;
+  /** Depois de Parar: nada entra sozinho até mandar algo novo ou tirar os itens. */
+  pausada: boolean;
+  /** Por que a fila não anda (sessão encerrada, agente fora do ar). */
+  aviso: string | null;
+}
 export interface Timeline {
   timeline: {
     messages: Mensagem[];
@@ -66,6 +77,8 @@ export interface Timeline {
   actions: { id: string; state: string; error: string | null }[];
   /** Estado atual da conversa, mandado junto para o chat aberto não precisar recarregar a lista. */
   conversation?: Conversation;
+  /** Vem junto com a timeline: a mensagem nunca aparece na fila e no transcript ao mesmo tempo. */
+  fila?: FilaDoEngine;
 }
 
 /** Resposta do `/painel`: lista e catálogo numa chamada só. */
