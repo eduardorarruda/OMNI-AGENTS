@@ -1,17 +1,21 @@
-export type PaneKind =
-  | "agent"
-  | "terminal"
-  | "command"
-  | "file"
-  | "markdown"
-  | "git-diff"
-  | "git-graph"
-  | "kanban"
-  | "grafo"
-  | "fluxos"
-  | "execucao-projeto"
-  | "logs"
-  | "docker-logs";
+/** Lista única dos tipos de aba: `PaneKind` sai dela, e a carga do layout salvo confere contra ela. */
+export const PANE_KINDS = [
+  "agent",
+  "terminal",
+  "command",
+  "file",
+  "markdown",
+  "git-diff",
+  "git-graph",
+  "kanban",
+  "grafo",
+  "fluxos",
+  "execucao-projeto",
+  "logs",
+  "docker-logs",
+] as const;
+
+export type PaneKind = (typeof PANE_KINDS)[number];
 
 export interface WorkspaceTab {
   id: string;

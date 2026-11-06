@@ -1,20 +1,7 @@
-import type { LayoutNode, Project, WorkspaceCollection, WorkspaceState } from "../types/workspace";
+import { PANE_KINDS, type LayoutNode, type Project, type WorkspaceCollection, type WorkspaceState } from "../types/workspace";
 
 export const WORKSPACE_STORAGE_KEY = "omni-agents-workspace";
-const PANE_KINDS = new Set([
-  "agent",
-  "terminal",
-  "command",
-  "file",
-  "markdown",
-  "git-diff",
-  "git-graph",
-  "kanban",
-  "grafo",
-  "fluxos",
-  "logs",
-  "docker-logs",
-]);
+const TIPOS_DE_ABA = new Set<string>(PANE_KINDS);
 
 export function emptyWorkspace(): WorkspaceState {
   return {
@@ -67,7 +54,7 @@ function isLayoutNode(value: unknown): value is LayoutNode {
           tab &&
           typeof tab.id === "string" &&
           typeof tab.title === "string" &&
-          typeof tab.kind === "string" && PANE_KINDS.has(tab.kind)
+          typeof tab.kind === "string" && TIPOS_DE_ABA.has(tab.kind)
       ) &&
       (node.tabs.length === 0
         ? node.activeTabId === null
@@ -92,11 +79,43 @@ function hasPane(node: LayoutNode, paneId: string): boolean {
     : hasPane(node.first, paneId) || hasPane(node.second, paneId);
 }
 
+function abaDesconhecida(tab: unknown): boolean {
+  const kind = (tab as { kind?: unknown } | null)?.kind;
+  return typeof kind === "string" && !TIPOS_DE_ABA.has(kind);
+}
+
+function layoutSemAbasDesconhecidas(value: unknown): unknown {
+  if (!value || typeof value !== "object") return value;
+  const node = value as Record<string, unknown>;
+  if (node.type === "split") {
+    return { ...node, first: layoutSemAbasDesconhecidas(node.first), second: layoutSemAbasDesconhecidas(node.second) };
+  }
+  if (node.type !== "pane" || !Array.isArray(node.tabs) || !node.tabs.some(abaDesconhecida)) return value;
+  const tabs = node.tabs.filter((tab) => !abaDesconhecida(tab)) as { id?: unknown }[];
+  const activeTabId = tabs.some((tab) => tab?.id === node.activeTabId) ? node.activeTabId : tabs[0]?.id ?? null;
+  return { ...node, tabs, activeTabId };
+}
+
+/** Aba de versão mais nova do app (ou que saiu dele) sai sozinha: o tipo dela não derruba o workspace.
+ * Só isso: o resto da estrutura continua sendo conferido por `isWorkspace`. */
+function semAbasDesconhecidas(value: unknown): unknown {
+  const projects = (value as { projects?: unknown } | null)?.projects;
+  if (!Array.isArray(projects)) return value;
+  return {
+    ...(value as object),
+    projects: projects.map((project: unknown) =>
+      project && typeof project === "object"
+        ? { ...project, layout: layoutSemAbasDesconhecidas((project as { layout?: unknown }).layout) }
+        : project
+    ),
+  };
+}
+
 export function loadWorkspace(): WorkspaceState {
   try {
     const raw = localStorage.getItem(WORKSPACE_STORAGE_KEY);
     if (!raw) return emptyWorkspace();
-    const parsed: unknown = JSON.parse(raw);
+    const parsed = semAbasDesconhecidas(JSON.parse(raw));
     return isWorkspace(parsed) ? parsed : emptyWorkspace();
   } catch {
     return emptyWorkspace();
@@ -115,7 +134,7 @@ function normalizeCollection(raw: unknown): WorkspaceCollection | null {
   if (candidate.version !== 1 || !Array.isArray(candidate.workspaces)) return null;
   // Um workspace estruturalmente inválido é descartado sozinho, não a coleção inteira —
   // diferente do "tudo ou nada" de isWorkspace, proporcional a uma lista de N itens.
-  const workspaces = candidate.workspaces.filter(isWorkspace);
+  const workspaces = candidate.workspaces.map(semAbasDesconhecidas).filter(isWorkspace);
   if (workspaces.length === 0) return { version: 1, workspaces: [emptyWorkspace()], activeWorkspaceId: null };
   // Todos escondidos (gravação antiga ou editada à mão): o primeiro volta, senão a lateral fica vazia.
   if (workspaces.every((workspace) => workspace.hidden)) workspaces[0] = { ...workspaces[0], hidden: false };
