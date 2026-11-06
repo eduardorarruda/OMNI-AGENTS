@@ -2771,3 +2771,16 @@ aside .space-y-1 > .lateral-item + .lateral-item, aside .space-y-1 > * + .latera
 /* Fora de foco ninguém está olhando: tudo pausa (main.tsx marca `data-foco`). Dentro do foco, as
    animações decorativas andam em `steps()` — poucos quadros por segundo em vez de 60 repinturas. */
 :root[data-foco="fora"] *, :root[data-foco="fora"] *::before, :root[data-foco="fora"] *::after { animation-play-state: paused !important; }
+
+/* Selo global do fluxo rodando (SeloDeExecucao), na barra do topo. */
+.selo-execucao-caixa { position: relative; display: inline-flex; }
+.selo-execucao { max-width: 22rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.selo-execucao-ponto { width: .45rem; height: .45rem; border-radius: 9999px; background: rgb(var(--c-accent)); animation: selo-pulsa 1.4s ease-in-out infinite; }
+.selo-execucao[data-tom="aprovacao"] { color: rgb(var(--c-warning, 245 158 11)); }
+.selo-execucao[data-tom="aprovacao"] .selo-execucao-ponto { background: rgb(var(--c-warning, 245 158 11)); }
+.selo-execucao[data-erro="sim"] { opacity: .7; }
+.selo-execucao-lista { position: absolute; top: 100%; right: 0; z-index: 50; margin-top: .25rem; min-width: 16rem; padding: .25rem; list-style: none; }
+.selo-execucao-lista button { width: 100%; padding: .35rem .5rem; text-align: left; font-size: .75rem; border-radius: .375rem; }
+.selo-execucao-lista button:hover { background: rgb(var(--c-overlay) / .08); }
+@keyframes selo-pulsa { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .selo-execucao-ponto { animation: none; } }

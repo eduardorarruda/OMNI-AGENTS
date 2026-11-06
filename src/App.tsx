@@ -39,6 +39,7 @@ import {
 import { ConhecimentoView } from "./features/conhecimento/ConhecimentoView";
 import { HistoryView } from "./features/history/HistoryView";
 import { FluxosView } from "./features/fluxos/FluxosView";
+import { SeloDeExecucao } from "./features/fluxos/SeloDeExecucao";
 import { Panorama } from "./features/panorama/Panorama";
 import { EyeIcon } from "./components/ui/PixelIcon";
 import { levarParaConta, resumeCommand, samePath, type HistoryEntry } from "./features/history/historyService";
@@ -274,6 +275,7 @@ export function App() {
         }
         dica={view === "workspace" ? activeProject?.path : undefined}
         acoes={<>
+          <SeloDeExecucao onAbrir={() => setView("fluxos")} />
           <button type="button" aria-label="Panorama" aria-pressed={view === "panorama"} title="Panorama: tudo o que está rodando"
             onClick={() => setView(view === "panorama" ? "workspace" : "panorama")}
             className={`titlebar-acao${view === "panorama" ? " is-aberto" : ""}`}>

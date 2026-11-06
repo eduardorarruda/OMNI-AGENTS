@@ -28,6 +28,7 @@ import { usePoll } from "./usePoll";
 import { corrigir, transcrever, useVozInstalada } from "./voz";
 import { UsoDasContas } from "../web/UsoDasContas";
 import { AprovacoesDeFluxo } from "./AprovacoesDeFluxo";
+import { ExecucoesAtivas } from "./ExecucoesAtivas";
 import { IconeDoProjeto } from "./IconeDoProjeto";
 import { AjustesDoAparelho } from "./AjustesDoAparelho";
 import { useNotificacoes } from "./notificacoes";
@@ -1462,6 +1463,7 @@ export function MobileApp() {
         </button>
       </div>
       </Saudacao>
+      <ExecucoesAtivas />
       <AprovacoesDeFluxo />
       <label className="m-busca-caixa">
         <SearchIcon aria-hidden className="m-busca-lupa" />

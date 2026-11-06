@@ -21,6 +21,7 @@ import { ArestaDoFluxo, type ArestaOmni } from "./ArestaDoFluxo";
 import { ICONE, NoDoFluxoView, type NoOmni } from "./NoDoFluxo";
 import { NovoFluxo } from "./NovoFluxo";
 import { nosAtivos } from "./execucaoModel";
+import { aoPedirExecucao, consumirPedidoDeExecucao } from "./pedidoDeExecucao";
 import { LinhaDoTempo } from "./LinhaDoTempo";
 import "./fluxos.css";
 import {
@@ -334,6 +335,13 @@ function Fluxos({ projectId, projectPath, onAbrirSessao, onClose }: Props) {
     return () => window.clearTimeout(t);
   }, [selecionado, painelAberto, getNode, flowToScreenPosition, setCenter, getZoom]);
   const abrirExecucao = (id: string) => { setExecucaoId(id); setSelecionado(null); setMenu(null); setDetalhes(true); };
+  // Pedido do selo global do topo: abre a execução ao entrar na tela ou, se já está aberta, na hora.
+  useEffect(() => {
+    const pegar = () => { const id = consumirPedidoDeExecucao(); if (id) abrirExecucao(id); };
+    pegar();
+    return aoPedirExecucao(pegar);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <div className={`fx-tela${painelAberto ? " com-painel" : ""}`}>
