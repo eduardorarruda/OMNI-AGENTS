@@ -879,20 +879,20 @@ export const ConversationDetail = memo(function ConversationDetail({ conversatio
     try {
       acao = await enviar();
     } catch (reason) {
-      // Modo e ajustes levam a um estado absoluto ("fique em plano"), não respondem a um diálogo:
-      // tela redesenhada desde a última leitura (o próprio rodapé do modo muda a cada troca) não
-      // os torna perigosos. Relê a versão da tela e tenta uma vez — antes isso virava erro e
-      // exigia um segundo clique. Prompt e aprovação continuam recusando: ali o If-Match protege.
-      // Escolha também, desde que a pergunta na tela seja a mesma: marcar uma caixa redesenha o menu
-      // e o clique seguinte chegava com a versão velha e sumia. Pergunta trocada continua recusando.
+      // Tela redesenhada desde a última leitura (412): relê a versão e tenta uma vez, sem pedir um
+      // segundo clique. Modo e ajustes levam a um estado absoluto ("fique em plano") e não respondem
+      // a um diálogo. Mensagem não confere mais a versão no engine; o 412 só vem de um engine antigo,
+      // que sobrevive à janela fechada. Escolha e aprovação relêem só se a pergunta na tela for a
+      // mesma: ali o If-Match protege, e pergunta trocada continua recusando.
       // Na escolha, 409 (menu não lido naquele quadro, a TUI no meio de um redesenho) também relê.
       const relerEscolha = kind === "escolher" && (reason instanceof ApiError && reason.status === 409);
-      if (!relerEscolha && !(reason instanceof ApiError && reason.status === 412 && (kind === "modo" || kind === "ajustes" || kind === "escolher"))) throw reason;
+      if (!relerEscolha && !(reason instanceof ApiError && reason.status === 412)) throw reason;
       if (relerEscolha) await new Promise((r) => setTimeout(r, 400));
       const atual = await request<Timeline>(`/conversas/${encodeURIComponent(conversation.id)}/timeline`);
       const revisao = atual.conversation?.capabilities?.revision;
       if (!revisao) throw reason;
       if (kind === "escolher" && atual.conversation?.capabilities?.escolha?.pergunta !== capability.escolha?.pergunta) throw reason;
+      if (kind === "aprovar" && atual.conversation?.capabilities?.approval_text !== capability.approval_text) throw reason;
       pending.current = { signature, key: actionKey(), revision: revisao };
       acao = await enviar();
     }

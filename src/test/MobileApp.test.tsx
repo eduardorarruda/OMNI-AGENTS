@@ -640,3 +640,67 @@ it("conversa fica presa na tela e acompanha a resposta crescendo sem mensagem no
   await act(async () => { screen.getByText("Começando").append(" e continuando"); await Promise.resolve(); });
   expect(rolar).toHaveBeenCalled();
 });
+
+describe("versão da tela", () => {
+  type Capacidades = NonNullable<Conversation["capabilities"]>;
+  const RECUSA = JSON.stringify({ error: "O contexto mudou; atualize antes de responder" });
+  const PERGUNTA = "Do you want to proceed?\nrm -rf build";
+
+  /** O servidor recusa o primeiro POST com 412; a timeline, depois disso, mostra `depois`. */
+  function servidorQueRecusaUmaVez(antes: Partial<Capacidades>, depois: Partial<Capacidades>) {
+    const posts: RequestInit[] = [];
+    const capacidades = (extra: Partial<Capacidades>) => ({ ...conversaPronta().capabilities!, ...extra });
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        posts.push(init);
+        return posts.length === 1
+          ? new Response(RECUSA, { status: 412 })
+          : new Response(JSON.stringify({ id: "a", state: "queued" }), { status: 202 });
+      }
+      const atual = conversaPronta({ capabilities: capacidades(posts.length ? depois : antes) });
+      return new Response(JSON.stringify(
+        url.includes("timeline") ? { ...TIMELINE_VAZIA, conversation: atual }
+          : url === "/projetos" ? PROJETOS : url === "/atencao" ? [] : [atual]));
+    }));
+    return posts;
+  }
+  const versaoDe = (post: RequestInit) => (post.headers as Record<string, string>)["If-Match"];
+
+  it("envio não mostra erro quando a tela mudou", async () => {
+    // O engine de agora nem recusa mais; quem ainda recusa é um engine antigo, que sobrevive à janela.
+    const posts = servidorQueRecusaUmaVez({}, { revision: '"r2"' });
+    render(<MobileApp />);
+    await abrirConversa();
+    await act(async () => {
+      await userEvent.type(screen.getByLabelText("Sua resposta"), "Continuar");
+      await userEvent.click(screen.getByRole("button", { name: "Enviar resposta" }));
+    });
+    await waitFor(() => expect(posts).toHaveLength(2));
+    expect(versaoDe(posts[1])).toBe('"r2"');
+    expect(await screen.findByText("Continuar")).toBeInTheDocument();
+    expect(screen.queryByText(/contexto mudou/i)).not.toBeInTheDocument();
+  });
+
+  it("aprovação com a mesma pergunta relê e aprova", async () => {
+    const pendente = { prompt: false, approve: true, approval_text: PERGUNTA };
+    const posts = servidorQueRecusaUmaVez(pendente, { ...pendente, revision: '"r2"' });
+    render(<MobileApp />);
+    await abrirConversa();
+    const permitir = await screen.findByRole("button", { name: "Permitir" });
+    await act(async () => { await userEvent.click(permitir); });
+    await waitFor(() => expect(posts).toHaveLength(2));
+    expect(versaoDe(posts[1])).toBe('"r2"');
+    expect(screen.queryByText(/contexto mudou/i)).not.toBeInTheDocument();
+  });
+
+  it("aprovação com pergunta trocada continua recusando", async () => {
+    const pendente = { prompt: false, approve: true, approval_text: PERGUNTA };
+    const posts = servidorQueRecusaUmaVez(pendente, { ...pendente, revision: '"r2"', approval_text: "Do you want to proceed?\ngit push --force" });
+    render(<MobileApp />);
+    await abrirConversa();
+    const permitir = await screen.findByRole("button", { name: "Permitir" });
+    await act(async () => { await userEvent.click(permitir); });
+    expect(await screen.findByText(/contexto mudou/i)).toBeInTheDocument();
+    expect(posts).toHaveLength(1);
+  });
+});

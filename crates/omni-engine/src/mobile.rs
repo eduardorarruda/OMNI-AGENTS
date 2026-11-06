@@ -1716,6 +1716,12 @@ async fn create_session(State(state): State<Arc<EngineState>>, headers: HeaderMa
 async fn enqueue_async(state: Arc<EngineState>,id:String,headers:HeaderMap,kind:ActionKind) -> Result<(StatusCode,Json<Value>),ApiError> {
     tokio::task::spawn_blocking(move || enqueue(&state,&id,&headers,kind)).await.map_err(|_|error(StatusCode::INTERNAL_SERVER_ERROR,"Falha na fila"))?
 }
+/// Quem responde ao que está na tela confere a versão dela: um clique velho responderia outra pergunta.
+/// Mensagem e fila não: a tela muda a cada redesenho, e o que as protege é o campo vazio e a falta de
+/// aprovação aberta, conferidos de novo na execução.
+fn exige_versao_da_tela(kind: &ActionKind) -> bool {
+    matches!(kind, ActionKind::Approval(_) | ActionKind::Escolha(_) | ActionKind::Modo(_) | ActionKind::Ajustes(_))
+}
 fn enqueue(state:&Arc<EngineState>,id:&str,headers:&HeaderMap,kind:ActionKind) -> Result<(StatusCode,Json<Value>),ApiError> {
     let key = headers.get("idempotency-key").and_then(|h|h.to_str().ok()).filter(|s|!s.is_empty() && s.len() <= 128)
         .ok_or_else(||error(StatusCode::BAD_REQUEST,"Idempotency-Key obrigatório"))?;
@@ -1747,9 +1753,10 @@ fn enqueue(state:&Arc<EngineState>,id:&str,headers:&HeaderMap,kind:ActionKind) -
         // Trocar de modo é tecla no composer: vale a mesma porta do prompt (CLI ocioso e tela
         // reconhecida). Com o agente no meio de um turno, o shift+tab não é para ele.
         // Reabrir no meio de um turno mataria o trabalho em andamento.
-        ActionKind::Prompt(_) | ActionKind::Modo(_) | ActionKind::Ajustes(_) => capability.prompt,
-        // Fila vale com o agente parado (vira um prompt comum) ou trabalhando com o campo livre.
-        ActionKind::Fila(_) => capability.prompt || capability.enfileirar,
+        ActionKind::Modo(_) | ActionKind::Ajustes(_) => capability.prompt,
+        // Mensagem vale com o agente parado ou trabalhando com o campo livre: se ele começou um turno
+        // depois da última leitura da tela, ela entra na fila da CLI em vez de virar erro.
+        ActionKind::Prompt(_) | ActionKind::Fila(_) => capability.prompt || capability.enfileirar,
         ActionKind::Approval(_) => capability.approve,
         ActionKind::Escolha(resposta) => capability.escolha.as_ref().is_some_and(|menu| match resposta {
             Resposta::Opcao(n) => menu.opcoes.iter().any(|o| o.numero == n),
@@ -1760,10 +1767,7 @@ fn enqueue(state:&Arc<EngineState>,id:&str,headers:&HeaderMap,kind:ActionKind) -
         ActionKind::Spawn(_) | ActionKind::Retomar(_) => false,
     };
     if !supported { return Err(error(StatusCode::CONFLICT,"Sessão ocupada ou tela não reconhecida; atualize o status")); }
-    // Fila não confere a versão da tela: com o agente trabalhando ela muda a cada quadro do spinner,
-    // e a trava recusaria quase todo envio. O que protege a fila é o campo vazio, conferido de novo
-    // na execução — colar no meio de um rascunho continua impossível.
-    if !matches!(kind, ActionKind::Fila(_)) && headers.get("if-match").and_then(|h|h.to_str().ok()) != Some(capability.revision.as_str()) {
+    if exige_versao_da_tela(&kind) && headers.get("if-match").and_then(|h|h.to_str().ok()) != Some(capability.revision.as_str()) {
         return Err(error(StatusCode::PRECONDITION_FAILED,"O contexto mudou; atualize antes de responder"));
     }
     let session_id = session.meta.lock().expect("metadata poisoned").id.clone();
@@ -2657,16 +2661,15 @@ fn execute_checked(state:&Arc<EngineState>, action:&Action, is_running: impl Fn(
     let sessions = state.sessions.lock().map_err(|_|anyhow!("sessions poisoned"))?;
     if !matches!(sessions.get(&action.session_id),Some(SessionEntry::Live(s)) if Arc::ptr_eq(s,&session)) { return Err(anyhow!("Sessão trocada")); }
     let mut context = session.interaction.lock().map_err(|_|anyhow!("screen poisoned"))?;
-    let fila = matches!(action.kind, ActionKind::Fila(_));
-    if session.reserved.load(Ordering::SeqCst) || (!fila && context.revision(&session) != action.revision) { return Err(anyhow!("Contexto mudou antes da execução")); }
+    if session.reserved.load(Ordering::SeqCst) { return Err(anyhow!("Sessão ocupada com a consulta de uso")); }
+    if exige_versao_da_tela(&action.kind) && context.revision(&session) != action.revision { return Err(anyhow!("Contexto mudou antes da execução")); }
     let meta = session.meta.lock().map_err(|_|anyhow!("metadata poisoned"))?.clone();
     let provider = meta.provider.as_deref().unwrap_or("");
     if !is_running(meta.pid,provider) { return Err(anyhow!("CLI não está mais ativo")); }
     // Prompt vai em duas partes: a colagem agora, o Enter depois que ela aparece no campo (ver
     // `interaction::submeter_colagem`). Aprovação é tecla de menu e continua num write só.
     let (data, submeter) = match &action.kind {
-        ActionKind::Prompt(text) if interaction::ready(context.parser.screen(),provider) => (format!("\x1b[200~{text}\x1b[201~"), true),
-        ActionKind::Fila(text) if interaction::ready(context.parser.screen(),provider)
+        ActionKind::Prompt(text) | ActionKind::Fila(text) if interaction::ready(context.parser.screen(),provider)
             || interaction::pode_enfileirar(context.parser.screen(),provider) => (format!("\x1b[200~{text}\x1b[201~"), true),
         ActionKind::Approval(allow) => { let dialog = interaction::approval(&context.parser.screen().contents(),provider).ok_or_else(||anyhow!("Aprovação não reconhecida"))?; (if *allow { dialog.0 } else { dialog.1 }, false) },
         // O número sozinho escolhe (confirmado num Claude Code 2.1.302 real); Esc fecha o menu.
@@ -3571,22 +3574,153 @@ quebra"}"#] {
             let action = Action{id:"a".into(),conversation_id:"c".into(),session_id:"s".into(),state:"queued".into(),created_at_ms:now_ms(),error:None,key:"key".into(),revision,kind:ActionKind::Prompt("Olá\nmundo".into())};
             (session,bytes,action)
         }
+        const DIALOGO_DE_APROVACAO: &str = "Claude Code\r\nDo you want to proceed?\r\n❯ 1. Yes\r\n2. Yes, always\r\n3. No";
+        /// `capabilities` confere o processo de verdade pelo `ps`: sem um "claude" vivo, toda rota cairia
+        /// no 409 antes de chegar à versão da tela. Um `sleep` com esse nome faz o papel da CLI.
+        #[cfg(unix)] struct CliDeMentira(std::process::Child);
+        #[cfg(unix)] impl CliDeMentira {
+            fn no_lugar_de(session:&Arc<LiveSession>) -> Self {
+                use std::os::unix::process::CommandExt as _;
+                let processo = std::process::Command::new("sleep").arg0("claude").arg("60").spawn().unwrap();
+                session.meta.lock().unwrap().pid = Some(processo.id());
+                Self(processo)
+            }
+        }
+        #[cfg(unix)] impl Drop for CliDeMentira {
+            fn drop(&mut self) { let _ = self.0.kill(); let _ = self.0.wait(); }
+        }
+        fn pedido_com_versao(uri:&str,corpo:&str,versao:&str) -> Request {
+            let mut pedido = req("POST",uri,"http://127.0.0.1:47322",corpo);
+            pedido.headers_mut().insert("if-match",versao.parse().unwrap());
+            pedido
+        }
+        fn redesenhar(session:&Arc<LiveSession>,quadro:&str) {
+            session.interaction.lock().unwrap().parser.process(quadro.as_bytes());
+        }
+
+        /// O bug do item 10: a versão é um hash da tela inteira, então qualquer redesenho entre a
+        /// leitura e o envio recusava a mensagem, mesmo com o campo livre.
+        #[cfg(unix)] #[tokio::test] async fn prompt_com_versao_velha_e_aceito() {
+            let (_dir,state) = fixture(); let (session,_,action) = fake_session(&state,"Claude Code\r\n❯ ");
+            let _cli = CliDeMentira::no_lugar_de(&session);
+            redesenhar(&session,"\x1b[1;1HClaude Code 2\x1b[2;3H");
+            let resposta = router(state).oneshot(pedido_com_versao("/conversas/c/prompt",r#"{"texto":"oi"}"#,&action.revision)).await.unwrap();
+            assert_eq!(resposta.status(),StatusCode::ACCEPTED);
+        }
+
+        /// A mesma conferência se repetia na execução: a tela andava com a ação ainda na fila e a
+        /// mensagem morria com "Contexto mudou antes da execução".
+        #[test] fn prompt_nao_falha_se_a_tela_muda_na_fila_de_acoes() {
+            let (_dir,state) = fixture(); let (session,bytes,action) = fake_session(&state,"Claude Code\r\n❯ ");
+            redesenhar(&session,"\x1b[1;1HClaude Code 2\x1b[2;3H");
+            execute_checked(&state,&action,|_,_| true).unwrap();
+            assert!(String::from_utf8_lossy(&bytes.lock().unwrap()).starts_with("\x1b[200~Olá\nmundo\x1b[201~"));
+        }
+
+        /// A tela lida mostrava o agente parado e ele começou a trabalhar antes do envio: com o campo
+        /// livre a mensagem entra na fila da CLI, tanto na chegada quanto na execução.
+        #[cfg(unix)] #[tokio::test] async fn agente_comecou_a_trabalhar_prompt_entra_na_fila_da_cli() {
+            let (_dir,state) = fixture(); let (session,bytes,antes) = fake_session(&state,"Claude Code\r\n❯ ");
+            let _cli = CliDeMentira::no_lugar_de(&session);
+            redesenhar(&session,"\x1b[1;1H✻ Pensando… (esc to interrupt)\x1b[2;3H");
+            let resposta = router(state.clone()).oneshot(pedido_com_versao("/conversas/c/prompt",r#"{"texto":"e depois isso"}"#,&antes.revision)).await.unwrap();
+            assert_eq!(resposta.status(),StatusCode::ACCEPTED);
+            let action = state.mobile.actions.lock().unwrap()[0].clone();
+            assert!(matches!(action.kind,ActionKind::Prompt(_)));
+            execute_checked(&state,&action,|_,_| true).unwrap();
+            assert!(String::from_utf8_lossy(&bytes.lock().unwrap()).starts_with("\x1b[200~e depois isso\x1b[201~"));
+        }
+
+        /// Sem a versão da tela, é o campo vazio que impede colar em cima do que a pessoa digitou no PC.
+        #[cfg(unix)] #[tokio::test] async fn campo_com_rascunho_continua_recusando() {
+            let (_dir,state) = fixture(); let (session,bytes,action) = fake_session(&state,"Claude Code\r\n❯ ");
+            let _cli = CliDeMentira::no_lugar_de(&session);
+            redesenhar(&session,"\x1b[2;3Hmeu rascunho");
+            let resposta = router(state.clone()).oneshot(pedido_com_versao("/conversas/c/prompt",r#"{"texto":"oi"}"#,&action.revision)).await.unwrap();
+            assert_eq!(resposta.status(),StatusCode::CONFLICT);
+            assert!(execute_checked(&state,&action,|_,_| true).is_err());
+            assert!(bytes.lock().unwrap().is_empty());
+        }
+
+        #[cfg(unix)] #[tokio::test] async fn prompt_com_aprovacao_aberta_continua_recusando() {
+            let (_dir,state) = fixture(); let (session,bytes,action) = fake_session(&state,DIALOGO_DE_APROVACAO);
+            let _cli = CliDeMentira::no_lugar_de(&session);
+            let resposta = router(state.clone()).oneshot(pedido_com_versao("/conversas/c/prompt",r#"{"texto":"oi"}"#,&action.revision)).await.unwrap();
+            assert_eq!(resposta.status(),StatusCode::CONFLICT);
+            assert!(execute_checked(&state,&action,|_,_| true).is_err());
+            assert!(bytes.lock().unwrap().is_empty());
+        }
+
+        /// Aqui a trava protege de verdade: um clique velho responderia outra pergunta.
+        #[cfg(unix)] #[tokio::test] async fn aprovacao_com_versao_velha_continua_412() {
+            let (_dir,state) = fixture(); let (session,_,action) = fake_session(&state,DIALOGO_DE_APROVACAO);
+            let _cli = CliDeMentira::no_lugar_de(&session);
+            redesenhar(&session,"\x1b[1;1HClaude Code 2");
+            let app = router(state.clone());
+            let velha = app.clone().oneshot(pedido_com_versao("/conversas/c/aprovar",r#"{"permitir":true}"#,&action.revision)).await.unwrap();
+            assert_eq!(velha.status(),StatusCode::PRECONDITION_FAILED);
+            let atual = session.interaction.lock().unwrap().revision(&session);
+            assert_eq!(app.oneshot(pedido_com_versao("/conversas/c/aprovar",r#"{"permitir":true}"#,&atual)).await.unwrap().status(),StatusCode::ACCEPTED);
+        }
+
+        #[cfg(unix)] #[tokio::test] async fn escolha_com_versao_velha_continua_412() {
+            let (_dir,state) = fixture();
+            let menu = include_str!("../tests-fixtures/telas/claude.escolha.pergunta-2.1.302.txt").replace('\n',"\r\n");
+            let (session,_,action) = fake_session(&state,&menu);
+            let _cli = CliDeMentira::no_lugar_de(&session);
+            redesenhar(&session,"\x1b[20;1Hrodapé novo");
+            let app = router(state.clone());
+            let velha = app.clone().oneshot(pedido_com_versao("/conversas/c/escolher",r#"{"opcao":1}"#,&action.revision)).await.unwrap();
+            assert_eq!(velha.status(),StatusCode::PRECONDITION_FAILED);
+            let atual = session.interaction.lock().unwrap().revision(&session);
+            assert_eq!(app.oneshot(pedido_com_versao("/conversas/c/escolher",r#"{"opcao":1}"#,&atual)).await.unwrap().status(),StatusCode::ACCEPTED);
+        }
+
+        /// Sem a trava da versão, é a chave que segura o reenvio depois de um timeout.
+        #[cfg(unix)] #[tokio::test] async fn prompt_repetido_com_a_mesma_chave_nao_duplica() {
+            let (_dir,state) = fixture(); let (session,_,action) = fake_session(&state,"Claude Code\r\n❯ ");
+            let _cli = CliDeMentira::no_lugar_de(&session);
+            let app = router(state.clone());
+            for quadro in ["\x1b[1;1HClaude Code 2\x1b[2;3H","\x1b[1;1HClaude Code 3\x1b[2;3H"] {
+                redesenhar(&session,quadro);
+                let resposta = app.clone().oneshot(pedido_com_versao("/conversas/c/prompt",r#"{"texto":"oi"}"#,&action.revision)).await.unwrap();
+                assert_eq!(resposta.status(),StatusCode::ACCEPTED);
+            }
+            assert_eq!(state.mobile.actions.lock().unwrap().len(),1);
+        }
+
+        #[test] fn so_o_que_responde_a_tela_exige_a_versao() {
+            let (texto,opcao) = (String::from("oi"),Resposta::Opcao(1));
+            assert!(!exige_versao_da_tela(&ActionKind::Prompt(texto.clone())));
+            assert!(!exige_versao_da_tela(&ActionKind::Fila(texto.clone())));
+            assert!(exige_versao_da_tela(&ActionKind::Approval(true)));
+            assert!(exige_versao_da_tela(&ActionKind::Escolha(opcao)));
+            assert!(exige_versao_da_tela(&ActionKind::Modo(texto)));
+        }
+
+        /// A consulta de uso segura a sessão: a mensagem continua recusada, mas pelo motivo certo.
+        #[test] fn sessao_reservada_nao_fala_em_contexto() {
+            let (_dir,state) = fixture(); let (session,bytes,action) = fake_session(&state,"Claude Code\r\n❯ ");
+            session.reserved.store(true,Ordering::SeqCst);
+            let motivo = execute_checked(&state,&action,|_,_| true).unwrap_err().to_string();
+            assert!(!motivo.contains("Contexto"),"{motivo}");
+            assert!(bytes.lock().unwrap().is_empty());
+        }
+
         /// Mensagem com o agente no meio do turno: o campo da CLI está livre ("esc to interrupt" na
         /// tela), então ela vai para a fila da CLI — sem a trava de versão da tela, que mudaria a cada
-        /// quadro do spinner. Prompt comum continua recusado durante o turno, e rascunho no campo
-        /// continua bloqueando a fila.
+        /// quadro do spinner. Rascunho no campo continua bloqueando a fila.
         #[test] fn mensagem_durante_o_turno_entra_na_fila_da_cli() {
             let (_dir,state) = fixture();
             let (session,bytes,prompt) = fake_session(&state,"✻ Pensando… (esc to interrupt)\r\n❯ ");
             {
                 let contexto = session.interaction.lock().unwrap();
-                assert!(!interaction::ready(contexto.parser.screen(),"claude"), "prompt comum não vale no meio do turno");
+                assert!(!interaction::ready(contexto.parser.screen(),"claude"), "campo de turno não é campo parado");
                 assert!(interaction::pode_enfileirar(contexto.parser.screen(),"claude"), "turno com campo livre aceita fila");
             }
-            // A tela anda (o spinner conta segundos) depois que a ação entrou na fila: prompt comum
-            // seria recusado pela versão; a fila cola mesmo assim, porque o campo segue livre.
+            // A tela anda (o spinner conta segundos) depois que a ação entrou na fila: ela cola mesmo
+            // assim, porque o campo segue livre.
             session.interaction.lock().unwrap().parser.process("\x1b[1;1H✻ Pensando… 12s (esc to interrupt)\x1b[2;3H".as_bytes());
-            assert!(execute_checked(&state,&prompt,|_,_| true).is_err(), "prompt comum ignorou a versão da tela");
             let fila = Action { kind: ActionKind::Fila("e depois isso".into()), ..prompt };
             execute_checked(&state,&fila,|_,_| true).unwrap();
             assert!(String::from_utf8_lossy(&bytes.lock().unwrap()).starts_with("\x1b[200~e depois isso\x1b[201~"));
