@@ -7,7 +7,7 @@ use crate::{
     engine::Contexto, mcp_fluxos, mcp_historico, tarefas, Base,
 };
 use serde_json::{json, Value};
-use std::io::{BufRead, Write};
+use std::{io::{BufRead, Write}, sync::atomic::Ordering};
 
 const RESULTADOS_PADRAO: u64 = 5;
 const RESULTADOS_MAXIMOS: u64 = 20;
@@ -96,7 +96,9 @@ fn buscar_conhecimento(base: &Base, argumentos: &Value) -> Result<String, String
     Ok(if avisos.is_empty() { linhas.join("\n") } else { format!("{}\n\n{avisos}", linhas.join("\n")) })
 }
 
-fn chamar(base: &Base, nome: &str, argumentos: &Value) -> Result<String, String> {
+fn chamar(base: &Base, nome: &str, argumentos: &Value) -> Result<String, String> { chamar_em(base, &Contexto::padrao(), nome, argumentos) }
+
+pub(crate) fn chamar_em(base: &Base, contexto: &Contexto, nome: &str, argumentos: &Value) -> Result<String, String> {
     match nome {
         "buscar_conhecimento" => resposta_limpa(argumentos, buscar_conhecimento(base, argumentos)),
         "ler_trecho" => {
@@ -108,16 +110,15 @@ fn chamar(base: &Base, nome: &str, argumentos: &Value) -> Result<String, String>
             let id = tarefas::valor_em_texto(&argumentos["id"]).ok_or("informe o id")?;
             let cache = cache_de_tarefas(base);
             let achada = cache.tarefas.iter().find(|tarefa| tarefa.id == id);
+            // A sessão pegou tarefa de fora: daqui em diante o que ela iniciar para nas Aprovações.
+            if achada.is_some() { contexto.veio_de_fora.store(true, Ordering::SeqCst); }
             Ok(achada.map_or_else(|| tarefas::tarefa_fora_do_cache(&cache, agora_ms()), |tarefa| {
                 if crate::busca::mascara_dispensada(argumentos) { tarefas::texto_da_tarefa(tarefa) } else { tarefas::texto_da_tarefa(&tarefas::mascarada(tarefa)) }
             }))
         }
-        _ => {
-            let contexto = Contexto::padrao();
-            mcp_historico::chamar(base, &contexto, nome, argumentos)
-                .or_else(|| mcp_fluxos::chamar(&contexto, nome, argumentos))
-                .unwrap_or_else(|| Err(format!("ferramenta desconhecida: {nome}")))
-        }
+        _ => mcp_historico::chamar(base, contexto, nome, argumentos)
+            .or_else(|| mcp_fluxos::chamar(contexto, nome, argumentos))
+            .unwrap_or_else(|| Err(format!("ferramenta desconhecida: {nome}"))),
     }
 }
 

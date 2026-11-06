@@ -12,6 +12,10 @@ use std::path::{Path, PathBuf};
 
 #[path = "fluxos_ensaio.rs"]
 pub mod ensaio;
+/// Vai no ambiente dos agentes de uma execução nascida de tarefa externa. O MCP deles começa marcado,
+/// e o que iniciarem também para nas Aprovações.
+pub const VARIAVEL_DE_FORA: &str = "OMNI_VEIO_DE_FORA";
+
 #[path = "fluxos_limites.rs"]
 mod limites;
 pub use limites::*;

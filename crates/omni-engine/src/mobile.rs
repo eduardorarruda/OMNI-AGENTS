@@ -921,12 +921,12 @@ fn summaries(state: &EngineState) -> Vec<Value> {
 /// a web e o celular — aprovar uma etapa de longe é o mesmo POST.
 async fn fluxos_listar() -> Json<Value> { Json(json!(super::fluxos::listar())) }
 
-#[derive(Deserialize)] struct IniciarFluxo { fluxo: omni_core::fluxos::Fluxo, projeto_id: String, entrada: String }
+#[derive(Deserialize)] pub(crate) struct IniciarFluxo { fluxo: omni_core::fluxos::Fluxo, projeto_id: String, entrada: String, #[serde(flatten)] pub(crate) quem: super::fluxos::Origem }
 async fn fluxos_iniciar(State(state): State<Arc<EngineState>>, Json(body): Json<IniciarFluxo>) -> Result<(StatusCode,Json<Value>), ApiError> {
     tokio::task::spawn_blocking(move || {
         let projeto = known_projects(&state).into_iter().find(|p| p.id == body.projeto_id && !p.path.is_empty())
             .ok_or_else(||error(StatusCode::NOT_FOUND,"Projeto não encontrado neste PC"))?;
-        let execucao = super::fluxos::iniciar(&state, body.fluxo, projeto.path, projeto.id, body.entrada)
+        let execucao = super::fluxos::iniciar_com_origem(&state, body.fluxo, projeto.path, projeto.id, body.entrada, body.quem)
             .map_err(|e| error(StatusCode::BAD_REQUEST,&e.to_string()))?;
         Ok((StatusCode::CREATED,Json(json!(execucao))))
     }).await.map_err(|_|error(StatusCode::INTERNAL_SERVER_ERROR,"Falha ao iniciar o fluxo"))?

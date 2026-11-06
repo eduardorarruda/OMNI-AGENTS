@@ -760,6 +760,125 @@ fn derrubar_engine(amb: &Ambiente, x: &str, y: &str) {
     carregar(&amb.state);
 }
 
+// ---- Origem da execução: quem passa sozinho pela Aprovação ----
+
+fn iniciar_como(amb: &Ambiente, fluxo: Value, origem: &str, veio_de_fora: bool) -> String {
+    let fluxo: Fluxo = serde_json::from_value(fluxo).unwrap();
+    iniciar_com_origem(&amb.state, fluxo, amb.projeto.to_string_lossy().into(), "p".into(), "x".into(), Origem { origem: origem.into(), veio_de_fora }).unwrap().id
+}
+
+/// entrada → antes → ap → (sim: depois) / (nao: recusou)
+fn aprovacao_com_saidas() -> Value {
+    json!({"id": "ap", "nome": "Ap", "na_pasta_do_projeto": true, "nos": [{"id": "e", "tipo": "entrada"}, comando("antes", "echo saida-de-antes"), {"id": "ap", "tipo": "aprovacao"},
+        comando("depois", &conta("depois")), comando("recusou", &conta("recusou")), {"id": "f", "tipo": "fim"}],
+        "conexoes": [{"de": "e", "para": "antes"}, {"de": "antes", "para": "ap", "saida": "sim"}, {"de": "ap", "para": "depois", "saida": "sim"}, {"de": "ap", "para": "recusou", "saida": "nao"},
+            {"de": "depois", "para": "f", "saida": "sim"}, {"de": "recusou", "para": "f", "saida": "sim"}]})
+}
+
+#[test]
+fn aprovacao_passa_sozinha_com_origem_mcp() {
+    let amb = ambiente();
+    let id = iniciar_como(&amb, aprovacao_com_saidas(), "mcp", false);
+    let e = ate_parar(&id);
+    assert_eq!(e.status, "concluido", "{:?}", e.erro);
+    assert_eq!((e.nos["ap"].status.as_str(), e.nos["ap"].caminho.as_deref()), ("concluido", Some("sim")));
+    assert!(e.nos["ap"].saida.contains("saida-de-antes"));
+    assert_eq!((amb.linhas("depois.log"), amb.linhas("recusou.log")), (1, 0));
+    assert!(so_eventos(&amb, &id, 0).iter().any(|ev| ev.tipo == "aprovacao" && ev.no.as_deref() == Some("ap")), "fica na linha do tempo");
+}
+
+#[test]
+fn aprovacao_para_com_origem_manual() {
+    let amb = ambiente();
+    let id = amb.iniciar(aprovacao_com_saidas());
+    assert_eq!((ate_parar(&id).status.as_str(), amb.linhas("depois.log")), ("aguardando", 0));
+    assert_eq!(obter(&id).unwrap().origem, "manual");
+}
+
+#[test]
+fn corpo_sem_origem_vale_manual() {
+    let fluxo = json!({"id": "a", "nome": "A", "nos": [], "conexoes": []});
+    let corpo: mobile::IniciarFluxo = serde_json::from_value(json!({"fluxo": fluxo, "projeto_id": "p", "entrada": "x"})).unwrap();
+    assert_eq!((corpo.quem.origem.as_str(), corpo.quem.veio_de_fora), ("manual", false));
+    let corpo: mobile::IniciarFluxo = serde_json::from_value(json!({"fluxo": fluxo, "projeto_id": "p", "entrada": "x", "origem": "mcp", "veio_de_fora": true})).unwrap();
+    assert_eq!((corpo.quem.origem.as_str(), corpo.quem.veio_de_fora), ("mcp", true));
+    let antiga: Execucao = serde_json::from_value(json!({"id": "x", "projeto": "p", "projeto_id": "p", "entrada": "x", "pasta": ".", "status": "aguardando", "criado_ms": 0, "atualizado_ms": 0,
+        "fluxo": fluxo, "nos": {}, "fila": []})).unwrap();
+    assert_eq!((antiga.origem.as_str(), antiga.veio_de_fora), ("manual", false));
+    assert!(!aprovacao_automatica(&antiga));
+}
+
+/// A única exceção à autonomia: tarefa vinda de fora nunca executa sem um humano na Aprovação.
+#[test]
+fn aprovacao_para_quando_veio_de_fora() {
+    let amb = ambiente();
+    let id = iniciar_como(&amb, aprovacao_com_saidas(), "mcp", true);
+    let e = ate_parar(&id);
+    assert_eq!((e.status.as_str(), e.nos["ap"].status.as_str()), ("aguardando", "aguardando"));
+    assert_eq!(amb.linhas("depois.log"), 0);
+    aprovar(&amb.state, &id, "ap", true).unwrap();
+    assert_eq!(ate_parar(&id).status, "concluido");
+    assert_eq!(amb.linhas("depois.log"), 1);
+}
+
+#[test]
+fn aprovacao_automatica_e_so_mcp_sem_marca() {
+    let base = |origem: &str, veio_de_fora: bool| -> Execucao { serde_json::from_value(json!({"id": "x", "projeto": "p", "projeto_id": "p", "entrada": "x", "pasta": ".", "status": "rodando", "criado_ms": 0, "atualizado_ms": 0,
+        "fluxo": {"id": "a", "nome": "A", "nos": [], "conexoes": []}, "nos": {}, "fila": [], "origem": origem, "veio_de_fora": veio_de_fora})).unwrap() };
+    assert!(aprovacao_automatica(&base("mcp", false)));
+    for (origem, marca) in [("mcp", true), ("manual", false), ("manual", true), ("", false), ("qualquer", false)] { assert!(!aprovacao_automatica(&base(origem, marca)), "{origem} {marca}"); }
+}
+
+#[test]
+fn subfluxo_herda_origem_e_marca() {
+    let amb = ambiente();
+    amb.salvar(com_aprovacao("y", "Y"));
+    let marcada = iniciar_como(&amb, chama("x", "X", "y"), "mcp", true);
+    let filha = filha_de(&marcada, "s");
+    com_status(&filha, "aguardando");
+    let f = obter(&filha).unwrap();
+    assert_eq!((f.origem.as_str(), f.veio_de_fora), ("mcp", true));
+    assert_eq!(amb.linhas("y.log"), 1);
+    cancelar(&amb.state, &marcada).unwrap();
+
+    let amb = ambiente();
+    amb.salvar(com_aprovacao("y", "Y"));
+    let sem_marca = iniciar_como(&amb, chama("x", "X", "y"), "mcp", false);
+    assert_eq!(ate_parar(&sem_marca).status, "concluido", "filha da IA passa sozinha");
+    let filha = obter(&sem_marca).unwrap().nos["s"].filha.clone().unwrap();
+    assert_eq!(obter(&filha).unwrap().origem, "mcp");
+
+    let amb = ambiente();
+    amb.salvar(com_aprovacao("y", "Y"));
+    let manual = amb.iniciar(chama("x", "X", "y"));
+    let filha = filha_de(&manual, "s");
+    com_status(&filha, "aguardando");
+    cancelar(&amb.state, &manual).unwrap();
+}
+
+#[test]
+fn agente_de_execucao_marcada_recebe_a_variavel() {
+    let amb = ambiente();
+    let mostra = format!("echo \"marca=${}\" > env.txt", fluxos::VARIAVEL_DE_FORA);
+    let id = iniciar_como(&amb, so_comando("c", "C", &mostra), "mcp", true);
+    assert_eq!(ate_parar(&id).status, "concluido");
+    assert_eq!(fs::read_to_string(amb.projeto.join("env.txt")).unwrap().trim(), "marca=1", "comando");
+
+    let amb = ambiente();
+    let id = iniciar_como(&amb, so_comando("c", "C", &mostra), "mcp", false);
+    ate_parar(&id);
+    assert_eq!(fs::read_to_string(amb.projeto.join("env.txt")).unwrap().trim(), "marca=", "sem a marca, sem a variável");
+
+    // A etapa de agente usa a mesma função na CLI que ela abre.
+    let saida = |marcada: bool| {
+        let mut c = Command::new("sh");
+        c.arg("-c").arg(format!("printf %s \"${}\"", fluxos::VARIAVEL_DE_FORA));
+        marcar_ambiente(&mut c, marcada);
+        String::from_utf8(c.output().unwrap().stdout).unwrap()
+    };
+    assert_eq!((saida(true).as_str(), saida(false).as_str()), ("1", ""));
+}
+
 #[test]
 fn listar_marca_a_filha_com_o_pai() {
     let amb = ambiente();

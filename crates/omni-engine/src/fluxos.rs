@@ -91,6 +91,12 @@ pub struct Execucao {
     /// `pastas_extras` do fluxo já resolvidas contra o projeto: o que vira `--add-dir`.
     #[serde(default)]
     pub pastas_extras: Vec<String>,
+    /// `manual` (tela) ou `mcp` (a IA iniciou). Subfluxo herda de quem chamou.
+    #[serde(default = "origem_manual")]
+    pub origem: String,
+    /// Nasceu de tarefa externa: a Aprovação para mesmo com origem `mcp`. Subfluxo herda.
+    #[serde(default)]
+    pub veio_de_fora: bool,
     /// Sobe a cada evento que merece aviso, como o `attention_seq` das sessões; `aviso` diz qual foi.
     #[serde(default)]
     pub aviso_seq: u32,
@@ -175,8 +181,35 @@ fn resolver_pastas(fluxo: &Fluxo, projeto: &str) -> Result<Vec<String>> {
 
 fn novo_id() -> String { format!("exec-{}-{:04x}", now_ms(), rand::random::<u16>()) }
 
-/// Começa uma execução: prepara o worktree e solta a thread.
+/// Quem pediu a execução, como vem no corpo de `POST /fluxos/execucoes`. Sem os campos, é a tela.
+#[derive(Deserialize, Clone, Debug)]
+pub struct Origem {
+    #[serde(default = "origem_manual")]
+    pub origem: String,
+    #[serde(default)]
+    pub veio_de_fora: bool,
+}
+
+fn origem_manual() -> String { "manual".into() }
+
+/// Quem a IA iniciou passa sozinho pela Aprovação. A exceção é tarefa vinda de fora: ela nunca anda
+/// sem um humano, mesmo pela IA.
+pub fn aprovacao_automatica(e: &Execucao) -> bool { e.origem == "mcp" && !e.veio_de_fora }
+
+/// Passa a marca para o que a etapa abre: o MCP do agente começa marcado e o que ele iniciar também.
+fn marcar_ambiente(c: &mut Command, marcada: bool) {
+    if marcada { c.env(fluxos::VARIAVEL_DE_FORA, "1"); }
+}
+
+fn marcada(v: &Viva) -> bool { v.lock().is_ok_and(|e| e.veio_de_fora) }
+
+/// Começa uma execução pedida na tela.
 pub fn iniciar(state: &Arc<EngineState>, fluxo: Fluxo, projeto: String, projeto_id: String, entrada: String) -> Result<Execucao> {
+    iniciar_com_origem(state, fluxo, projeto, projeto_id, entrada, Origem { origem: origem_manual(), veio_de_fora: false })
+}
+
+/// Começa uma execução: prepara o worktree e solta a thread.
+pub fn iniciar_com_origem(state: &Arc<EngineState>, fluxo: Fluxo, projeto: String, projeto_id: String, entrada: String, quem: Origem) -> Result<Execucao> {
     fluxos::validar(&fluxo).map_err(|e| anyhow!(e))?;
     if entrada.trim().is_empty() { return Err(anyhow!("Escreva a tarefa")); }
     if !Path::new(&projeto).is_dir() { return Err(anyhow!("A pasta do projeto não existe neste PC")); }
@@ -203,7 +236,7 @@ pub fn iniciar(state: &Arc<EngineState>, fluxo: Fluxo, projeto: String, projeto_
     let pilha = vec![fluxo.nome.clone()];
     let e = Execucao { id: id.clone(), fluxo, projeto, projeto_id, entrada, pasta, branch, base, status: "rodando".into(), erro: None,
         criado_ms: agora, atualizado_ms: agora, nos, fila: vec![Passo { no: inicio, de: None }], pr_url: None, custo_usd: 0.0,
-        pastas_extras, aviso_seq: 0, aviso: None, evento_seq: 0, pai: None, pilha };
+        pastas_extras, origem: quem.origem, veio_de_fora: quem.veio_de_fora, aviso_seq: 0, aviso: None, evento_seq: 0, pai: None, pilha };
     gravar(state, &e);
     execucoes().lock().map_err(|_| anyhow!("execucoes"))?.insert(id.clone(), Arc::new(Mutex::new(e.clone())));
     soltar(state.clone(), id);
@@ -342,6 +375,11 @@ fn processar(state: &Arc<EngineState>, v: &Viva, passo: &Passo) -> Result<()> {
             });
             definir_saida(state, v, &no.id, ctx.anterior.clone());
             saida.to_owned()
+        }
+        TipoDeNo::Aprovacao if v.lock().is_ok_and(|e| aprovacao_automatica(&e)) => {
+            mexer(state, v, |e| eventos::registrar(state, e, Some(&no.id), "aprovacao", "Aprovado sozinho: execução iniciada pela IA"));
+            definir_saida(state, v, &no.id, ctx.anterior.clone());
+            "sim".to_owned()
         }
         TipoDeNo::Aprovacao => {
             // Para aqui e espera: `aprovar` põe os próximos na fila e retoma.
@@ -612,6 +650,7 @@ fn rodar_na_conta(state: &EngineState, v: &Viva, no: &str, modelo: &omni_core::a
     if let Some(p) = perfil { c.envs(omni_core::env_for(p)); }
     // O omni-rag herda e ignora `sem_mascara`: etapa não tem pessoa para autorizar (`busca::MARCA_DE_ETAPA`).
     c.env("OMNI_ETAPA_DE_FLUXO", "1");
+    marcar_ambiente(&mut c, marcada(v));
     c.current_dir(pasta).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     sem_janela(&mut c);
     let mut processo = guardar_processo(v, &run_id, no, c.spawn().with_context(|| format!("não consegui abrir {}", modelo.cli))?);
@@ -669,6 +708,7 @@ fn rodar_comando(state: &EngineState, v: &Viva, no: &str, comando: &str, pasta: 
     let mut c = { use std::os::windows::process::CommandExt; let mut c = Command::new("cmd"); c.raw_arg(format!("/D /S /C \"{comando}\"")); c };
     #[cfg(not(windows))]
     let mut c = { let mut c = Command::new("sh"); c.arg("-c").arg(comando); c };
+    marcar_ambiente(&mut c, marcada(v));
     c.current_dir(pasta).env("NO_COLOR", "1").env("FORCE_COLOR", "0").env("CI", "1")
         .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     sem_janela(&mut c);
@@ -925,9 +965,11 @@ pub fn abrir_conversa(state: &Arc<EngineState>, id: &str, no: &str) -> Result<Te
     let base = mobile::comando_do_agente(state, &cli);
     let comando = if cli == "codex" { format!("{base} resume {sid}") } else { format!("{base} --resume {sid}") };
     let titulo = e.fluxo.nos.iter().find(|x| x.id == no).map(fluxos::rotulo).unwrap_or_else(|| no.to_owned());
+    let mut env = perfil.as_ref().map(omni_core::env_for).unwrap_or_default();
+    if e.veio_de_fora { env.push((fluxos::VARIAVEL_DE_FORA.to_owned(), "1".to_owned())); }
     spawn_terminal_inner(state, state.next_id(), e.projeto_id.clone(), format!("{titulo} · {}", e.fluxo.nome), e.pasta.clone(), None,
         Some(comando), 30, 120, now_ms(), SessionOrigin {
-            env: perfil.as_ref().map(omni_core::env_for).unwrap_or_default(), provider: Some(cli),
+            env, provider: Some(cli),
             profile_id: perfil.map(|p| p.id), conversation_id: None, external_session_id: Some(sid) })
 }
 

@@ -6,7 +6,7 @@
 //! `--permission-mode default` com `Edit(./caminho)` (`Write(caminho)` sozinho nega tudo). Uma regra
 //! `allow` em settings alarga o limite, daí `--setting-sources ""`. Bash escreve onde quiser, daí o
 //! bloqueio do shell: o sandbox da CLI não abre exceção dentro da pasta de trabalho.
-use super::{No, TipoDeNo};
+use super::No;
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 
@@ -89,13 +89,6 @@ pub fn mcp_das_ferramentas(ferramentas: &[String], configuracao: &Value) -> Opti
     (!servidores.is_empty()).then(|| json!({"mcpServers": servidores}))
 }
 
-/// A etapa grava sem limite de caminho e por isso alcança as `pastas_extras`. `escrita` só aceita
-/// caminho dentro da pasta da execução, e sem shell não sobra outro jeito de gravar nas extras.
-pub fn escreve_sem_limite(no: &No) -> bool {
-    matches!(no.tipo, TipoDeNo::Agente | TipoDeNo::Sala) && no.escrita.is_none()
-        && !FERRAMENTAS_DE_ESCRITA.iter().all(|f| no.proibidas.iter().any(|p| p == f))
-}
-
 /// Só o que impediria achar a pasta: `~` e variável não são expandidos. Onde ela fica é com o autor.
 pub fn validar_pasta_extra(pasta: &str) -> Result<(), String> {
     let erro = |motivo: &str| Err(format!("Pasta extra “{pasta}”: {motivo}"));
@@ -131,6 +124,7 @@ pub fn executavel(nome: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::TipoDeNo;
 
     fn lista(itens: &[&str]) -> Vec<String> { itens.iter().map(|i| (*i).to_owned()).collect() }
 
@@ -216,15 +210,6 @@ mod tests {
     fn agente(escrita: Option<&[&str]>, proibidas: &[&str]) -> No {
         No { id: "a".into(), tipo: TipoDeNo::Agente, titulo: String::new(), agente: "dev".into(), config: serde_json::json!({}), x: 0.0, y: 0.0,
             proibidas: lista(proibidas), escrita: escrita.map(lista) }
-    }
-
-    #[test]
-    fn so_etapa_sem_limite_alcanca_as_pastas_extras() {
-        assert!(escreve_sem_limite(&agente(None, &[])));
-        assert!(escreve_sem_limite(&agente(None, &["Write"])), "bloquear uma ferramenta só não tira a escrita");
-        assert!(!escreve_sem_limite(&agente(Some(&[]), &[])));
-        assert!(!escreve_sem_limite(&agente(Some(&["src/"]), &[])));
-        assert!(!escreve_sem_limite(&agente(None, &FERRAMENTAS_DE_ESCRITA)));
     }
 
     #[test]

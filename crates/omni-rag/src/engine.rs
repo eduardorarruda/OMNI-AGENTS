@@ -7,6 +7,7 @@ use std::{
     io::{BufRead, BufReader, Write},
     net::{SocketAddr, TcpStream},
     path::{Path, PathBuf},
+    sync::{atomic::AtomicBool, Arc, OnceLock},
     time::Duration,
 };
 
@@ -24,7 +25,18 @@ pub struct Contexto {
     pub agentes_globais: Option<PathBuf>,
     /// Pasta em que a CLI abriu este MCP: a do projeto da conversa.
     pub pasta_atual: Option<PathBuf>,
+    /// Esta sessão pegou tarefa externa: o que ela iniciar para nas Aprovações.
+    pub veio_de_fora: Arc<AtomicBool>,
 }
+
+/// O processo do MCP vive com a sessão da CLI, então a marca fica nele e não em cada `Contexto`.
+fn marca_do_processo() -> Arc<AtomicBool> {
+    static MARCA: OnceLock<Arc<AtomicBool>> = OnceLock::new();
+    MARCA.get_or_init(|| Arc::new(AtomicBool::new(marcado_pelo_ambiente(std::env::var_os(omni_core::fluxos::VARIAVEL_DE_FORA).as_deref())))).clone()
+}
+
+/// Agente de execução marcada recebe a variável do engine.
+pub(crate) fn marcado_pelo_ambiente(valor: Option<&std::ffi::OsStr>) -> bool { valor.is_some_and(|v| v == "1") }
 
 impl Contexto {
     pub fn padrao() -> Self {
@@ -37,6 +49,7 @@ impl Contexto {
             fluxos_globais: omni_core::fluxos::pasta_global(),
             agentes_globais: omni_core::agentes::pasta_global(),
             pasta_atual: std::env::current_dir().ok(),
+            veio_de_fora: marca_do_processo(),
         }
     }
 

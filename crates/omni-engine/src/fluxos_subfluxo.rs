@@ -75,7 +75,7 @@ fn nova_filha(pai: &Execucao, no: &str, id: String, fluxo: Fluxo, entrada: Strin
     Ok(Execucao { id, nos: estados_iniciais(&fluxo), fluxo, projeto: pai.projeto.clone(), projeto_id: pai.projeto_id.clone(), entrada,
         pasta: pai.pasta.clone(), branch: pai.branch.clone(), base: pai.base.clone(), status: "rodando".into(), erro: None,
         criado_ms: agora, atualizado_ms: agora, fila: vec![Passo { no: inicio, de: None }], pr_url: None, custo_usd: 0.0,
-        pastas_extras, aviso_seq: 0, aviso: None, evento_seq: 0,
+        pastas_extras, origem: pai.origem.clone(), veio_de_fora: pai.veio_de_fora, aviso_seq: 0, aviso: None, evento_seq: 0,
         pai: Some(RefDoPai { execucao: pai.id.clone(), no: no.to_owned() }), pilha })
 }
 

@@ -50,7 +50,7 @@ fn ambiente(corpos: Vec<Value>) -> (Ambiente, Arc<Mutex<Vec<String>>>) {
     fs::create_dir_all(&projeto).expect("projeto");
     let (porta, pedidos) = engine_em_sequencia(&projeto, corpos);
     let contexto = Contexto { pasta_do_engine: raiz.join("engine"), porta, fluxos_globais: Some(raiz.join(".omni/fluxos")),
-        agentes_globais: Some(raiz.join(".omni/agents")), pasta_atual: Some(projeto) };
+        agentes_globais: Some(raiz.join(".omni/agents")), pasta_atual: Some(projeto), veio_de_fora: Arc::default() };
     (Ambiente { pasta, contexto }, pedidos)
 }
 
@@ -77,31 +77,6 @@ fn criar(local: &Ambiente, fluxo: Value, agentes_novos: Value) -> Result<String,
 }
 
 #[test]
-fn pasta_extra_com_agente_que_grava_precisa_de_aprovacao() {
-    let (local, _) = ambiente(vec![]);
-    let leitor = agente("leitor", "claude", json!(["Read"]));
-    let erro = criar(&local, fluxo_de_agente("com-extra", "leitor", json!({}), json!({"pastas_extras": ["../irmao"]})), json!([leitor])).expect_err("sem aprovação");
-    assert!(erro.contains("aprovação"), "{erro}");
-    assert!(!local.contexto.fluxos_globais.as_ref().expect("pasta").join("agente-com-extra.json").exists());
-}
-
-#[test]
-fn pasta_extra_com_etapa_de_escrita_limitada_nao_exige_aprovacao() {
-    let (local, _) = ambiente(vec![]);
-    let leitor = agente("leitor", "claude", json!(["Read"]));
-    criar(&local, fluxo_de_agente("so-le", "leitor", json!({"escrita": []}), json!({"pastas_extras": ["../irmao"]})), json!([leitor])).expect("só lê");
-}
-
-/// Proibir o Bash não tira o risco: a regra olha o modelo de agente, não a promessa da etapa.
-#[test]
-fn proibidas_e_escrita_nao_liberam_agente_com_bash_antes_da_aprovacao() {
-    let (local, _) = ambiente(vec![]);
-    let dev = agente("com-shell", "claude", json!(["Bash"]));
-    let erro = criar(&local, fluxo_de_agente("shell-sem-ok", "com-shell", json!({"proibidas": ["Bash"], "escrita": []}), json!({})), json!([dev])).expect_err("sem aprovação");
-    assert!(erro.contains("aprovação"), "{erro}");
-}
-
-#[test]
 fn criar_fluxo_recusa_caminho_que_alarga_e_marcador_sem_etapa() {
     let (local, _) = ambiente(vec![]);
     let leitor = || json!([agente("leitor", "claude", json!(["Read"]))]);
@@ -122,7 +97,7 @@ fn ensaiar_aponta_o_que_falta_sem_abrir_agente() {
     let (local, pedidos) = ambiente(vec![]);
     gravar_fluxo(&local, &fluxo_de_agente("agente-falho", "fantasma", json!({"config": {"prompt": "{{no:f}}"}}), json!({"pastas_extras": ["../nao-existe"]})));
     let texto = chamar(&local, "ensaiar_fluxo", json!({"id": "agente-falho"})).expect("ensaio");
-    for trecho in ["fantasma", "não roda antes", "não existe neste PC", "rodar_fluxo vai recusar", "Nenhum agente foi aberto", "Agentes: 1"] {
+    for trecho in ["fantasma", "não roda antes", "não existe neste PC", "Nenhum agente foi aberto", "Agentes: 1"] {
         assert!(texto.contains(trecho), "{trecho}: {texto}");
     }
     assert!(!texto.contains("pronto para rodar"), "{texto}");
@@ -199,14 +174,6 @@ fn esperar_recusa_id_com_caminho() {
     let (local, pedidos) = ambiente(vec![]);
     assert!(chamar(&local, "esperar_execucao", json!({"id": "../x"})).is_err());
     assert!(pedidos.lock().expect("pedidos").is_empty());
-}
-
-#[test]
-fn limite_de_custo_so_o_usuario_retoma() {
-    let (local, pedidos) = ambiente(vec![json!({"id": "x", "status": "pausado", "parou_por_custo": true})]);
-    let erro = chamar(&local, "controlar_execucao", json!({"id": "x", "acao": "retomar"})).expect_err("recusa");
-    assert!(erro.contains("limite de custo"), "{erro}");
-    assert!(!pedidos.lock().expect("pedidos").iter().any(|pedido| pedido.starts_with("POST")));
 }
 
 #[test]

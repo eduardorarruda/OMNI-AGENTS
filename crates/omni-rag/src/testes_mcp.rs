@@ -1,12 +1,12 @@
 //! Ferramentas de fluxos e histórico contra um engine falso, numa porta local, e pastas temporárias.
-use crate::{engine::{api, segmento, Contexto}, mcp_fluxos, mcp_historico, Base};
+use crate::{engine::{api, marcado_pelo_ambiente, segmento, Contexto}, mcp, mcp_fluxos, mcp_historico, tarefas, Base};
 use serde_json::{json, Value};
 use std::{
     fs,
     io::{BufRead, BufReader, Write},
     net::TcpListener,
     path::Path,
-    sync::{Arc, Mutex},
+    sync::{atomic::Ordering, Arc, Mutex},
     thread,
 };
 use tempfile::{tempdir, TempDir};
@@ -46,7 +46,7 @@ fn ambiente(porta: u16) -> Ambiente {
     let contexto = Contexto {
         pasta_do_engine: raiz.join("engine"), porta,
         fluxos_globais: Some(raiz.join("fluxos")), agentes_globais: Some(raiz.join("agentes")),
-        pasta_atual: Some(raiz.join("projeto")),
+        pasta_atual: Some(raiz.join("projeto")), veio_de_fora: Arc::default(),
     };
     Ambiente { _pasta: pasta, contexto }
 }
@@ -142,47 +142,6 @@ fn criar_fluxo_grava_agentes_novos_junto() {
 }
 
 #[test]
-fn comando_sem_aprovacao_antes_nao_e_salvo() {
-    let local = ambiente(1);
-    let erro = fluxo(&local.contexto, "criar_fluxo", json!({"fluxo": sem_aprovacao()})).expect_err("recusa");
-    assert!(erro.contains("aprovação"), "{erro}");
-    assert!(!fluxo(&local.contexto, "listar_fluxos", json!({})).expect("lista").contains("perigoso"));
-}
-
-#[test]
-fn agente_com_bash_sem_aprovacao_antes_nao_e_salvo() {
-    let local = ambiente(1);
-    let novo = agente("shell-teste", json!(["Read", "Bash(curl:*)"]));
-    let erro = fluxo(&local.contexto, "criar_fluxo", json!({"fluxo": com_agente("shell-teste"), "agentes_novos": [novo]})).expect_err("recusa");
-    assert!(erro.contains("aprovação"), "{erro}");
-}
-
-#[test]
-fn agente_em_outra_cli_sem_aprovacao_antes_nao_e_salvo() {
-    let local = ambiente(1);
-    let novo = json!({"name": "codex-teste", "description": "x", "cli": "codex", "instrucoes": "y"});
-    assert!(fluxo(&local.contexto, "criar_fluxo", json!({"fluxo": com_agente("codex-teste"), "agentes_novos": [novo]})).is_err());
-}
-
-#[test]
-fn na_pasta_do_projeto_exige_aprovacao_antes_do_agente() {
-    let local = ambiente(1);
-    let mut direto = com_agente("leitor-teste");
-    direto["na_pasta_do_projeto"] = json!(true);
-    let novo = agente("leitor-teste", json!(["Read"]));
-    assert!(fluxo(&local.contexto, "criar_fluxo", json!({"fluxo": direto, "agentes_novos": [novo]})).is_err());
-}
-
-#[test]
-fn saida_nao_da_aprovacao_nao_libera_comando() {
-    let local = ambiente(1);
-    let mut torto = fluxo_de_comando();
-    torto["conexoes"][1] = json!({"de": "ok", "para": "f", "saida": "sim"});
-    torto["conexoes"][2] = json!({"de": "ok", "para": "c", "saida": "nao"});
-    assert!(fluxo(&local.contexto, "criar_fluxo", json!({"fluxo": torto})).is_err());
-}
-
-#[test]
 fn substituir_nao_alcanca_fluxo_do_usuario() {
     let local = ambiente(1);
     fluxo(&local.contexto, "listar_fluxos", json!({})).expect("semeia os prontos");
@@ -222,20 +181,6 @@ fn rodar_fluxo_usa_o_projeto_mais_especifico_da_pasta_atual() {
 }
 
 #[test]
-fn rodar_fluxo_barra_fluxo_do_projeto_sem_aprovacao() {
-    let semente = ambiente(1);
-    let pasta = semente.contexto.pasta_atual.clone().expect("pasta");
-    let (porta, pedidos) = engine_falso(rotas_para_rodar(&pasta));
-    let contexto = Contexto { porta, ..semente.contexto };
-    let destino = omni_core::fluxos::pasta_do_projeto(&pasta);
-    fs::create_dir_all(&destino).expect("pasta");
-    fs::write(destino.join("perigoso.json"), sem_aprovacao().to_string()).expect("clonado");
-    let erro = fluxo(&contexto, "rodar_fluxo", json!({"id": "perigoso", "entrada": "faça"})).expect_err("recusa");
-    assert!(erro.contains("aprovação"), "{erro}");
-    assert!(!pedidos.lock().expect("pedidos").iter().any(|pedido| pedido["method"] == "POST"));
-}
-
-#[test]
 fn rodar_fluxo_aceita_fluxo_global_feito_pelo_usuario() {
     let semente = ambiente(1);
     let pasta = semente.contexto.pasta_atual.clone().expect("pasta");
@@ -245,6 +190,87 @@ fn rodar_fluxo_aceita_fluxo_global_feito_pelo_usuario() {
     fs::create_dir_all(&destino).expect("pasta");
     fs::write(destino.join("perigoso.json"), sem_aprovacao().to_string()).expect("do usuário");
     assert!(fluxo(&contexto, "rodar_fluxo", json!({"id": "perigoso", "entrada": "faça"})).expect("rodou").contains("run-1"));
+}
+
+fn corpo_do_post(pedidos: &Pedidos) -> Value {
+    let pedidos = pedidos.lock().expect("pedidos");
+    let post = pedidos.iter().rfind(|pedido| pedido["method"] == "POST").expect("POST");
+    serde_json::from_str(post["body"].as_str().expect("corpo")).expect("json")
+}
+
+#[test]
+fn mcp_cria_fluxo_sem_aprovacao() {
+    let local = ambiente(1);
+    fluxo(&local.contexto, "criar_fluxo", json!({"fluxo": sem_aprovacao()})).expect("salvou");
+    let novo = agente("shell-teste", json!(["Read", "Bash"]));
+    fluxo(&local.contexto, "criar_fluxo", json!({"fluxo": com_agente("shell-teste"), "agentes_novos": [novo]})).expect("agente com Bash também");
+    let lista = fluxo(&local.contexto, "listar_fluxos", json!({})).expect("lista");
+    assert!(lista.contains("perigoso") && lista.contains("com-agente"), "{lista}");
+}
+
+#[test]
+fn mcp_roda_fluxo_de_projeto_com_comando() {
+    let semente = ambiente(1);
+    let pasta = semente.contexto.pasta_atual.clone().expect("pasta");
+    let (porta, pedidos) = engine_falso(rotas_para_rodar(&pasta));
+    let contexto = Contexto { porta, ..semente.contexto };
+    let destino = omni_core::fluxos::pasta_do_projeto(&pasta);
+    fs::create_dir_all(&destino).expect("pasta");
+    fs::write(destino.join("perigoso.json"), sem_aprovacao().to_string()).expect("do projeto");
+    fluxo(&contexto, "rodar_fluxo", json!({"id": "perigoso", "entrada": "faça"})).expect("rodou");
+    let corpo = corpo_do_post(&pedidos);
+    assert_eq!((&corpo["origem"], &corpo["veio_de_fora"]), (&json!("mcp"), &json!(false)));
+}
+
+#[test]
+fn mcp_retoma_pausado() {
+    // Execução antiga, gravada quando o custo ainda pausava: a marca não prende mais nada.
+    let (porta, pedidos) = engine_falso(vec![("GET /fluxos/execucoes/x", 200, json!({"id": "x", "status": "pausado", "parou_por_custo": true})), ("POST /fluxos/execucoes/x/retomar", 200, json!({"ok": true}))]);
+    let local = ambiente(porta);
+    fluxo(&local.contexto, "controlar_execucao", json!({"id": "x", "acao": "retomar"})).expect("retomou");
+    assert!(pedidos.lock().expect("pedidos").iter().any(|pedido| pedido["method"] == "POST" && pedido["path"] == "/fluxos/execucoes/x/retomar"));
+}
+
+/// Base com uma tarefa externa em cache, no mesmo lugar que a busca grava.
+fn base_com_tarefa(pasta: &Path) -> Base {
+    let base = Base::abrir(&pasta.join("rag/base.db")).expect("base");
+    let tarefa = tarefas::Tarefa { id: "7".into(), titulo: "Vinda de fora".into(), descricao: String::new(), status: String::new(), responsavel: String::new(), comentarios: Vec::new() };
+    tarefas::gravar_cache(&base.cache_de_tarefas().expect("cache"), &tarefas::Cache { tarefas: vec![tarefa], ..Default::default() }).expect("grava");
+    base
+}
+
+#[test]
+fn ler_tarefa_marca_a_proxima_execucao() {
+    let semente = ambiente(1);
+    let pasta = semente.contexto.pasta_atual.clone().expect("pasta");
+    let (porta, pedidos) = engine_falso(rotas_para_rodar(&pasta));
+    let contexto = Contexto { porta, ..semente.contexto };
+    let base = base_com_tarefa(&pasta);
+    fluxo(&contexto, "criar_fluxo", json!({"fluxo": fluxo_de_comando()})).expect("salvou");
+    let rodar = json!({"id": "agente-teste-mcp", "entrada": "faça"});
+
+    fluxo(&contexto, "rodar_fluxo", rodar.clone()).expect("antes");
+    assert_eq!(corpo_do_post(&pedidos)["veio_de_fora"], false);
+    assert!(mcp::chamar_em(&base, &contexto, "ler_tarefa", &json!({"id": "7"})).expect("leu").contains("Vinda de fora"));
+    fluxo(&contexto, "rodar_fluxo", rodar.clone()).expect("depois");
+    assert_eq!(corpo_do_post(&pedidos)["veio_de_fora"], true);
+    fluxo(&contexto, "rodar_fluxo", rodar).expect("a seguinte");
+    assert_eq!(corpo_do_post(&pedidos)["veio_de_fora"], true, "a conversa segue marcada");
+}
+
+#[test]
+fn ler_tarefa_que_nao_existe_nao_marca() {
+    let local = ambiente(1);
+    let base = base_com_tarefa(local.contexto.pasta_atual.as_deref().expect("pasta"));
+    mcp::chamar_em(&base, &local.contexto, "ler_tarefa", &json!({"id": "sumida"})).expect("responde");
+    assert!(!local.contexto.veio_de_fora.load(Ordering::SeqCst));
+}
+
+#[test]
+fn mcp_de_agente_marcado_comeca_marcado() {
+    assert!(marcado_pelo_ambiente(Some(std::ffi::OsStr::new("1"))));
+    assert!(!marcado_pelo_ambiente(Some(std::ffi::OsStr::new("0"))));
+    assert!(!marcado_pelo_ambiente(None));
 }
 
 #[test]
