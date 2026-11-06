@@ -6,6 +6,9 @@ import { engineApi } from "../features/terminal/terminalService";
 
 /** Cópia antiga do quadro. Só é LIDA (para migrar ou quando o engine está fora): nunca é apagada nem reescrita. */
 export const KANBAN_STORAGE_KEY = "omni-agents-kanban";
+/** Quantos cartões antigos não entraram na migração. Fica guardado até o usuário dispensar: a migração
+ * roda uma vez só, e ele pode nem abrir o Kanban naquela sessão. */
+const KANBAN_FORA_DA_MIGRACAO_KEY = "omni-agents-kanban-fora-da-migracao";
 
 export const AVISO_ENGINE_FORA =
   "O engine do OMNI está fora do ar: mostrando o Kanban salvo neste computador. Mudanças só serão gravadas quando ele voltar.";
@@ -15,6 +18,27 @@ export const AVISO_GRAVACAO_FALHOU =
   "Não foi possível gravar no Kanban. As mudanças que não foram gravadas foram desfeitas.";
 export const AVISO_SEM_MIGRACAO =
   "O Kanban deste computador ainda não subiu para o engine. Tente de novo quando o engine voltar.";
+
+export function avisoDaMigracao(): string | null {
+  const quantos = Number(localStorage.getItem(KANBAN_FORA_DA_MIGRACAO_KEY));
+  if (!(quantos > 0)) return null;
+  return quantos === 1
+    ? "1 cartão do Kanban antigo não entrou no quadro novo. Ele continua guardado neste computador."
+    : `${quantos} cartões do Kanban antigo não entraram no quadro novo. Eles continuam guardados neste computador.`;
+}
+
+export function dispensarAvisoDaMigracao(): void {
+  localStorage.removeItem(KANBAN_FORA_DA_MIGRACAO_KEY);
+  limparAvisoDoKanban();
+}
+
+function guardarForaDaMigracao(quantos: number): void {
+  try {
+    localStorage.setItem(KANBAN_FORA_DA_MIGRACAO_KEY, String(quantos));
+  } catch {
+    // Armazenamento cheio: a migração valeu e não pode virar "falhou" por causa do aviso.
+  }
+}
 
 function isTask(value: unknown): value is KanbanTask {
   if (!value || typeof value !== "object") return false;
@@ -47,6 +71,16 @@ function normalize(raw: unknown): KanbanState | null {
     failureTimestamps: Array.isArray(candidate.failureTimestamps) ? candidate.failureTimestamps : [],
     pausedUntil: typeof candidate.pausedUntil === "string" ? candidate.pausedUntil : null,
   };
+}
+
+/** Cartões que `normalize` tira da cópia antiga: nem chegam ao engine, mas contam como de fora. */
+function cartoesIlegiveis(): number {
+  try {
+    const bruto = JSON.parse(localStorage.getItem(KANBAN_STORAGE_KEY) ?? "null") as { tasks?: unknown } | null;
+    return Array.isArray(bruto?.tasks) ? bruto.tasks.filter((tarefa) => !isTask(tarefa)).length : 0;
+  } catch {
+    return 0;
+  }
 }
 
 /** Lê o quadro antigo do `localStorage`; corrompido vira quadro vazio, sem mexer na chave. */
@@ -125,13 +159,16 @@ export async function migrarSePreciso(): Promise<"migrou" | "nada" | "falhou"> {
 async function migrarSeVazio(quadro: QuadroDoEngine): Promise<"migrou" | "nada" | "falhou"> {
   if (quadroJaTemDono(quadro)) return "nada";
   const local = loadKanban();
-  if (!temAlgoParaMigrar(local)) return "nada";
+  const ilegiveis = cartoesIlegiveis();
+  if (!temAlgoParaMigrar(local) && ilegiveis === 0) return "nada";
   try {
-    const resposta = await chamar<{ migrou: boolean }>("POST", "/kanban/migrar", {
+    const resposta = await chamar<{ migrou: boolean; deFora?: number }>("POST", "/kanban/migrar", {
       versao: 1,
       tarefas: local.tasks,
       ajustes: ajustesDoEstado(local),
     });
+    const deFora = (resposta.deFora ?? 0) + ilegiveis;
+    if (deFora > 0) guardarForaDaMigracao(deFora);
     return resposta.migrou ? "migrou" : "nada";
   } catch {
     return "falhou";
@@ -196,7 +233,7 @@ export async function carregarKanbanComOrigem(): Promise<{ estado: KanbanState; 
       }
     }
   }
-  limparAvisoDoKanban();
+  definirAvisoDoKanban(avisoDaMigracao());
   return { estado: quadroParaEstado(quadro), origem: "engine" };
 }
 

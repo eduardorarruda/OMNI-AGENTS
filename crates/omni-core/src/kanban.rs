@@ -128,23 +128,35 @@ impl Quadro {
     }
 }
 
-fn validar(cartao: &Cartao) -> Result<(), String> {
+/// O que nenhum cartão pode ter de errado, nem o que veio da migração.
+fn validar_estrutura(cartao: &Cartao) -> Result<(), String> {
     if cartao.id.is_empty() || cartao.id.len() > ID_MAX {
         return Err("Id do cartão inválido".into());
     }
     if cartao.project_id.is_empty() || cartao.project_id.len() > 200 {
         return Err("Projeto do cartão inválido".into());
     }
-    if cartao.title.trim().is_empty() || cartao.title.chars().count() > TITULO_MAX {
+    if cartao.title.trim().is_empty() {
         return Err("Título do cartão inválido".into());
-    }
-    if cartao.description.chars().count() > TEXTO_MAX
-        || cartao.result_note.as_deref().map_or(0, |n| n.chars().count()) > TEXTO_MAX
-    {
-        return Err("Texto do cartão grande demais".into());
     }
     if !STATUS_VALIDOS.contains(&cartao.status.as_str()) {
         return Err("Status do cartão inválido".into());
+    }
+    Ok(())
+}
+
+/// Teto dos textos. A migração guarda cartão antigo acima do teto: com `antes`, só conta o texto que
+/// mudou, para mover ou renomear esse cartão não falhar pela descrição que ninguém tocou.
+fn validar_textos(novo: &Cartao, antes: Option<&Cartao>) -> Result<(), String> {
+    let estourou = |texto: &str, anterior: Option<&str>, teto: usize| anterior != Some(texto) && texto.chars().count() > teto;
+    if estourou(&novo.title, antes.map(|c| c.title.as_str()), TITULO_MAX) {
+        return Err("Título do cartão inválido".into());
+    }
+    let nota = |c: &'_ Cartao| c.result_note.clone().unwrap_or_default();
+    if estourou(&novo.description, antes.map(|c| c.description.as_str()), TEXTO_MAX)
+        || estourou(&nota(novo), antes.map(nota).as_deref(), TEXTO_MAX)
+    {
+        return Err("Texto do cartão grande demais".into());
     }
     Ok(())
 }
@@ -158,7 +170,12 @@ pub enum ErroKanban {
 }
 
 pub fn criar(quadro: &mut Quadro, cartao: Cartao) -> Result<Cartao, ErroKanban> {
-    validar(&cartao).map_err(ErroKanban::Invalido)?;
+    validar_textos(&cartao, None).map_err(ErroKanban::Invalido)?;
+    inserir(quadro, cartao)
+}
+
+fn inserir(quadro: &mut Quadro, cartao: Cartao) -> Result<Cartao, ErroKanban> {
+    validar_estrutura(&cartao).map_err(ErroKanban::Invalido)?;
     if quadro.tarefas.iter().any(|c| c.id == cartao.id) {
         return Err(ErroKanban::Conflito("Já existe um cartão com esse id".into()));
     }
@@ -189,7 +206,8 @@ pub fn editar(quadro: &mut Quadro, id: &str, mudancas: &Value) -> Result<Cartao,
         alvo.insert(chave.clone(), valor.clone());
     }
     let mut novo: Cartao = serde_json::from_value(atual).map_err(|e| ErroKanban::Invalido(format!("Valor inválido: {e}")))?;
-    validar(&novo).map_err(ErroKanban::Invalido)?;
+    validar_estrutura(&novo).map_err(ErroKanban::Invalido)?;
+    validar_textos(&novo, Some(&quadro.tarefas[posicao])).map_err(ErroKanban::Invalido)?;
     // Fora de Rodando ninguém está com o cartão: se ele voltar à fila, é o dispatcher quem olha.
     if novo.status != "doing" {
         novo.pego_por = None;
@@ -341,26 +359,38 @@ pub fn escolher_projeto(quadro: &mut Quadro, id: &str, origem: Option<&str>, pro
     Ok(criado)
 }
 
-/// Migração única do `localStorage`: só escreve se o quadro do engine estiver vazio. Cartão inválido
-/// do material de origem é descartado sozinho. Devolve `true` se migrou.
-pub fn migrar(quadro: &mut Quadro, origem: Quadro) -> bool {
+/// `de_fora`: cartões do material de origem que não entraram. Zero quando a migração nem foi tentada.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Migracao {
+    pub migrou: bool,
+    pub de_fora: usize,
+}
+
+/// Migração única do `localStorage`: só escreve se o quadro do engine estiver vazio. O cartão entra
+/// inteiro, mesmo acima do teto de texto: perder ou cortar o que o usuário já tinha é pior. Vem cru
+/// para um cartão sem forma de `Cartao` virar contagem, em vez de derrubar os outros.
+pub fn migrar(quadro: &mut Quadro, tarefas: Vec<Value>, ajustes: &Value) -> Migracao {
     if quadro.migrado || !quadro.vazio() {
-        return false;
+        return Migracao { migrou: false, de_fora: 0 };
     }
     let mut novo = Quadro::default();
-    for cartao in origem.tarefas {
-        let _ = criar(&mut novo, cartao);
+    let mut de_fora = 0;
+    for tarefa in tarefas {
+        let entrou = serde_json::from_value::<Cartao>(tarefa).is_ok_and(|cartao| inserir(&mut novo, cartao).is_ok());
+        if !entrou {
+            de_fora += 1;
+        }
     }
-    if ajustar(&mut novo, &origem.ajustes).is_err() {
+    if ajustar(&mut novo, ajustes).is_err() {
         // ajuste estranho na origem não impede os cartões de migrar
         novo.ajustes = objeto_vazio();
     }
     if novo.tarefas.is_empty() && novo.ajustes.as_object().is_none_or(Map::is_empty) {
-        return false;
+        return Migracao { migrou: false, de_fora };
     }
     novo.migrado = true;
     *quadro = novo;
-    true
+    Migracao { migrou: true, de_fora }
 }
 
 #[cfg(test)]
@@ -422,26 +452,82 @@ mod tests {
         assert!(!remover(&mut q, "a"));
     }
 
+    fn migrar_cartoes(q: &mut Quadro, cartoes: Vec<Cartao>) -> Migracao {
+        migrar(q, cartoes.iter().map(|c| serde_json::to_value(c).unwrap()).collect(), &json!({}))
+    }
+
     #[test]
-    fn migrar_descarta_cartao_invalido_e_so_vale_com_quadro_vazio() {
+    fn migrar_conta_cartao_invalido_e_so_vale_com_quadro_vazio() {
         let mut ruim = cartao("r");
         ruim.status = "voando".into();
-        let origem = Quadro { tarefas: vec![cartao("a"), ruim], ..Quadro::default() };
         let mut q = Quadro::default();
-        assert!(migrar(&mut q, origem));
+        assert_eq!(migrar_cartoes(&mut q, vec![cartao("a"), ruim]), Migracao { migrou: true, de_fora: 1 });
         assert_eq!(q.tarefas.len(), 1);
-        assert!(!migrar(&mut q, Quadro { tarefas: vec![cartao("z")], ..Quadro::default() }));
+        assert_eq!(migrar_cartoes(&mut q, vec![cartao("z")]), Migracao { migrou: false, de_fora: 0 });
         assert_eq!(q.tarefas[0].id, "a");
+    }
+
+    #[test]
+    fn migrar_guarda_cartao_acima_do_teto_inteiro() {
+        let mut q = Quadro::default();
+        assert_eq!(migrar_cartoes(&mut q, vec![grande("g")]), Migracao { migrou: true, de_fora: 0 });
+        assert_eq!(q.tarefas, [grande("g")]);
+    }
+
+    #[test]
+    fn migrar_conta_cartao_sem_forma_e_id_repetido_sem_derrubar_os_outros() {
+        let mut q = Quadro::default();
+        let bom = serde_json::to_value(cartao("a")).unwrap();
+        let resultado = migrar(&mut q, vec![bom.clone(), bom, json!({"id":"sem-campos"}), json!(7)], &json!({}));
+        assert_eq!(resultado, Migracao { migrou: true, de_fora: 3 });
+        assert_eq!(q.tarefas.len(), 1);
+    }
+
+    #[test]
+    fn criar_segue_recusando_texto_acima_do_teto() {
+        let mut q = Quadro::default();
+        assert!(matches!(criar(&mut q, grande("g")), Err(ErroKanban::Invalido(_))));
+        assert!(q.tarefas.is_empty());
+    }
+
+    fn grande(id: &str) -> Cartao {
+        Cartao { title: "t".repeat(TITULO_MAX + 1), description: "d".repeat(TEXTO_MAX + 1), result_note: Some("n".repeat(TEXTO_MAX + 1)), ..cartao(id) }
+    }
+
+    #[test]
+    fn editar_cartao_grande_so_confere_o_texto_que_mudou() {
+        let mut q = Quadro { tarefas: vec![grande("g")], ..Quadro::default() };
+        editar(&mut q, "g", &json!({"status":"ready","position":9})).unwrap();
+        // mandar o mesmo texto de volta não é mudar
+        editar(&mut q, "g", &json!({"description":"d".repeat(TEXTO_MAX + 1)})).unwrap();
+        editar(&mut q, "g", &json!({"description":"curto"})).unwrap();
+        assert_eq!(q.tarefas[0].title, grande("g").title, "o que não mudou segue inteiro");
+        assert_eq!(q.tarefas[0].result_note, grande("g").result_note);
+    }
+
+    #[test]
+    fn editar_cartao_grande_ainda_recusa_texto_novo_acima_do_teto() {
+        let mut q = Quadro { tarefas: vec![grande("g")], ..Quadro::default() };
+        for campo in [json!({"title":"x".repeat(TITULO_MAX + 2)}), json!({"description":"x".repeat(TEXTO_MAX + 2)}), json!({"resultNote":"x".repeat(TEXTO_MAX + 2)})] {
+            assert!(matches!(editar(&mut q, "g", &campo), Err(ErroKanban::Invalido(_))), "{}", campo.as_object().unwrap().keys().next().unwrap());
+        }
+        assert_eq!(q.tarefas[0], grande("g"));
+    }
+
+    #[test]
+    fn editar_cartao_grande_nao_aceita_status_ruim() {
+        let mut q = Quadro { tarefas: vec![grande("g")], ..Quadro::default() };
+        assert!(matches!(editar(&mut q, "g", &json!({"status":"voando"})), Err(ErroKanban::Invalido(_))));
     }
 
     #[test]
     fn apagar_todos_os_cartoes_nao_ressuscita_a_copia_antiga() {
         let mut q = Quadro::default();
-        assert!(migrar(&mut q, Quadro { tarefas: vec![cartao("a")], ..Quadro::default() }));
+        assert!(migrar_cartoes(&mut q, vec![cartao("a")]).migrou);
         assert!(q.migrado);
         assert!(remover(&mut q, "a"));
         assert!(q.vazio());
-        assert!(!migrar(&mut q, Quadro { tarefas: vec![cartao("a")], ..Quadro::default() }));
+        assert!(!migrar_cartoes(&mut q, vec![cartao("a")]).migrou);
         assert!(q.tarefas.is_empty());
     }
 
@@ -451,13 +537,13 @@ mod tests {
         criar(&mut q, cartao("n")).unwrap();
         remover(&mut q, "n");
         assert!(q.migrado);
-        assert!(!migrar(&mut q, Quadro { tarefas: vec![cartao("velho")], ..Quadro::default() }));
+        assert!(!migrar_cartoes(&mut q, vec![cartao("velho")]).migrou);
     }
 
     #[test]
     fn migrar_com_origem_sem_nada_nao_conta_como_migracao() {
         let mut q = Quadro::default();
-        assert!(!migrar(&mut q, Quadro::default()));
+        assert_eq!(migrar_cartoes(&mut q, vec![]), Migracao { migrou: false, de_fora: 0 });
     }
 
     #[test]

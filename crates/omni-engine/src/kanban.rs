@@ -104,14 +104,21 @@ async fn ajustes_editar(State(state): State<Arc<EngineState>>, Json(mudancas): J
     alterar(&arquivo_do_kanban(&state), |q| regras::ajustar(q, &mudancas).map(|()| q.ajustes.clone())).map(Json)
 }
 
+/// O que a tela manda na migração. Cartão cru: quem separa o que entra é `regras::migrar`.
+#[derive(serde::Deserialize)]
+struct OrigemDaMigracao {
+    #[serde(default)]
+    tarefas: Vec<Value>,
+    #[serde(default)]
+    ajustes: Value,
+}
+
 /// Migração única do `localStorage`. Só escreve com o quadro do engine vazio; senão devolve
-/// `migrou:false` e o quadro atual, sem tocar em nada.
-async fn migrar(State(state): State<Arc<EngineState>>, Json(origem): Json<Quadro>) -> Result<Json<Value>, ApiError> {
-    let (migrou, quadro) = alterar(&arquivo_do_kanban(&state), |q| {
-        let migrou = regras::migrar(q, origem);
-        Ok((migrou, q.clone()))
-    })?;
-    Ok(Json(json!({"migrou": migrou, "quadro": quadro})))
+/// `migrou:false` sem tocar em nada. `deFora` diz quantos cartões não entraram. O quadro não volta na
+/// resposta: a tela relê, e resposta local acima de 4 MB chegaria vazia e esconderia a contagem.
+async fn migrar(State(state): State<Arc<EngineState>>, Json(origem): Json<OrigemDaMigracao>) -> Result<Json<Value>, ApiError> {
+    let resultado = alterar(&arquivo_do_kanban(&state), |q| Ok(regras::migrar(q, origem.tarefas, &origem.ajustes)))?;
+    Ok(Json(json!({"migrou": resultado.migrou, "deFora": resultado.de_fora})))
 }
 
 /// O desktop manda o resultado de uma busca que nasceu de um clique. O engine nunca busca sozinho.
@@ -304,6 +311,62 @@ mod tests {
         let ids: Vec<_> = quadro["tarefas"].as_array().unwrap().iter().map(|c| c["id"].as_str().unwrap().to_owned()).collect();
         assert_eq!(ids, ["a", "b"]);
         assert_eq!(quadro["ajustes"]["dispatcherEnabled"], true);
+    }
+
+    #[tokio::test]
+    async fn migrar_guarda_cartao_grande_inteiro_e_ele_segue_editavel() {
+        let (_dir, state) = fixture();
+        let app = app_local(state);
+        let mut grande = cartao("g");
+        grande["title"] = json!("t".repeat(600));
+        grande["description"] = json!("ç".repeat(25_000));
+        grande["resultNote"] = json!("n".repeat(25_000));
+        let corpo = json!({"versao":1,"tarefas":[grande.clone()],"ajustes":{}}).to_string();
+        let (status, r) = chamar(&app, "POST", "/kanban/migrar", &corpo).await;
+        assert_eq!(status, StatusCode::OK, "{r}");
+        assert_eq!((r["migrou"].clone(), r["deFora"].clone()), (json!(true), json!(0)));
+        let (_, quadro) = chamar(&app, "GET", "/kanban", "").await;
+        assert_eq!(quadro["tarefas"][0]["description"], grande["description"], "texto inteiro, sem corte");
+        assert_eq!(quadro["tarefas"][0]["title"], grande["title"]);
+        assert_eq!(quadro["tarefas"][0]["resultNote"], grande["resultNote"]);
+        let (status, r) = chamar(&app, "PATCH", "/kanban/cartoes/g", &json!({"status":"ready","updatedAt":"depois"}).to_string()).await;
+        assert_eq!(status, StatusCode::OK, "mover não pode falhar pelo texto que não mudou: {r}");
+        assert_eq!(r["description"], grande["description"]);
+    }
+
+    #[tokio::test]
+    async fn migrar_conta_o_cartao_que_ficou_de_fora() {
+        let (_dir, state) = fixture();
+        let app = app_local(state);
+        let mut status_ruim = cartao("r");
+        status_ruim["status"] = json!("voando");
+        let mut sem_forma = cartao("f");
+        sem_forma["position"] = json!("primeiro");
+        let corpo = json!({"versao":1,"tarefas":[cartao("a"),status_ruim,sem_forma,cartao("a")],"ajustes":{}}).to_string();
+        let (status, r) = chamar(&app, "POST", "/kanban/migrar", &corpo).await;
+        assert_eq!(status, StatusCode::OK, "cartão ruim não derruba os outros: {r}");
+        assert_eq!((r["migrou"].clone(), r["deFora"].clone()), (json!(true), json!(3)));
+        let (_, quadro) = chamar(&app, "GET", "/kanban", "").await;
+        assert_eq!(quadro["tarefas"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn migrar_sem_nenhum_cartao_aproveitavel_ainda_diz_quantos_ficaram_de_fora() {
+        let (_dir, state) = fixture();
+        let app = app_local(state);
+        let mut ruim = cartao("r");
+        ruim["status"] = json!("voando");
+        let (_, r) = chamar(&app, "POST", "/kanban/migrar", &json!({"versao":1,"tarefas":[ruim],"ajustes":{}}).to_string()).await;
+        assert_eq!((r["migrou"].clone(), r["deFora"].clone()), (json!(false), json!(1)));
+    }
+
+    #[tokio::test]
+    async fn migrar_recusado_por_quadro_cheio_nao_conta_cartao_de_fora() {
+        let (_dir, state) = fixture();
+        let app = app_local(state);
+        chamar(&app, "POST", "/kanban/cartoes", &cartao("a").to_string()).await;
+        let (_, r) = chamar(&app, "POST", "/kanban/migrar", &json!({"versao":1,"tarefas":[cartao("z")],"ajustes":{}}).to_string()).await;
+        assert_eq!((r["migrou"].clone(), r["deFora"].clone()), (json!(false), json!(0)));
     }
 
     #[tokio::test]

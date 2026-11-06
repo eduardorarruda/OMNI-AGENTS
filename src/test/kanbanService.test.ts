@@ -9,6 +9,7 @@ import {
   aplicarNoEngine,
   carregarKanban,
   carregarKanbanComOrigem,
+  dispensarAvisoDaMigracao,
   migrarSePreciso,
 } from "../services/kanbanService";
 import type { KanbanState } from "../types/kanban";
@@ -26,7 +27,7 @@ function cartao(id: string, extra: Record<string, unknown> = {}) {
 }
 
 /** Engine de mentira em memória, com as mesmas rotas do real. */
-function engineFalso(inicial: { tarefas?: unknown[]; ajustes?: Record<string, unknown>; migrado?: boolean } = {}) {
+function engineFalso(inicial: { tarefas?: unknown[]; ajustes?: Record<string, unknown>; migrado?: boolean; deFora?: number } = {}) {
   const quadro = { versao: 1, tarefas: [...(inicial.tarefas ?? [])] as Record<string, unknown>[], triagem: [], migrado: inicial.migrado ?? false, ajustes: { ...(inicial.ajustes ?? {}) } };
   const chamadas: { metodo: string; caminho: string; corpo: unknown }[] = [];
   api.mockImplementation(async (metodo, caminho, corpo) => {
@@ -38,7 +39,7 @@ function engineFalso(inicial: { tarefas?: unknown[]; ajustes?: Record<string, un
     if (metodo === "POST" && caminho === "/kanban/migrar") {
       const vazio = !quadro.migrado && quadro.tarefas.length === 0 && Object.keys(quadro.ajustes).length === 0;
       if (vazio) { quadro.tarefas.push(...json.tarefas); Object.assign(quadro.ajustes, json.ajustes); quadro.migrado = true; }
-      return ok({ migrou: vazio, quadro });
+      return ok({ migrou: vazio, deFora: inicial.deFora ?? 0 });
     }
     const m = caminho.match(/^\/kanban\/cartoes\/(.+)$/);
     if (m && metodo === "PATCH") {
@@ -143,6 +144,71 @@ describe("migração que não pode perder nem ressuscitar", () => {
     expect(quadro.tarefas).toHaveLength(0);
     expect(chamadas.find((c) => c.caminho === "/kanban/cartoes")).toBeUndefined();
     expect(localStorage.getItem(KANBAN_STORAGE_KEY)).toBe(JSON.stringify(antigo));
+  });
+});
+
+describe("cartão que ficou de fora da migração", () => {
+  it("avisa quantos ficaram de fora e mantém a chave antiga", async () => {
+    const bruto = JSON.stringify(antigo);
+    localStorage.setItem(KANBAN_STORAGE_KEY, bruto);
+    engineFalso({ deFora: 2 });
+    const { origem } = await carregarKanbanComOrigem();
+    expect(origem).toBe("engine");
+    expect(avisoDoKanban()).toMatch(/2 cartões/);
+    expect(localStorage.getItem(KANBAN_STORAGE_KEY)).toBe(bruto);
+  });
+
+  it("conta também o cartão que nem chegou ao engine por estar ilegível", async () => {
+    localStorage.setItem(KANBAN_STORAGE_KEY, JSON.stringify({ ...antigo, tasks: [...antigo.tasks, { id: "sem-campos" }] }));
+    const { chamadas } = engineFalso({ deFora: 1 });
+    await carregarKanbanComOrigem();
+    expect((chamadas.find((c) => c.caminho === "/kanban/migrar")?.corpo as { tarefas: unknown[] }).tarefas).toHaveLength(2);
+    expect(avisoDoKanban()).toMatch(/2 cartões/);
+  });
+
+  it("só um de fora fala no singular", async () => {
+    localStorage.setItem(KANBAN_STORAGE_KEY, JSON.stringify(antigo));
+    engineFalso({ deFora: 1 });
+    await carregarKanbanComOrigem();
+    expect(avisoDoKanban()).toMatch(/1 cartão /);
+  });
+
+  it("o aviso sobrevive às cargas seguintes e a reabrir o app, até o usuário dispensar", async () => {
+    localStorage.setItem(KANBAN_STORAGE_KEY, JSON.stringify(antigo));
+    const { quadro } = engineFalso({ deFora: 1 });
+    await carregarKanbanComOrigem();
+    expect(quadro.migrado).toBe(true);
+    limparAvisoDoKanban(); // app fechado: o aviso em memória some
+    await carregarKanbanComOrigem();
+    expect(avisoDoKanban()).toMatch(/1 cartão /);
+    dispensarAvisoDaMigracao();
+    expect(avisoDoKanban()).toBeNull();
+    await carregarKanbanComOrigem();
+    expect(avisoDoKanban()).toBeNull();
+  });
+
+  it("migração sem nada de fora não avisa", async () => {
+    localStorage.setItem(KANBAN_STORAGE_KEY, JSON.stringify(antigo));
+    engineFalso();
+    await carregarKanbanComOrigem();
+    expect(avisoDoKanban()).toBeNull();
+  });
+
+  it("migrar pelo botão Atualizar também guarda o aviso", async () => {
+    localStorage.setItem(KANBAN_STORAGE_KEY, JSON.stringify(antigo));
+    engineFalso({ deFora: 3 });
+    await migrarSePreciso();
+    await carregarKanbanComOrigem();
+    expect(avisoDoKanban()).toMatch(/3 cartões/);
+  });
+
+  it("cartão grande vai inteiro, sem cortar texto na tela", async () => {
+    const description = "d".repeat(25_000);
+    localStorage.setItem(KANBAN_STORAGE_KEY, JSON.stringify({ ...antigo, tasks: [cartao("g", { description })] }));
+    const { chamadas } = engineFalso();
+    await migrarSePreciso();
+    const enviado = chamadas.find((c) => c.caminho === "/kanban/migrar")?.corpo as { tarefas: { description: string }[] };
+    expect(enviado.tarefas[0].description).toBe(description);
   });
 });
 

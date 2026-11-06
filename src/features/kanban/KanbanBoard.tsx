@@ -5,6 +5,7 @@ import { listAgentClis, type AgentCliId, type AgentCliStatus } from "../terminal
 import { KANBAN_CARD_DRAG_TYPE, readDraggedCard } from "./kanbanDrag";
 import { SeloExterna, SeloSumiu, TriagemExterna } from "./TriagemExterna";
 import { useAvisoDoKanban } from "./kanbanAviso";
+import { avisoDaMigracao, dispensarAvisoDaMigracao } from "../../services/kanbanService";
 
 interface KanbanBoardProps {
   projectId: string;
@@ -37,8 +38,13 @@ export function KanbanBoard({ projectId, kanban, dispatch }: KanbanBoardProps) {
   return (
     <div className="flex h-full min-h-0 flex-col">
       {aviso && (
-        <div role="alert" className="shrink-0 border-b-2 border-border-subtle bg-bg-elevated px-4 py-2 text-xs text-text-primary">
-          {aviso}
+        <div role="alert" className="flex shrink-0 items-center gap-3 border-b-2 border-border-subtle bg-bg-elevated px-4 py-2 text-xs text-text-primary">
+          <span className="min-w-0 flex-1">{aviso}</span>
+          {aviso === avisoDaMigracao() && (
+            <Button size="sm" variant="glass" onClick={dispensarAvisoDaMigracao}>
+              Entendi
+            </Button>
+          )}
         </div>
       )}
       <div className="flex shrink-0 flex-wrap items-center gap-3 border-b-2 border-border-subtle bg-bg-elevated px-4 py-2.5">
