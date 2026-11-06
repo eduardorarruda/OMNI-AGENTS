@@ -158,6 +158,7 @@ pub fn run() {
             fluxos::fluxos_salvar,
             fluxos::fluxos_apagar,
             fluxos::fluxos_validar,
+            fluxos::fluxos_avisos,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

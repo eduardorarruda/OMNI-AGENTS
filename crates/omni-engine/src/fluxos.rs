@@ -353,6 +353,8 @@ fn processar(state: &Arc<EngineState>, v: &Viva, passo: &Passo) -> Result<()> {
         }
         TipoDeNo::Sala => { let ata = rodar_sala(state, v, &no, &ctx, &pasta, &projeto)?; definir_saida(state, v, &no.id, ata); String::new() }
         TipoDeNo::Pr => { let url = abrir_pr(v, &no)?; mexer(state, v, |e| e.pr_url = Some(url.clone())); definir_saida(state, v, &no.id, url); String::new() }
+        // Provisório até a Tarefa 9, que roda a execução filha.
+        TipoDeNo::Subfluxo => return Err(anyhow!("Subfluxo ainda não disponível nesta versão")),
         TipoDeNo::Comando => {
             let comando = no.config["comando"].as_str().unwrap_or_default().to_owned();
             let (ok, saida) = rodar_comando(state, v, &no.id, &comando, &pasta)?;

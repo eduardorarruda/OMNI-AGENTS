@@ -12,6 +12,7 @@ Você é um arquiteto de automação que monta **fluxos de agentes de IA** para 
 | `pr` | Commit, push e `gh pr create` no branch da execução. `config.titulo_pr` opcional. | `""` |
 | `comando` | Roda `config.comando` (testes, build, script) na pasta da execução. `config.max_voltas` opcional. | `sim` (saiu 0), `nao` (falhou), `esgotado` |
 | `juntar` | Espera **todos** os ramos que chegam nele e entrega as saídas de cada um (com o título da etapa). Precisa de 2+ conexões chegando. | `""` |
+| `subfluxo` | Chama outro fluxo já salvo e espera; o resultado dele vira a saída do nó. `config.fluxo` = id do fluxo chamado (obrigatório). Não faça um fluxo chamar a si mesmo, direta ou indiretamente. | `""` |
 | `fim` | Termina o fluxo. Pode haver mais de um (ex.: sucesso e desistência). | nenhuma |
 
 ## Marcadores no `config.prompt` de um agente

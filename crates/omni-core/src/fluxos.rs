@@ -37,6 +37,8 @@ pub enum TipoDeNo {
     /// Espera **todos** os ramos que chegam nele terminarem e junta as saídas: o fim de um trecho
     /// paralelo (dois agentes ao mesmo tempo → um revisor que lê os dois).
     Juntar,
+    /// Chama outro fluxo (`config.fluxo` = id) e espera: o resultado dele vira a saída deste nó.
+    Subfluxo,
     Fim,
 }
 
@@ -161,6 +163,7 @@ pub fn validar(f: &Fluxo) -> Result<(), String> {
         if n.tipo == TipoDeNo::Sala && participantes(n).len() < 2 { return Err(format!("A sala “{}” precisa de pelo menos dois participantes", rotulo(n))); }
         if n.tipo == TipoDeNo::Comando && n.config["comando"].as_str().is_none_or(|c| c.trim().is_empty()) { return Err(format!("O comando “{}” está vazio", rotulo(n))); }
         if n.tipo == TipoDeNo::Juntar && antecessores(f, &n.id).len() < 2 { return Err(format!("O Juntar “{}” precisa de pelo menos dois ramos chegando", rotulo(n))); }
+        if n.tipo == TipoDeNo::Subfluxo && fluxo_chamado(n).is_none() { return Err(format!("O Subfluxo “{}” precisa de um fluxo para chamar", rotulo(n))); }
         if n.tipo == TipoDeNo::Pr && f.na_pasta_do_projeto { return Err("Pull request precisa de worktree: desligue “rodar na pasta do projeto” ou troque o PR por um comando".into()); }
     }
     validar_limites(f)?;
@@ -185,6 +188,47 @@ fn validar_limites(f: &Fluxo) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Id do fluxo que um nó Subfluxo chama; `None` se o campo está ausente ou vazio.
+pub fn fluxo_chamado(n: &No) -> Option<&str> {
+    n.config["fluxo"].as_str().map(str::trim).filter(|id| !id.is_empty())
+}
+
+/// Ciclos de chamada alcançáveis a partir de `raiz` (que vale no lugar de `todos[raiz.id]`). Cada ciclo
+/// é a lista de ids do primeiro ao que fecha a volta (`x`, `y`, `x`). Fluxo chamado que não existe
+/// é ignorado: o aviso é só sobre ciclo, e a falta dele aparece na execução.
+pub fn ciclos_de_subfluxo(raiz: &Fluxo, todos: &[Fluxo]) -> Vec<Vec<String>> {
+    let busca = |id: &str| -> Option<&Fluxo> { if id == raiz.id { Some(raiz) } else { todos.iter().find(|f| f.id == id) } };
+    let mut ciclos = Vec::new();
+    let mut caminho = vec![raiz.id.clone()];
+    let mut vistos = HashSet::new();
+    percorrer_subfluxos(raiz, &busca, &mut caminho, &mut vistos, &mut ciclos);
+    ciclos
+}
+
+fn percorrer_subfluxos<'a>(atual: &Fluxo, busca: &impl Fn(&str) -> Option<&'a Fluxo>, caminho: &mut Vec<String>, vistos: &mut HashSet<String>, ciclos: &mut Vec<Vec<String>>) {
+    let chamados: Vec<String> = atual.nos.iter().filter(|n| n.tipo == TipoDeNo::Subfluxo).filter_map(fluxo_chamado).map(str::to_owned).collect();
+    for alvo in chamados {
+        if let Some(pos) = caminho.iter().position(|id| *id == alvo) {
+            let mut ciclo = caminho[pos..].to_vec();
+            ciclo.push(alvo);
+            if !ciclos.contains(&ciclo) { ciclos.push(ciclo); }
+            continue;
+        }
+        if !vistos.insert(alvo.clone()) { continue; }
+        let Some(filho) = busca(&alvo) else { continue };
+        caminho.push(alvo);
+        percorrer_subfluxos(filho, busca, caminho, vistos, ciclos);
+        caminho.pop();
+    }
+}
+
+/// Avisos em pt-BR para a tela mostrar ao salvar; ciclo não impede salvar.
+pub fn avisos_de_ciclo(raiz: &Fluxo, todos: &[Fluxo]) -> Vec<String> {
+    ciclos_de_subfluxo(raiz, todos).into_iter()
+        .map(|ciclo| format!("Ciclo de subfluxos: {}. O fluxo foi salvo, mas essa cadeia chamaria a si mesma sem parar.", ciclo.join(" › ")))
+        .collect()
 }
 
 pub fn rotulo(n: &No) -> String {
@@ -534,4 +578,64 @@ mod tests {
         let pasta = dir.path().join("fluxos");
         assert_eq!(listar(Some(&pasta), None).len(), 2);
     }
+    fn fluxo_chamando(id: &str, alvo: Option<&str>) -> Fluxo {
+        let config = alvo.map_or(serde_json::json!({}), |a| serde_json::json!({"fluxo": a}));
+        serde_json::from_value(serde_json::json!({"id": id, "nome": id, "nos": [
+            {"id": "e", "tipo": "entrada"}, {"id": "s", "tipo": "subfluxo", "config": config}, {"id": "f", "tipo": "fim"}],
+            "conexoes": [{"de": "e", "para": "s"}, {"de": "s", "para": "f"}]})).unwrap()
+    }
+
+    #[test]
+    fn subfluxo_sem_fluxo_nao_valida() {
+        assert!(validar(&fluxo_chamando("x", None)).unwrap_err().contains("Subfluxo"));
+        assert!(validar(&fluxo_chamando("x", Some("  "))).is_err());
+        validar(&fluxo_chamando("x", Some("y"))).unwrap();
+    }
+
+    #[test]
+    fn subfluxo_tem_uma_saida() {
+        assert_eq!(saidas(&TipoDeNo::Subfluxo), &[""]);
+        let mut f = fluxo_chamando("x", Some("y"));
+        f.conexoes[1].saida = "sim".into();
+        assert!(validar(&f).unwrap_err().contains("não tem a saída"));
+    }
+
+    #[test]
+    fn x_chama_y_chama_x_e_ciclo() {
+        let (x, y) = (fluxo_chamando("x", Some("y")), fluxo_chamando("y", Some("x")));
+        let ciclos = ciclos_de_subfluxo(&x, &[x.clone(), y]);
+        assert_eq!(ciclos, vec![vec!["x".to_owned(), "y".to_owned(), "x".to_owned()]]);
+    }
+
+    #[test]
+    fn x_chama_a_si_mesmo_e_ciclo() {
+        let x = fluxo_chamando("x", Some("x"));
+        assert_eq!(ciclos_de_subfluxo(&x, &[x.clone()]), vec![vec!["x".to_owned(), "x".to_owned()]]);
+    }
+
+    #[test]
+    fn cadeia_sem_volta_nao_e_ciclo() {
+        let (x, y, z) = (fluxo_chamando("x", Some("y")), fluxo_chamando("y", Some("z")), fluxo_chamando("z", None));
+        assert!(ciclos_de_subfluxo(&x, &[x.clone(), y, z]).is_empty());
+    }
+
+    #[test]
+    fn fluxo_chamado_inexistente_nao_trava_a_busca() {
+        let x = fluxo_chamando("x", Some("apagado"));
+        assert!(ciclos_de_subfluxo(&x, &[x.clone()]).is_empty());
+    }
+
+    #[test]
+    fn ciclo_nao_impede_salvar() {
+        let (x, y) = (fluxo_chamando("x", Some("y")), fluxo_chamando("y", Some("x")));
+        validar(&x).unwrap();
+        let pasta = std::env::temp_dir().join(format!("omni-ciclo-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&pasta);
+        salvar(&pasta, &x).unwrap();
+        let avisos = avisos_de_ciclo(&x, &[x.clone(), y]);
+        assert_eq!(avisos.len(), 1);
+        assert!(avisos[0].contains("x › y › x"), "{avisos:?}");
+        let _ = fs::remove_dir_all(&pasta);
+    }
+
 }

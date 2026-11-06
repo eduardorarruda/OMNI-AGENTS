@@ -35,6 +35,13 @@ pub fn fluxos_validar(fluxo: Fluxo) -> Result<(), String> {
     fluxos::validar(&fluxo)
 }
 
+/// Avisos que não impedem salvar (hoje: ciclos entre subfluxos), comparando com os fluxos já salvos.
+#[tauri::command(async)]
+pub fn fluxos_avisos(fluxo: Fluxo, project_path: Option<String>) -> Vec<String> {
+    let todos: Vec<Fluxo> = fluxos_listar(project_path).into_iter().map(|salvo| salvo.fluxo).collect();
+    fluxos::avisos_de_ciclo(&fluxo, &todos)
+}
+
 /// Monta um fluxo inteiro a partir de uma frase. A IA conhece os modelos de agente que já existem e
 /// pode propor novos; o resultado volta para a tela revisar antes de salvar (nada é gravado aqui).
 /// JSON fora do formato: uma segunda tentativa com o erro, para a IA corrigir.

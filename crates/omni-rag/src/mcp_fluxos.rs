@@ -124,7 +124,8 @@ fn grava_nas_extras(fluxo: &fluxos::Fluxo, no: &fluxos::No) -> bool {
 
 fn etapa_arriscada(fluxo: &fluxos::Fluxo, no: &fluxos::No, disponiveis: &[agentes::ModeloDeAgente]) -> bool {
     match no.tipo {
-        TipoDeNo::Comando | TipoDeNo::Pr => true,
+        // Subfluxo roda outro fluxo, que pode ter etapas arriscadas: vale como arriscado até a Tarefa 12.
+        TipoDeNo::Comando | TipoDeNo::Pr | TipoDeNo::Subfluxo => true,
         TipoDeNo::Agente => fluxo.na_pasta_do_projeto || grava_nas_extras(fluxo, no) || agente_arriscado(&no.agente, disponiveis),
         TipoDeNo::Sala => fluxo.na_pasta_do_projeto || grava_nas_extras(fluxo, no) || fluxos::participantes(no).iter().any(|nome| agente_arriscado(nome, disponiveis)),
         _ => false,
