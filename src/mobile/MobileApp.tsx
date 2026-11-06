@@ -1,6 +1,7 @@
 import { EtiquetaDoStatus, statusDaConversa } from "../components/ConversaStatus";
 import type { TerminalSession } from "../features/terminal/terminalService";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from "react";
+import { useModoLeve } from "../lib/modoLeve";
 import { Button } from "../components/ui/Button";
 import { Input } from "../components/ui/Input";
 import { SegmentedControl } from "../components/ui/SegmentedControl";
@@ -465,6 +466,8 @@ interface Enviado {
 const POLL_ATIVO_MS = 1_200;
 /** Parado, ainda curto: uma resposta digitada no PC aparece aqui em poucos segundos. */
 const POLL_PARADO_MS = 3_000;
+const POLL_ATIVO_LEVE_MS = 2_500;
+const POLL_PARADO_LEVE_MS = 6_000;
 
 /** Quanto esperar a mensagem enviada aparecer no transcript antes de desistir do balão otimista.
  *  Sem isto, uma mensagem que a CLI não aceitou deixava o "trabalhando" girando para sempre. */
@@ -527,7 +530,8 @@ function pertoDoFim(rolagem: HTMLElement | null): boolean {
   return rolagem.scrollHeight - rolagem.scrollTop - rolagem.clientHeight < PERTO_DO_FIM_PX;
 }
 
-export function ConversationDetail({ conversation: daLista, refresh, abrirConversa }: {
+/** Com `memo`, o re-render do App não desce até o chat, onde custa toda a lista de mensagens. */
+export const ConversationDetail = memo(function ConversationDetail({ conversation: daLista, refresh, abrirConversa }: {
   conversation: Conversation;
   refresh: () => Promise<void>;
   /** Retomar uma conversa do histórico cria a conversa do OMNI com outro id: a tela vai para ela. */
@@ -535,6 +539,8 @@ export function ConversationDetail({ conversation: daLista, refresh, abrirConver
 }) {
   const chaveRascunho = `omni-rascunho:${daLista.id}`;
   const [data, setData] = useState<Timeline | null>(null);
+  const timelineLida = useRef("");
+  const leve = useModoLeve();
   // O rascunho sobrevive ao refresh da página: atualizar no meio da digitação não apaga nada.
   const [text, setText] = useState(() => lerSessao(chaveRascunho) ?? "");
   const [anexos, setAnexos] = useState<Anexo[]>([]);
@@ -598,11 +604,16 @@ export function ConversationDetail({ conversation: daLista, refresh, abrirConver
     if (urlCarregada.current !== url) esquecerVersao(url);
     const resultado = await requestSeMudou<Timeline>(url);
     urlCarregada.current = url;
-    if (resultado) setData(resultado);
+    if (!resultado) return;
+    // No desktop não há `ETag`: toda leitura traz o corpo, e timeline igual não pode virar render.
+    const texto = JSON.stringify(resultado);
+    if (texto === timelineLida.current) return;
+    timelineLida.current = texto;
+    setData(resultado);
   }, [url]);
 
   usePoll(async () => { await ler(); setError(null); }, reason => setError(String(reason)), [ler],
-    ativo ? POLL_ATIVO_MS : POLL_PARADO_MS);
+    ativo ? (leve ? POLL_ATIVO_LEVE_MS : POLL_ATIVO_MS) : (leve ? POLL_PARADO_LEVE_MS : POLL_PARADO_MS));
 
   // O agente terminou (ou começou): a lista ao lado também precisa saber, sem esperar o ciclo dela.
   const estadoAnterior = useRef(conversation.state);
@@ -785,10 +796,17 @@ export function ConversationDetail({ conversation: daLista, refresh, abrirConver
     const rolagem = rolagemDe(fim.current);
     if (!lista || !rolagem) return;
     const seguir = () => { if (grudado.current) irParaOFim(); };
-    const mudancas = new MutationObserver(seguir);
+    // O spinner troca de texto 8 vezes por segundo e não muda a altura de nada.
+    const doSpinner = (registro: MutationRecord) => {
+      const alvo = registro.target instanceof Element ? registro.target : registro.target.parentElement;
+      return Boolean(alvo?.closest(".bubble-working"));
+    };
+    const mudancas = new MutationObserver((registros) => { if (!registros.every(doSpinner)) seguir(); });
     mudancas.observe(lista, { childList: true, subtree: true, characterData: true });
     const tamanho = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(seguir);
     tamanho?.observe(rolagem === document.scrollingElement ? lista : rolagem);
+    // A lista também: o balão do spinner pode ganhar uma linha, e o filtro acima ignora o texto dele.
+    tamanho?.observe(lista);
     lista.addEventListener("load", seguir, true);
     return () => { mudancas.disconnect(); tamanho?.disconnect(); lista.removeEventListener("load", seguir, true); };
   }, [data !== null, irParaOFim]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -910,7 +928,7 @@ export function ConversationDetail({ conversation: daLista, refresh, abrirConver
       for (let tentativa = 0; tentativa < 15; tentativa += 1) {
         await new Promise((r) => setTimeout(r, 100));
         const lido = await request<Timeline>(url);
-        setData(lido);
+        timelineLida.current = JSON.stringify(lido); setData(lido);
         if (JSON.stringify(lido.conversation?.capabilities?.escolha ?? null) !== assinatura) break;
       }
       void refresh().catch(() => undefined);
@@ -1091,6 +1109,15 @@ export function ConversationDetail({ conversation: daLista, refresh, abrirConver
       imagens={message.imagens ? { conversa: conversation.id, n: indiceDaMensagem(message.id), total: message.imagens } : undefined} />;
   }
 
+  // Fora do JSX para digitar não reconstruir a lista: `text` mora neste componente.
+  const listaDeBlocos = useMemo(() => blocos.map((bloco, indice) => {
+    const dia = separadores.get(indice);
+    const conteudo = renderizarBloco(bloco, indice);
+    // Chave pelo bloco, não pela posição: com as antigas entrando em cima, a posição muda.
+    const chave = chaveDoBloco(bloco);
+    return dia ? <div key={`dia-${chave}`} className="chat-grupo"><p className="chat-dia"><span>{dia}</span></p>{conteudo}</div> : conteudo;
+  }), [blocos, separadores, continuacoes, ativo, ultimoBloco, conversation.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
   return <section className="chat-tela" ref={telaRef}
     onDragEnter={(evento) => { if (temArquivos(evento.dataTransfer)) { evento.preventDefault(); setArrastando(true); } }}
     onDragOver={(evento) => { if (temArquivos(evento.dataTransfer)) { evento.preventDefault(); evento.dataTransfer.dropEffect = "copy"; } }}
@@ -1126,13 +1153,7 @@ export function ConversationDetail({ conversation: daLista, refresh, abrirConver
       {!data && <Vazio>Carregando conversa…</Vazio>}
       {data && mensagens.length === 0 && !enviado && !ativo && !timeline?.unavailable_segments.length &&
         <Vazio>Nenhuma mensagem ainda. Mande o primeiro prompt abaixo.</Vazio>}
-      {blocos.map((bloco, indice) => {
-        const dia = separadores.get(indice);
-        const conteudo = renderizarBloco(bloco, indice);
-        // Chave pelo bloco, não pela posição: com as antigas entrando em cima, a posição muda.
-        const chave = chaveDoBloco(bloco);
-        return dia ? <div key={`dia-${chave}`} className="chat-grupo"><p className="chat-dia"><span>{dia}</span></p>{conteudo}</div> : conteudo;
-      })}
+      {listaDeBlocos}
       {enviado && <MessageBubble lado="user" pendente texto={enviado.texto}
         anexosLocais={enviado.anexos.length ? enviado.anexos : undefined} />}
       {capability?.approve && <div className="bubble bubble-agent bubble-aprovacao glass">
@@ -1215,7 +1236,7 @@ export function ConversationDetail({ conversation: daLista, refresh, abrirConver
       comandos={listarComandos}
       voz={vozInstalada ? { transcrever: (audio) => transcrever(conversation.id, audio), corrigir: (texto) => corrigir(conversation.id, texto) } : undefined} />
   </section>;
-}
+});
 
 /** Arrasto que traz arquivos (e não texto ou uma aba sendo movida). */
 function temArquivos(dados: DataTransfer | null): boolean {

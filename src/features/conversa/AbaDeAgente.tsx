@@ -9,6 +9,7 @@ import type { TerminalSession } from "../terminal/terminalService";
 import { EVENTO_ANEXAR, EVENTO_ARRASTANDO, EVENTO_TEXTO, tipoPelaExtensao } from "../../mobile/anexos";
 import { EVENTO_TEXTO_DA_SESSAO, type TextoDaSessao } from "./colarNaSessao";
 import { ConversationDetail } from "../../mobile/MobileApp";
+import { ritmo } from "../../lib/modoLeve";
 import { listTerminalSessions } from "../terminal/terminalService";
 import { useSessionProvider } from "../terminal/sessionProviders";
 import { GitBranchStatus } from "../git/GitBranchStatus";
@@ -69,11 +70,16 @@ export function AbaDeAgente({
  *  parado) decide se dá para trocar agora. */
 function useConversaDaSessao(sessionId: string, intervaloMs = 3_000) {
   const [conversa, setConversa] = useState<Conversation | null>(null);
+  const lida = useRef("");
   usePoll(async () => {
     const sessao = (await listTerminalSessions()).find((item) => item.id === sessionId);
     if (!sessao?.conversation_id) return;
     const dados = await request<Timeline>(`/conversas/${encodeURIComponent(sessao.conversation_id)}/timeline`);
-    if (dados.conversation) setConversa(dados.conversation);
+    if (!dados.conversation) return;
+    const texto = JSON.stringify(dados.conversation);
+    if (texto === lida.current) return;
+    lida.current = texto;
+    setConversa(dados.conversation);
   }, () => undefined, [sessionId], intervaloMs);
   return conversa;
 }
@@ -229,7 +235,7 @@ function ChatDaSessao({ sessionId, onVerTerminal }: { sessionId: string; onVerTe
   const [aberta, setAberta] = useState(false);
   // O estado no topo acompanha o agente (a conversa acima é lida uma vez, para montar o chat).
   // Abrindo, relê a cada segundo para as etapas andarem junto com o terminal.
-  const aoVivo = useConversaDaSessao(sessionId, aberta ? 3_000 : 1_000);
+  const aoVivo = useConversaDaSessao(sessionId, aberta ? ritmo(3_000, 10_000) : 1_000);
   const caps = (aoVivo ?? conversa)?.capabilities;
   const pronto = Boolean(caps && (caps.prompt || caps.approve || caps.escolha || caps.enfileirar));
   useEffect(() => { if (pronto) setAberta(true); }, [pronto]);

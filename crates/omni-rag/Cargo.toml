@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 flate2 = "1"
+omni-core = { path = "../omni-core" }
 regex = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { workspace = true }

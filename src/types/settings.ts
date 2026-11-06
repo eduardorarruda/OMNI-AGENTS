@@ -38,6 +38,8 @@ export interface AppSettings {
   terminalOpacity: number;
   glass: GlassLevel;
   animations: MotionLevel;
+  /** Máquina fraca: sem efeitos e com menos consultas ao engine. Vence `animations` e `background`. */
+  modoLeve: boolean;
 
   /** Como o painel de arquivos salva edições: sozinho com debounce, ou só no Ctrl+S. */
   fileSaveMode: "auto" | "manual";
@@ -71,6 +73,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   terminalOpacity: 100,
   glass: "forte",
   animations: "completas",
+  modoLeve: false,
 
   fileSaveMode: "auto",
 

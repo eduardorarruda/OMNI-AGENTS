@@ -1,8 +1,11 @@
 //! Base de conhecimento local do OMNI: arquivos viram trechos num índice FTS5. A busca devolve só
 //! trechos curtos, e o agente pede o trecho inteiro quando precisa — é isso que economiza tokens.
+pub mod engine;
 pub mod extrair;
 pub mod ganchos;
 pub mod mcp;
+pub mod mcp_fluxos;
+pub mod mcp_historico;
 pub mod memoria;
 pub mod tarefas;
 
@@ -65,7 +68,7 @@ pub fn sem_segredos(texto: &str) -> String {
     static PADROES: OnceLock<Regex> = OnceLock::new();
     let padroes = PADROES.get_or_init(|| {
         Regex::new(r"(?x)
-            sk-[A-Za-z0-9_-]{20,} | gh[pousr]_[A-Za-z0-9]{20,} | github_pat_[A-Za-z0-9_]{20,} | AKIA[0-9A-Z]{16}
+            sk-[A-Za-z0-9_-]{20,} | [sr]k_(?:live|test)_[A-Za-z0-9]{16,} | gh[pousr]_[A-Za-z0-9]{20,} | github_pat_[A-Za-z0-9_]{20,} | AKIA[0-9A-Z]{16}
             | xox[baprs]-[A-Za-z0-9-]{10,} | eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}
             | (?i:bearer\s+[A-Za-z0-9._~+/-]{20,})
             | (?s:-----BEGIN[A-Z\ ]*PRIVATE\ KEY-----.*?-----END[A-Z\ ]*PRIVATE\ KEY-----)
@@ -214,5 +217,7 @@ impl Base {
 mod testes;
 #[cfg(test)]
 mod testes_memoria;
+#[cfg(test)]
+mod testes_mcp;
 #[cfg(test)]
 mod testes_tarefas;

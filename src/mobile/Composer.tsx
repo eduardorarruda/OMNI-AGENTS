@@ -3,6 +3,7 @@ import { AttachmentIcon, CloseIcon, LoaderIcon, MicIcon, SendIcon, StopIcon, War
 import { Button } from "../components/ui/Button";
 import { Modal } from "../components/ui/Modal";
 import { CursorNeon } from "./CursorNeon";
+import { useModoLeve } from "../lib/modoLeve";
 import { iconForPath, iconStyle } from "../features/files/fileIcons";
 import { tamanhoLegivel, type Anexo } from "./anexos";
 import type { Comando } from "./api";
@@ -419,6 +420,7 @@ export function Microfone({ texto, onTexto, travado = false }: { texto: string; 
  * ignora clique programático em input escondido. Sem `accept`: qualquer tipo de arquivo vale.
  */
 export function Composer({ texto, onTexto, anexos, onAdicionar, onRemover, onEnviar, podeEnviar, ocupado, placeholder, toolbar, chips, direita, onParar, parando, buscarArquivos, voz, comandos, historico = [] }: ComposerProps) {
+  const leve = useModoLeve();
   const campo = useRef<HTMLTextAreaElement>(null);
   // O texto de agora, não o de quando a gravação começou: dá para digitar enquanto fala.
   const textoAtual = useRef(texto);
@@ -504,9 +506,10 @@ export function Composer({ texto, onTexto, anexos, onAdicionar, onRemover, onEnv
     const el = campo.current;
     if (!el) return;
     el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, ALTURA_MAXIMA_PX)}px`;
+    const altura = el.scrollHeight;
+    el.style.height = `${Math.min(altura, ALTURA_MAXIMA_PX)}px`;
     // Barra de rolagem só quando passa do limite; antes aparecia até com o campo vazio.
-    el.style.overflowY = el.scrollHeight > ALTURA_MAXIMA_PX ? "auto" : "hidden";
+    el.style.overflowY = altura > ALTURA_MAXIMA_PX ? "auto" : "hidden";
   }, [texto]);
 
   function colar(event: ClipboardEvent<HTMLTextAreaElement>) {
@@ -614,7 +617,7 @@ export function Composer({ texto, onTexto, anexos, onAdicionar, onRemover, onEnv
           onBlur={() => { ditado.conferir(); window.setTimeout(() => { setMencao(null); setBarra(null); }, 150); }}
           aria-autocomplete="list" aria-expanded={Boolean((mencao && sugestoes.length) || comandosVisiveis.length)}
           aria-controls={comandosVisiveis.length ? "comandos" : "mencoes"} />
-        <CursorNeon campo={campo} valor={texto} />
+        {!leve && <CursorNeon campo={campo} valor={texto} />}
         </div>
         {comandosVisiveis.length > 0 && (
           <ul id="comandos" role="listbox" aria-label="Comandos do agente" className="composer-mencoes">

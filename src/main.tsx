@@ -2,6 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { App } from "./App";
 import "./index.css";
+import "./lib/modoLeve.css";
 import { invoke } from "@tauri-apps/api/core";
 import { usarAbrirArquivo, usarBuscadorDeIcone, usarTransporte } from "./mobile/api";
 import { EVENTO_ABRIR_ARQUIVO } from "./mobile/anexos";

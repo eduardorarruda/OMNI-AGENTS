@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 
 /** Estilos que mudam onde o texto quebra: o espelho copia todos para o cursor cair no lugar certo. */
 const MEDIDAS = [
@@ -45,13 +45,22 @@ export function CursorNeon({ campo, valor }: { campo: RefObject<HTMLTextAreaElem
   const [batida, setBatida] = useState(0);
   const [digitando, setDigitando] = useState(false);
   const parou = useRef<number>();
+  const quadro = useRef(0);
+
+  // Uma tecla dispara `input`, `keyup` e `selectionchange`: sem juntar, `medir` força layout várias vezes.
+  const atualizar = useCallback(() => {
+    if (quadro.current) return;
+    quadro.current = requestAnimationFrame(() => {
+      quadro.current = 0;
+      const el = campo.current;
+      if (!el) return;
+      setLugar(document.activeElement === el && el.selectionStart === el.selectionEnd ? medir(el) : null);
+    });
+  }, [campo]);
 
   useEffect(() => {
     const el = campo.current;
     if (!el) return;
-    const atualizar = () => requestAnimationFrame(() => {
-      setLugar(document.activeElement === el && el.selectionStart === el.selectionEnd ? medir(el) : null);
-    });
     const tecla = () => {
       setBatida((b) => b + 1);
       setDigitando(true);
@@ -70,14 +79,15 @@ export function CursorNeon({ campo, valor }: { campo: RefObject<HTMLTextAreaElem
       document.removeEventListener("selectionchange", atualizar);
       window.removeEventListener("resize", atualizar);
       window.clearTimeout(parou.current);
+      cancelAnimationFrame(quadro.current);
+      quadro.current = 0;
     };
-  }, [campo]);
+  }, [campo, atualizar]);
 
   // Texto trocado de fora (ditado, menção, campo limpo depois de enviar) não dispara `input`.
   useEffect(() => {
-    const el = campo.current;
-    if (el && document.activeElement === el) requestAnimationFrame(() => setLugar(medir(el)));
-  }, [campo, valor]);
+    if (campo.current && document.activeElement === campo.current) atualizar();
+  }, [campo, valor, atualizar]);
 
   if (!lugar) return null;
   return (

@@ -23,7 +23,7 @@ export function AppBackground({ settings }: { settings: AppSettings }) {
   const cores = useMemo(() => coresDoEfeito(settings.accent), [settings.accent]);
 
   const efeito = getBackgroundEffect(settings.background);
-  if (!efeito) return null;
+  if (!efeito || settings.modoLeve) return null;
 
   const Efeito = efeito.component;
 

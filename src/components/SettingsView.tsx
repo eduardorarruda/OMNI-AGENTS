@@ -69,6 +69,11 @@ const GLASS_LEVELS: { value: GlassLevel; label: string }[] = [
   { value: "forte", label: "Forte" },
 ];
 
+const MODO_LEVE: { value: "ligado" | "desligado"; label: string }[] = [
+  { value: "desligado", label: "Desligado" },
+  { value: "ligado", label: "Ligado" },
+];
+
 const MOTION_LEVELS: { value: MotionLevel; label: string }[] = [
   { value: "completas", label: "Completas" },
   { value: "reduzidas", label: "Reduzidas" },
@@ -257,6 +262,16 @@ function AparenciaSection({ settings, onChange }: SectionProps) {
           options={GLASS_LEVELS}
           value={settings.glass}
           onChange={(v) => onChange({ glass: v })}
+        />
+
+        <Divider />
+
+        <Segmented
+          label="Modo leve"
+          description="Para computador mais fraco: tira animações, sombras, desfoque e fundo animado, e faz o app consultar os agentes com menos frequência. As respostas podem aparecer um pouco mais devagar."
+          options={MODO_LEVE}
+          value={settings.modoLeve ? "ligado" : "desligado"}
+          onChange={(v) => onChange({ modoLeve: v === "ligado" })}
         />
 
         <Divider />

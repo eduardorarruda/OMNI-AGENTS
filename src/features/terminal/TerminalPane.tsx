@@ -2,6 +2,8 @@ import "@xterm/xterm/css/xterm.css";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import { useEffect, useRef, useState } from "react";
+import { modoLeveLigado } from "../../lib/modoLeve";
+import { intervaloDaLeitura } from "./ritmoDoTerminal";
 import { Button } from "../../components/ui";
 import { EVENTO_FOCAR_TERMINAL } from "../conversa/colarNaSessao";
 import type { WorkspaceTab } from "../../types/workspace";
@@ -49,10 +51,18 @@ const FALHAS_ATE_AVISAR = 3;
  * volta ao ritmo econômico. O engine responde um snapshot em ~0,3ms, então o custo é a viagem de IPC
  * e só acontece enquanto alguém está usando aquela pane.
  */
-const POLL_ATIVO_MS = 16;
-const POLL_OCIOSO_MS = 100;
 /** Quanto tempo depois da última atividade o ritmo rápido continua valendo. */
 const JANELA_ATIVA_MS = 700;
+/** O agente sobe atrás do chat e faz perguntas ao terminal: no começo ele responde no ritmo normal. */
+const JANELA_DE_SUBIDA_MS = 15_000;
+
+/** Atrás do chat (`invisible`), em aba inativa ou com a janela minimizada. */
+function terminalOculto(host: HTMLElement | null) {
+  if (document.hidden) return true;
+  const opcoes = { visibilityProperty: true, checkVisibilityCSS: true } as CheckVisibilityOptions;
+  return host?.checkVisibility?.(opcoes) === false;
+}
+
 type FailoverStatus = {
   tone: "working" | "success" | "warning";
   text: string;
@@ -121,6 +131,7 @@ export function TerminalPane({ projectId, projectPath, paneId, tab, onSessionCre
     let reviving = false;
     /** Última tecla digitada ou saída recebida — decide o ritmo da leitura. */
     let atividadeEm = Date.now();
+    let subiuEm = Date.now();
     const terminal = new Terminal({
       convertEol: true,
       cursorBlink: true,
@@ -227,6 +238,7 @@ export function TerminalPane({ projectId, projectPath, paneId, tab, onSessionCre
      *  reabertura do app) ou cuja CLI saiu. Mesmo caminho do botão "reiniciar": mesmo id, e conversa
      *  Claude volta com `--resume`. Sem isto a aba ficava preta e digitar dava "session is not running". */
     async function revive(sessionId: string) {
+      subiuEm = Date.now();
       if (reviving) return;
       reviving = true;
       try {
@@ -303,9 +315,13 @@ export function TerminalPane({ projectId, projectPath, paneId, tab, onSessionCre
       // só gasta socket e atrasa a recuperação.
       if (!cancelled) {
         const ativo = Date.now() - atividadeEm < JANELA_ATIVA_MS;
-        const intervalo = falhasRef.current >= FALHAS_ATE_AVISAR
-          ? 1_000
-          : ativo ? POLL_ATIVO_MS : POLL_OCIOSO_MS;
+        const subindo = Date.now() - subiuEm < JANELA_DE_SUBIDA_MS;
+        const intervalo = intervaloDaLeitura({
+          falhando: falhasRef.current >= FALHAS_ATE_AVISAR,
+          oculto: !subindo && terminalOculto(hostRef.current),
+          ativo,
+          leve: modoLeveLigado(),
+        });
         pollTimer = window.setTimeout(poll, intervalo);
       }
     }

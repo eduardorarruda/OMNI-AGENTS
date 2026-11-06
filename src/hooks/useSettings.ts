@@ -4,6 +4,7 @@ import type { AppSettings } from "../types/settings";
 import { DEFAULT_SETTINGS } from "../types/settings";
 import { loadSettings, saveSettings } from "../services/settingsService";
 import { setMotionLevel } from "../lib/motion";
+import { definirModoLeve } from "../lib/modoLeve";
 import { setShortcutOverrides } from "../lib/shortcuts";
 import { aplicarPaleta } from "../lib/aplicarTema";
 import { aplicarIconeDaJanela } from "../features/appIcon";
@@ -14,7 +15,8 @@ export function useSettings() {
 
   // Fora de effect de propósito: os hooks de GSAP dos filhos rodam logo após
   // este render e precisam do nível já atualizado.
-  setMotionLevel(settings.animations);
+  setMotionLevel(settings.modoLeve ? "desligadas" : settings.animations);
+  definirModoLeve(settings.modoLeve);
   setShortcutOverrides(settings.shortcuts);
 
   const updateSettings = useCallback((updates: Partial<AppSettings>) => {
@@ -60,9 +62,11 @@ export function useSettings() {
     const root = document.documentElement;
     // Efeitos animados são desenhados pelo <AppBackground>, não pelo CSS —
     // um data-bg genérico desliga as camadas do body (ver index.css).
-    root.dataset.bg = isBackgroundEffect(settings.background) ? "efeito" : settings.background;
+    const fundo = settings.modoLeve ? "nenhum" : settings.background;
+    root.dataset.bg = isBackgroundEffect(fundo) ? "efeito" : fundo;
     root.dataset.glass = settings.glass;
-    root.dataset.motion = settings.animations;
+    root.dataset.motion = settings.modoLeve ? "desligadas" : settings.animations;
+    root.toggleAttribute("data-leve", settings.modoLeve);
     root.dataset.conversa = settings.conversationBackground;
     // 100% vira alfa .25 da cor do tema: acima disso a linha disputa com o texto.
     root.style.setProperty("--conversa-grade", String(settings.conversationGridOpacity / 400));
@@ -79,6 +83,7 @@ export function useSettings() {
       root.style.removeProperty("--app-bg-image");
     }
   }, [
+    settings.modoLeve,
     settings.background,
     settings.backgroundPath,
     settings.backgroundOpacity,

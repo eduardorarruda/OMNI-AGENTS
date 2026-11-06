@@ -1,0 +1,17 @@
+/* Modo leve: tira o que custa pintura. O movimento já some por `data-motion="desligadas"`. */
+:root[data-leve] *,
+:root[data-leve] *::before,
+:root[data-leve] *::after {
+  box-shadow: none !important;
+  text-shadow: none !important;
+  filter: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* Os anéis de foco eram `box-shadow`: sem isto, navegar pelo teclado ficaria sem indicação. */
+:root[data-leve] :focus-visible { outline: 2px solid rgb(var(--c-accent)); outline-offset: 1px; }
+
+/* O cursor neon sai de cena e o nativo, que ele deixava transparente, volta. */
+:root[data-leve] #reply { caret-color: rgb(var(--c-accent)) !important; }
+:root[data-leve] .cursor-neon { display: none !important; }

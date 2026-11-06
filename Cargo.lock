@@ -2866,6 +2866,7 @@ name = "omni-rag"
 version = "0.1.0"
 dependencies = [
  "flate2",
+ "omni-core",
  "regex",
  "rusqlite",
  "serde",

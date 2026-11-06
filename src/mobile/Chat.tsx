@@ -5,6 +5,7 @@ import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import type { Element, ElementContent, Root } from "hast";
 import { AgentIcon } from "../components/ui/AgentIcon";
+import { useModoLeve } from "../lib/modoLeve";
 import { OmniLogo } from "../components/ui/OmniLogo";
 import {
   BookIcon, CheckIcon, CopyIcon, EditIcon, FileTextIcon, GlobeIcon, ListIcon, RobotIcon, SearchIcon, ToolsIcon,
@@ -46,7 +47,9 @@ export const FRASES_TRABALHANDO = [
 ];
 
 function reduzirMovimento(): boolean {
-  return typeof window !== "undefined" && Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)").matches);
+  if (typeof window === "undefined") return false;
+  // "Animações desligadas" também vale aqui: o spinner é trocado por JS, o CSS não o alcança.
+  return document.documentElement.dataset.motion === "desligadas" || Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)").matches);
 }
 
 function sortearOutra(atual: string): string {
@@ -483,17 +486,18 @@ function duracao(segundos: number): string {
  * a cada poucos segundos. Quem usa leitor recebe uma única mensagem estável.
  */
 export function AgentWorking({ desde, provider, tokens }: AgentWorkingProps) {
+  const leve = useModoLeve();
   const [quadro, setQuadro] = useState(0);
   const [frase, setFrase] = useState(() => sortearOutra(""));
   const [agora, setAgora] = useState(() => Date.now());
 
   useEffect(() => {
-    const parado = reduzirMovimento();
+    const parado = leve || reduzirMovimento();
     const spinner = parado ? undefined : window.setInterval(() => setQuadro((q) => (q + 1) % QUADROS.length), 120);
     const troca = parado ? undefined : window.setInterval(() => setFrase(sortearOutra), 2800);
     const relogio = window.setInterval(() => setAgora(Date.now()), 1000);
     return () => { window.clearInterval(spinner); window.clearInterval(troca); window.clearInterval(relogio); };
-  }, []);
+  }, [leve]);
 
   const segundos = Math.max(0, Math.floor((agora - desde) / 1000));
   return (
@@ -501,7 +505,7 @@ export function AgentWorking({ desde, provider, tokens }: AgentWorkingProps) {
       <span className="sr-only">O agente está trabalhando</span>
       <span className="working" aria-hidden>
         {provider && <AgentIcon provider={provider} size={12} className="shrink-0 self-center" />}
-        <span className="working-glyph">{reduzirMovimento() ? "✻" : QUADROS[quadro]}</span>
+        <span className="working-glyph">{leve || reduzirMovimento() ? "✻" : QUADROS[quadro]}</span>
         <span className="working-verb">{frase}…</span>
         <span className="working-time">({duracao(segundos)}{tokens ? <> · <span className="working-tokens">↓ {tokens} tokens</span></> : null})</span>
       </span>

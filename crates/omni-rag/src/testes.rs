@@ -155,7 +155,7 @@ fn mcp_lista_busca_le_e_ignora_notificacao() {
     base.adicionar(&arquivo).unwrap();
     assert!(mcp::responder(&base, &json!({"method": "notifications/initialized"})).is_none());
     let ferramentas = mcp::responder(&base, &json!({"id": 1, "method": "tools/list"})).unwrap();
-    assert_eq!(ferramentas["result"]["tools"].as_array().unwrap().len(), 4);
+    assert_eq!(ferramentas["result"]["tools"].as_array().unwrap().len(), 17);
     let busca = mcp::responder(&base, &json!({"id": 2, "method": "tools/call", "params": {"name": "buscar_conhecimento", "arguments": {"consulta": "homologacao"}}})).unwrap();
     let texto = busca["result"]["content"][0]["text"].as_str().unwrap();
     assert!(texto.starts_with('#') && texto.contains("rack"));
