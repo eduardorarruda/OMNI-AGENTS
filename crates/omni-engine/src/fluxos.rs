@@ -152,7 +152,7 @@ pub fn listar() -> Vec<Value> {
     lista.sort_by_key(|e| std::cmp::Reverse(e.criado_ms));
     lista.into_iter().map(|e| json!({"id": e.id, "fluxo": e.fluxo.nome, "fluxo_id": e.fluxo.id, "projeto": e.projeto, "projeto_id": e.projeto_id,
         "entrada": e.entrada.chars().take(160).collect::<String>(), "status": e.status, "criado_ms": e.criado_ms, "atualizado_ms": e.atualizado_ms,
-        "pr_url": e.pr_url, "custo_usd": e.custo_usd, "erro": e.erro, "aviso_seq": e.aviso_seq, "aviso": e.aviso})).collect()
+        "pr_url": e.pr_url, "custo_usd": e.custo_usd, "erro": e.erro, "aviso_seq": e.aviso_seq, "aviso": e.aviso, "pai": e.pai.map(|p| p.execucao)})).collect()
 }
 
 pub fn obter(id: &str) -> Option<Execucao> { execucoes().lock().ok()?.get(id)?.lock().ok().map(|e| e.clone()) }

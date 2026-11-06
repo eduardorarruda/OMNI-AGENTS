@@ -1975,6 +1975,7 @@ body.redimensionando-lateral .xterm, body.redimensionando-lateral iframe { point
 .fx-no.is-pr { --fx-cor: 148 163 184; }
 .fx-no.is-comando { --fx-cor: 45 212 191; }
 .fx-no.is-juntar { --fx-cor: 244 114 182; }
+.fx-no.is-subfluxo { --fx-cor: 251 146 60; }
 .fx-no.is-fim { --fx-cor: var(--c-text-muted); }
 .fx-no-topo { display: flex; align-items: center; gap: .4rem; margin-bottom: .3rem; }
 .fx-no-icone { display: grid; place-items: center; width: 1.4rem; height: 1.4rem; color: rgb(var(--fx-cor, var(--c-accent))); background: rgb(var(--c-bg-primary)); border: 1px solid rgb(var(--c-border-subtle)); }
@@ -2047,6 +2048,7 @@ body.redimensionando-lateral .xterm, body.redimensionando-lateral iframe { point
 :is(.fx-suspenso-menu, .fx-menu-rapido) .is-pr, .fx-etapa-num.is-pr { --fx-cor: 148 163 184; }
 :is(.fx-suspenso-menu, .fx-menu-rapido) .is-comando, .fx-etapa-num.is-comando { --fx-cor: 45 212 191; }
 :is(.fx-suspenso-menu, .fx-menu-rapido) .is-juntar, .fx-etapa-num.is-juntar { --fx-cor: 244 114 182; }
+:is(.fx-suspenso-menu, .fx-menu-rapido) .is-subfluxo, .fx-etapa-num.is-subfluxo { --fx-cor: 251 146 60; }
 .fx-opcao-fluxo { display: flex; align-items: flex-start; gap: .55rem; padding: .55rem .6rem; font-size: .75rem; color: rgb(var(--c-text-secondary)); background: rgb(var(--c-overlay) / .04); border: 1px solid rgb(var(--c-border-subtle)); cursor: pointer; }
 .fx-opcao-fluxo input { margin-top: .15rem; accent-color: rgb(var(--c-accent)); }
 .fx-opcao-fluxo b { display: block; color: rgb(var(--c-text-primary)); }

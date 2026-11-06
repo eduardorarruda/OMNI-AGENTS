@@ -730,6 +730,19 @@ fn derrubar_engine(amb: &Ambiente, x: &str, y: &str) {
 }
 
 #[test]
+fn listar_marca_a_filha_com_o_pai() {
+    let amb = ambiente();
+    amb.salvar(so_comando("y", "Y", "echo ok"));
+    let id = amb.iniciar(chama("x", "X", "y"));
+    let filha = filha_de(&id, "s");
+    let lista = listar();
+    let linha = |alvo: &str| lista.iter().find(|l| l["id"] == alvo).unwrap().clone();
+    assert_eq!(linha(&filha)["pai"], json!(id));
+    assert!(linha(&id)["pai"].is_null());
+    ate_parar(&id);
+}
+
+#[test]
 fn pai_recebe_a_saida_da_filha() {
     let amb = ambiente();
     amb.salvar(so_comando("y", "Y", "echo resultado-de-y"));

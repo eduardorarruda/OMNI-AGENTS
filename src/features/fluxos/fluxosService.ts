@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { engineApi } from "../terminal/terminalService";
 
-export type TipoDeNo = "entrada" | "agente" | "condicao" | "aprovacao" | "sala" | "pr" | "comando" | "juntar" | "fim";
+export type TipoDeNo = "entrada" | "agente" | "condicao" | "aprovacao" | "sala" | "pr" | "comando" | "juntar" | "subfluxo" | "fim";
 
 export interface NoDoFluxo {
   id: string;
@@ -32,16 +32,24 @@ export interface EstadoDoNo {
   session_id: string | null; custo_usd: number; erro: string | null; cli: string | null; conta: string | null; caminho: string | null;
   /** O que o agente está fazendo agora (última ação ou fala). */
   atividade?: string; modelo?: string | null; esforco?: string | null;
+  /** Nó Subfluxo: a execução que ele abriu. */
+  filha?: string | null;
 }
 export type StatusDaExecucao = "rodando" | "pausado" | "aguardando" | "concluido" | "falhou" | "cancelado";
 export interface Execucao {
   id: string; fluxo: Fluxo; projeto: string; projeto_id: string; entrada: string; pasta: string;
   branch: string | null; base: string | null; status: StatusDaExecucao; erro: string | null;
   criado_ms: number; atualizado_ms: number; nos: Record<string, EstadoDoNo>; pr_url: string | null; custo_usd: number;
+  /** Só em execução filha: quem a chamou. */
+  pai?: { execucao: string; no: string } | null;
+  /** Nomes da cadeia, da raiz até esta. Vazia na raiz. */
+  pilha?: string[];
 }
 export interface ResumoDaExecucao {
   id: string; fluxo: string; fluxo_id: string; projeto: string; projeto_id: string; entrada: string;
   status: StatusDaExecucao; criado_ms: number; atualizado_ms: number; pr_url: string | null; custo_usd: number; erro: string | null;
+  /** Id de quem chamou, quando é um subfluxo. */
+  pai?: string | null;
 }
 export interface ItemDoHistorico { kind: "text" | "tool" | "command" | "notice"; role: string; text: string; tool?: string; /** "Volta N" ou "<quem> · rodada N": só divide o log. */ separador?: boolean }
 export type TipoDeEvento = "inicio" | "fim" | "falha" | "atividade" | "aprovacao" | "subfluxo" | "aviso";
@@ -49,7 +57,7 @@ export interface EventoDeFluxo { seq: number; ms: number; no: string | null; tip
 
 /** Saídas de cada tipo, na ordem em que aparecem no nó ("" = a saída normal). */
 export const SAIDAS: Record<TipoDeNo, string[]> = {
-  entrada: [""], agente: [""], sala: [""], pr: [""], juntar: [""], fim: [],
+  entrada: [""], agente: [""], sala: [""], pr: [""], juntar: [""], subfluxo: [""], fim: [],
   condicao: ["sim", "nao", "esgotado"], comando: ["sim", "nao", "esgotado"], aprovacao: ["sim", "nao"],
 };
 
@@ -61,6 +69,7 @@ export const TIPOS: { tipo: TipoDeNo; nome: string; dica: string }[] = [
   { tipo: "pr", nome: "Pull request", dica: "Commit, push e gh pr create no branch da execução" },
   { tipo: "comando", nome: "Comando", dica: "Roda um comando (testes, build, script): deu certo → sim; falhou → não" },
   { tipo: "juntar", nome: "Juntar", dica: "Espera todos os ramos paralelos que chegam nele e junta as saídas" },
+  { tipo: "subfluxo", nome: "Subfluxo", dica: "Chama outro fluxo na mesma pasta e espera; o resultado dele vira a saída desta etapa" },
   { tipo: "fim", nome: "Fim", dica: "Termina o fluxo" },
 ];
 
@@ -69,6 +78,8 @@ export const salvarFluxo = (escopo: "global" | "projeto", projectPath: string | 
   invoke<string>("fluxos_salvar", { escopo, projectPath, fluxo, idAnterior: idAnterior ?? null });
 export const apagarFluxo = (escopo: "global" | "projeto", projectPath: string | null, id: string) => invoke<void>("fluxos_apagar", { escopo, projectPath, id });
 export const validarFluxo = (fluxo: Fluxo) => invoke<void>("fluxos_validar", { fluxo });
+/** O que não impede salvar mas merece aviso (ciclo entre subfluxos). */
+export const avisosDoFluxo = (fluxo: Fluxo, projectPath: string | null) => invoke<string[]>("fluxos_avisos", { fluxo, projectPath });
 
 /** As rotas do executor, pelo protocolo local do engine (as mesmas que a web e o celular usam). */
 async function api<T>(method: string, path: string, body?: unknown): Promise<T> {

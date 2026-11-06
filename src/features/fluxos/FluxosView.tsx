@@ -24,9 +24,10 @@ import { NovoFluxo } from "./NovoFluxo";
 import { nosAtivos } from "./execucaoModel";
 import { aoPedirExecucao, consumirPedidoDeExecucao } from "./pedidoDeExecucao";
 import { LinhaDoTempo } from "./LinhaDoTempo";
+import { SeletorDeSubfluxo, TrilhaDeSubfluxo } from "./TrilhaDeSubfluxo";
 import "./fluxos.css";
 import {
-  abrirConversaDoNo, acaoNaExecucao, apagarFluxo, aprovarNo, criarFluxoComIa, etapasDoFluxo, fluxoVazio, historicoDoNo, iniciarExecucao,
+  abrirConversaDoNo, acaoNaExecucao, apagarFluxo, aprovarNo, avisosDoFluxo, criarFluxoComIa, etapasDoFluxo, fluxoVazio, historicoDoNo, iniciarExecucao,
   lerJsonDeFluxo, listarConversasParaFluxo, listarExecucoes, listarFluxos, obterExecucao, pedidoComConversa, SAIDAS, salvarFluxo, TIPOS, validarFluxo,
   type Execucao, type Fluxo, type FluxoGerado, type FluxoSalvo, type ItemDoHistorico, type NoDoFluxo, type ResumoDaExecucao, type TipoDeNo,
 } from "./fluxosService";
@@ -36,7 +37,7 @@ const tiposDeAresta = { omni: ArestaDoFluxo };
 const erroDe = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const STATUS_EXEC: Record<string, string> = { rodando: "Rodando", pausado: "Pausado", aguardando: "Esperando você", concluido: "Concluído", falhou: "Falhou", cancelado: "Cancelado" };
 const COR_SAIDA: Record<string, string> = { sim: "#22c55e", nao: "#ef4444", esgotado: "#eab308" };
-const NOME_TIPO: Record<TipoDeNo, string> = { entrada: "Entrada", agente: "Agente", condicao: "Condição", aprovacao: "Aprovação", sala: "Time", pr: "Pull request", comando: "Comando", juntar: "Juntar", fim: "Fim" };
+const NOME_TIPO: Record<TipoDeNo, string> = { entrada: "Entrada", agente: "Agente", condicao: "Condição", aprovacao: "Aprovação", sala: "Time", pr: "Pull request", comando: "Comando", juntar: "Juntar", subfluxo: "Subfluxo", fim: "Fim" };
 const duracao = (ms: number) => { const s = Math.max(0, Math.round(ms / 1000)); return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}min ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}min`; };
 
 interface Props {
@@ -173,10 +174,11 @@ function Fluxos({ projectId, projectPath, onAbrirSessao, onClose }: Props) {
         temEntrada: (fluxoNaTela?.conexoes ?? []).some((c) => c.para === no.id),
         modelo: estado?.modelo ?? (String(no.config.modelo ?? "") || agente?.modelo || undefined),
         esforco: estado?.esforco ?? (String(no.config.esforco ?? "") || agente?.esforco || undefined),
+        chamado: no.tipo === "subfluxo" ? fluxos.find((f) => f.id === no.config.fluxo)?.nome ?? (String(no.config.fluxo ?? "") || undefined) : undefined,
         ...(emExecucao ? {} : { onDuplicar: duplicarNo, onApagar: apagarNo }),
       },
     };
-  }), [fluxoNaTela, selecionado, emExecucao, execucao, agentePorNome, duplicarNo, apagarNo]);
+  }), [fluxoNaTela, selecionado, emExecucao, execucao, agentePorNome, duplicarNo, apagarNo, fluxos]);
 
   const edges: ArestaOmni[] = useMemo(() => (fluxoNaTela?.conexoes ?? []).map((c) => {
     const destino = execucao?.nos[c.para];
@@ -288,7 +290,10 @@ function Fluxos({ projectId, projectPath, onAbrirSessao, onClose }: Props) {
       await validarFluxo(fluxo);
       await salvarFluxo(escopo, projectPath, fluxo, origem?.escopo === escopo ? origem.id : undefined);
       if (origem?.id && origem.escopo !== escopo) await apagarFluxo(origem.escopo, projectPath, origem.id);
-      setRascunho(fluxo); setOrigem({ escopo, id: fluxo.id }); setSujo(false); setErro(null); setAviso("Fluxo salvo.");
+      setRascunho(fluxo); setOrigem({ escopo, id: fluxo.id }); setSujo(false); setErro(null);
+      // Já salvou: não conseguir conferir vira aviso, não erro.
+      const avisos = await avisosDoFluxo(fluxo, projectPath).catch(() => ["Não consegui conferir ciclos entre subfluxos."]);
+      setAviso(["Fluxo salvo.", ...avisos].join(" "));
       await recarregar();
     } catch (e) { setErro(erroDe(e)); }
   }
@@ -336,6 +341,8 @@ function Fluxos({ projectId, projectPath, onAbrirSessao, onClose }: Props) {
     return () => window.clearTimeout(t);
   }, [selecionado, painelAberto, getNode, flowToScreenPosition, setCenter, getZoom]);
   const abrirExecucao = (id: string) => { setExecucaoId(id); setSelecionado(null); setMenu(null); setDetalhes(true); };
+  // Nó que chamou um subfluxo leva para a filha; os outros só selecionam.
+  const abrirNo = (id: string) => { const filha = execucao?.nos[id]?.filha; if (filha) abrirExecucao(filha); else setSelecionado(id); };
   // Pedido do selo global do topo: abre a execução ao entrar na tela ou, se já está aberta, na hora.
   useEffect(() => {
     const pegar = () => { const id = consumirPedidoDeExecucao(); if (id) abrirExecucao(id); };
@@ -376,7 +383,7 @@ function Fluxos({ projectId, projectPath, onAbrirSessao, onClose }: Props) {
                     <li key={x.id}>
                       <button type="button" role="menuitem" onClick={() => { fechar(); abrirExecucao(x.id); }} className={`fx-item${execucaoId === x.id ? " is-ativo" : ""}`} title={x.entrada}>
                         <span className="fx-item-nome"><span className={`fx-ponto st-${x.status}`} />{x.fluxo}</span>
-                        <span className="fx-item-sub">{STATUS_EXEC[x.status]} · {new Date(x.criado_ms).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</span>
+                        <span className="fx-item-sub">{x.pai ? "Subfluxo · " : ""}{STATUS_EXEC[x.status]} · {new Date(x.criado_ms).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</span>
                       </button>
                     </li>
                   ))}
@@ -389,11 +396,11 @@ function Fluxos({ projectId, projectPath, onAbrirSessao, onClose }: Props) {
             <>
               <span className={`fx-status st-${execucao.status}`}>{STATUS_EXEC[execucao.status]}</span>
               <div className="min-w-0 flex-1">
-                <div className="fx-barra-titulo">{execucao.fluxo.nome}</div>
+                {execucao.pilha?.length ? <TrilhaDeSubfluxo execucao={execucao} onAbrir={abrirExecucao} /> : <div className="fx-barra-titulo">{execucao.fluxo.nome}</div>}
                 <div className="fx-barra-sub" title={execucao.entrada}>{execucao.entrada}</div>
               </div>
               {execucao.pr_url && <a className="fx-link" href={execucao.pr_url} target="_blank" rel="noreferrer">Ver PR</a>}
-              {execucao.status === "rodando" && <Button size="sm" variant="ghost" onClick={() => void acaoNaExecucao(execucao.id, "pausar").catch((e) => setErro(erroDe(e)))}><StopIcon aria-hidden className="h-3.5 w-3.5" />Pausar</Button>}
+              {(execucao.status === "rodando" || execucao.status === "aguardando") && <Button size="sm" variant="ghost" onClick={() => void acaoNaExecucao(execucao.id, "pausar").catch((e) => setErro(erroDe(e)))}><StopIcon aria-hidden className="h-3.5 w-3.5" />Pausar</Button>}
               {(execucao.status === "pausado" || execucao.status === "falhou") && <Button size="sm" variant="primary" onClick={() => void acaoNaExecucao(execucao.id, "retomar").catch((e) => setErro(erroDe(e)))}><PlayIcon aria-hidden className="h-3.5 w-3.5" />Retomar</Button>}
               {["rodando", "pausado", "aguardando", "falhou"].includes(execucao.status) && (
                 <Suspenso titulo="Mais opções da execução" alinhar="direita" rotulo="Opções">
@@ -468,6 +475,7 @@ function Fluxos({ projectId, projectPath, onAbrirSessao, onClose }: Props) {
           {fluxoNaTela ? (
             <ReactFlow nodes={nodes} edges={edges} nodeTypes={tiposDeNo} edgeTypes={tiposDeAresta}
               onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onConnect={onConnect} onConnectEnd={onConnectEnd}
+              onNodeClick={(_, n) => { if (emExecucao) abrirNo(n.id); }}
               isValidConnection={(c) => c.source !== c.target}
               connectionLineType={ConnectionLineType.SmoothStep} connectionLineStyle={{ stroke: "#f97316", strokeWidth: 2.5, strokeDasharray: "6 4" }}
               connectionRadius={36} snapToGrid snapGrid={[20, 20]}
@@ -514,13 +522,13 @@ function Fluxos({ projectId, projectPath, onAbrirSessao, onClose }: Props) {
 
       {painelAberto && <aside className="fx-painel" aria-label="Detalhes">
         {!noSelecionado ? (
-          execucao ? <ResumoDaExecucao execucao={execucao} onSelecionar={setSelecionado} />
+          execucao ? <ResumoDaExecucao execucao={execucao} onSelecionar={abrirNo} />
             : rascunho ? <ResumoDoFluxo fluxo={rascunho} onMudar={(parte) => mudarRascunho((r) => ({ ...r, ...parte }))} />
             : <div className="fx-painel-vazio"><p>Nada selecionado.</p></div>
         ) : execucao ? (
           <PainelDaExecucao execucao={execucao} no={noSelecionado} onErro={setErro} onAbrirSessao={onAbrirSessao} onVoltar={() => setSelecionado(null)} />
         ) : rascunho ? (
-          <PainelDoNo no={noSelecionado} agentes={agentes} modelos={modelos} projectPath={projectPath} onAgenteCriado={recarregar} onErro={setErro}
+          <PainelDoNo no={noSelecionado} agentes={agentes} modelos={modelos} projectPath={projectPath} fluxos={fluxos} fluxoAtual={rascunho.id} onAgenteCriado={recarregar} onErro={setErro}
             onMudar={(no) => mudarRascunho((r) => ({ ...r, nos: r.nos.map((n) => (n.id === no.id ? no : n)) }))} />
         ) : null}
         {execucao && <LinhaDoTempo execucaoId={execucao.id} viva={execucao.status === "rodando" || execucao.status === "pausado" || execucao.status === "aguardando"}
@@ -563,8 +571,8 @@ function ResumoDoFluxo({ fluxo, onMudar }: { fluxo: Fluxo; onMudar: (parte: Part
   );
 }
 
-function PainelDoNo({ no, agentes, modelos, projectPath, onMudar, onAgenteCriado, onErro }: {
-  no: NoDoFluxo; agentes: AgenteSalvo[]; modelos: Partial<Record<CliDoAgente, ModeloDaCli[]>>; projectPath: string | null;
+function PainelDoNo({ no, agentes, modelos, projectPath, fluxos, fluxoAtual, onMudar, onAgenteCriado, onErro }: {
+  no: NoDoFluxo; agentes: AgenteSalvo[]; modelos: Partial<Record<CliDoAgente, ModeloDaCli[]>>; projectPath: string | null; fluxos: FluxoSalvo[]; fluxoAtual: string;
   onMudar: (no: NoDoFluxo) => void; onAgenteCriado: () => Promise<void>; onErro: (e: string) => void;
 }) {
   const cfg = (parte: Record<string, unknown>) => onMudar({ ...no, config: { ...no.config, ...parte } });
@@ -677,6 +685,11 @@ function PainelDoNo({ no, agentes, modelos, projectPath, onMudar, onAgenteCriado
           </Field>
           <p className="fx-dica">Ligue o “não” a um agente que corrige e volte para cá: vira um loop de “testa → corrige → testa”. Sem nada no “não”, uma falha para a execução.</p>
         </>
+      )}
+      {no.tipo === "subfluxo" && (
+        <Field label="Fluxo chamado" htmlFor="fx-subfluxo" description="Roda na mesma pasta desta execução e recebe a saída da etapa anterior. A saída do Fim dele vira a saída desta etapa; se ele falhar, esta etapa falha.">
+          <SeletorDeSubfluxo id="fx-subfluxo" fluxos={fluxos} atualId={fluxoAtual} valor={String(no.config.fluxo ?? "")} onMudar={(fluxo) => cfg({ fluxo })} />
+        </Field>
       )}
       {no.tipo === "pr" && (
         <Field label="Título do PR" htmlFor="fx-titulopr" description="Vazio = a primeira linha da tarefa.">

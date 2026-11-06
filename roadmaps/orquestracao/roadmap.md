@@ -99,4 +99,4 @@ Instruções do agente (system prompt)...
 ### Subfluxos (2026-11-06, plano das oito melhorias)
 - [x] Fluxo chama fluxo em cadeia (X → Y → Z): execução filha na pasta do pai, Pausar/Parar/Retomar valem para a cadeia,
       ciclo roda até você cancelar (`crates/omni-engine/src/fluxos_subfluxo.rs`).
-- [ ] Trilha `X › Y › Z` e seletor de fluxo no editor (Tarefa 10).
+- [x] Trilha `X › Y › Z` e seletor de fluxo no editor (Tarefa 10, `src/features/fluxos/TrilhaDeSubfluxo.tsx`).
