@@ -4,6 +4,7 @@ pub mod busca;
 pub mod engine;
 pub mod extrair;
 pub mod ganchos;
+pub mod grafo;
 pub mod mcp;
 pub mod mcp_fluxos;
 pub mod mcp_historico;
@@ -235,3 +236,5 @@ mod testes_busca;
 mod testes_pessoais;
 #[cfg(test)]
 mod testes_tarefas;
+#[cfg(test)]
+mod testes_grafo;

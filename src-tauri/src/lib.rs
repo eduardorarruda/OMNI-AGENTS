@@ -102,6 +102,7 @@ pub fn run() {
             conhecimento::rag_claude_ligar,
             conhecimento::rag_memoria_estado,
             conhecimento::rag_memoria_ligar,
+            conhecimento::memoria_grafo,
             tarefas::tarefas_config,
             tarefas::tarefas_salvar,
             tarefas::tarefas_estado,
