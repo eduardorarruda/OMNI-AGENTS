@@ -134,9 +134,15 @@ fn resumo_passa_por_sem_segredos() {
 fn medir_grafo_na_copia() {
     let Some(caminho) = std::env::var_os("OMNI_GRAFO_COPIA") else { return };
     let base = Base::abrir(Path::new(&caminho)).unwrap();
-    let inicio = std::time::Instant::now();
-    let grafo = grafo_de_notas(&base, None);
-    println!("notas={} ligacoes={} tempo={:?}", grafo.notas.len(), grafo.ligacoes.len(), inicio.elapsed());
+    let medir = |rotulo: &str| {
+        let inicio = std::time::Instant::now();
+        let grafo = grafo_com_cache(&base, None);
+        println!("{rotulo}: notas={} ligacoes={} tempo={:?}", grafo.notas.len(), grafo.ligacoes.len(), inicio.elapsed());
+    };
+    medir("frio");
+    medir("quente");
+    base.banco.execute("update notas set atualizado_ms = atualizado_ms + 1 where slug = (select slug from notas limit 1)", []).unwrap();
+    medir("depois de mudar uma nota");
 }
 
 #[test]
@@ -153,6 +159,75 @@ fn cache_vale_enquanto_as_notas_nao_mudam_e_cai_quando_mudam() {
     base.gravar_nota(&nota("c", "ver [[a]]", "", "", "")).unwrap();
     assert_eq!(grafo_com_cache(&base, None).notas.len(), 3);
     assert_eq!(grafo_com_cache(&base, Some("nenhum")).notas.len(), 0);
+}
+
+fn parecidas(slug: &str) -> Nota {
+    nota(slug, "deploy produção esteira publicar servidor", "", "", "")
+}
+
+#[test]
+fn mudar_uma_nota_nao_refaz_a_busca_das_outras() {
+    let pasta = tempfile::tempdir().unwrap();
+    let base = base(pasta.path());
+    gravar(&base, &[parecidas("a"), parecidas("b"), parecidas("c")]);
+    zerar_buscas_de_texto();
+    grafo_com_cache(&base, None);
+    assert_eq!(buscas_de_texto(), 3);
+    grafo_com_cache(&base, None);
+    assert_eq!(buscas_de_texto(), 3, "sem mudança não busca");
+    let mut mudada = parecidas("b");
+    mudada.corpo = "outro assunto totalmente diferente sobre bolo".into();
+    base.gravar_nota(&mudada).unwrap();
+    grafo_com_cache(&base, None);
+    assert_eq!(buscas_de_texto(), 4, "só a nota alterada");
+    gravar(&base, &[parecidas("d")]);
+    grafo_com_cache(&base, None);
+    assert_eq!(buscas_de_texto(), 5, "só a nota nova");
+}
+
+#[test]
+fn apagar_uma_nota_tira_a_ligacao_de_quem_apontava() {
+    let pasta = tempfile::tempdir().unwrap();
+    let base = base(pasta.path());
+    gravar(&base, &[parecidas("a"), parecidas("b")]);
+    assert!(grafo_com_cache(&base, None).ligacoes.iter().any(|l| l.tipo == "texto"));
+    base.banco.execute("delete from notas where slug = 'b'", []).unwrap();
+    let depois = grafo_com_cache(&base, None);
+    assert!(depois.ligacoes.is_empty());
+    assert_eq!(depois.notas.len(), 1);
+}
+
+#[test]
+fn cache_corrompido_recalcula() {
+    let pasta = tempfile::tempdir().unwrap();
+    let base = base(pasta.path());
+    gravar(&base, &[parecidas("a"), parecidas("b")]);
+    std::fs::write(pasta.path().join("rag/grafo-cache.json"), "{ lixo").unwrap();
+    assert!(grafo_com_cache(&base, None).ligacoes.iter().any(|l| l.tipo == "texto"));
+    assert!(serde_json::from_slice::<serde_json::Value>(&std::fs::read(pasta.path().join("rag/grafo-cache.json")).unwrap()).is_ok());
+}
+
+#[test]
+fn chamadas_ao_mesmo_tempo_dao_o_mesmo_grafo() {
+    let pasta = tempfile::tempdir().unwrap();
+    let caminho = pasta.path().to_path_buf();
+    gravar(&self::base(&caminho), &[parecidas("a"), parecidas("b"), parecidas("c")]);
+    let fios: Vec<_> = (0..4).map(|_| { let c = caminho.clone(); std::thread::spawn(move || grafo_com_cache(&self::base(&c), None)) }).collect();
+    let grafos: Vec<Grafo> = fios.into_iter().map(|f| f.join().unwrap()).collect();
+    assert!(grafos.windows(2).all(|par| par[0] == par[1]));
+    let provisorios: Vec<_> = std::fs::read_dir(caminho.join("rag")).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.ends_with(".tmp")).collect();
+    assert!(provisorios.is_empty(), "{provisorios:?}");
+}
+
+#[test]
+fn tags_passam_por_sem_segredos() {
+    let pasta = tempfile::tempdir().unwrap();
+    let base = base(pasta.path());
+    gravar(&base, &[nota("a", "corpo da nota", "", "x", "")]);
+    let segredo = format!("sk-{}", "b".repeat(30));
+    base.banco.execute("update notas set tags = ?1", [format!("ok,{segredo}")]).unwrap();
+    let grafo = grafo_de_notas(&base, None);
+    assert!(grafo.notas[0].tags.iter().all(|t| !t.contains(&segredo)));
 }
 
 #[test]

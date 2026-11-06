@@ -410,11 +410,10 @@ export function App() {
           dispatch({ type: "CREATE_TAB", paneId: activeProject.activePaneId, kind: "kanban", title: "Kanban" });
           setView("workspace");
         }}
-        onOpenGrafo={() => {
-          if (!activeProject) return;
+        onOpenGrafo={activeProject ? () => {
           dispatch({ type: "CREATE_TAB", paneId: activeProject.activePaneId, kind: "grafo", title: "Grafo" });
           setView("workspace");
-        }}
+        } : undefined}
         onOpenSettings={(section) => {
           setSettingsSection(section);
           if (view !== "settings") setViewBeforeSettings(view);

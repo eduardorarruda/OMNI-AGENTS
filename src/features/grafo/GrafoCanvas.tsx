@@ -17,6 +17,15 @@ interface GrafoCanvasProps {
 const RAIO = 5;
 const RAIO_DO_TOQUE = 12;
 
+/** O buffer do canvas segue o tamanho na tela vezes a densidade de pixels; o desenho e o clique usam px CSS. */
+function ajustarTamanho(el: HTMLCanvasElement): { largura: number; altura: number } {
+  const largura = el.clientWidth || 600, altura = el.clientHeight || 400;
+  const dpr = window.devicePixelRatio || 1;
+  el.width = Math.round(largura * dpr);
+  el.height = Math.round(altura * dpr);
+  return { largura, altura };
+}
+
 /** Desenho em canvas; o layout de forças para quando a aba some da tela. A lista de notas ao lado é o
  *  caminho acessível: o canvas sozinho não é navegável por teclado. */
 export function GrafoCanvas({ grafo, selecionada, aoSelecionar }: GrafoCanvasProps) {
@@ -39,7 +48,9 @@ export function GrafoCanvas({ grafo, selecionada, aoSelecionar }: GrafoCanvasPro
     const traco = rgb("--c-text-muted", "136,136,168");
     const destaque = rgb("--c-accent", "249,115,22");
     const porSlug = new Map(nos.current.map((n) => [n.slug, n]));
-    ctx.clearRect(0, 0, el.width, el.height);
+    const dpr = window.devicePixelRatio || 1;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, el.clientWidth, el.clientHeight);
     for (const l of g.ligacoes) {
       const a = porSlug.get(l.de), b = porSlug.get(l.para);
       if (!a || !b) continue;
@@ -67,9 +78,7 @@ export function GrafoCanvas({ grafo, selecionada, aoSelecionar }: GrafoCanvasPro
   useEffect(() => {
     const el = canvas.current;
     if (!el) return;
-    const largura = el.clientWidth || 600, altura = el.clientHeight || 400;
-    el.width = largura;
-    el.height = altura;
+    const { largura, altura } = ajustarTamanho(el);
     const antigos = new Map(nos.current.map((n) => [n.slug, n]));
     nos.current = grafo.notas.map((nota) => antigos.get(nota.slug) ?? { slug: nota.slug, projeto: nota.projeto });
     const elos: Elo[] = grafo.ligacoes.map((l) => ({ source: l.de, target: l.para, peso: l.peso }));
@@ -86,6 +95,22 @@ export function GrafoCanvas({ grafo, selecionada, aoSelecionar }: GrafoCanvasPro
   }, [grafo]);
 
   useEffect(() => { desenhar.current(); }, [selecionada]);
+
+  useEffect(() => {
+    const el = canvas.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const observador = new ResizeObserver(() => {
+      const { largura, altura } = ajustarTamanho(el);
+      const sim = simulacao.current;
+      if (sim) {
+        sim.force("centro", forceCenter(largura / 2, altura / 2));
+        if (visivel.current) sim.alpha(0.3).restart();
+      }
+      desenhar.current();
+    });
+    observador.observe(el);
+    return () => observador.disconnect();
+  }, []);
 
   useEffect(() => {
     const el = canvas.current;

@@ -20,6 +20,13 @@ function responder(valor: Grafo) {
 describe("Painel do grafo", () => {
   beforeEach(() => { vi.mocked(invoke).mockReset(); });
 
+  it("enquanto calcula avisa que na primeira vez pode demorar", async () => {
+    vi.mocked(invoke).mockImplementation(() => new Promise(() => {}));
+    render(<GrafoPanel />);
+    expect(await screen.findByText("Calculando as ligações. Na primeira vez pode demorar um pouco.")).toBeTruthy();
+    expect(screen.queryByText(/ainda não há notas/i)).toBeNull();
+  });
+
   it("sem notas explica como a memória nasce", async () => {
     responder({ notas: [], ligacoes: [] });
     render(<GrafoPanel />);

@@ -31,7 +31,7 @@ export function GrafoPanel({ onAbrirGrande }: GrafoPanelProps) {
   const nota = visivel?.notas.find((n) => n.slug === selecionada) ?? null;
 
   if (erro) return <p role="alert" className="px-3 py-2 text-xs text-danger">Não foi possível ler a memória: {erro}</p>;
-  if (!grafo || !visivel) return <p className="px-3 py-2 text-xs text-text-muted">Lendo a memória…</p>;
+  if (!grafo || !visivel) return <p role="status" className="px-3 py-2 text-xs text-text-muted">Calculando as ligações. Na primeira vez pode demorar um pouco.</p>;
   if (grafo.notas.length === 0) {
     return (
       <p className="px-3 py-2 text-xs text-text-muted">

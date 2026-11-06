@@ -1,9 +1,16 @@
 //! Visão em grafo da memória: as ligações não são guardadas, saem da leitura das notas.
+//! Citação, conversa e tag saem sempre da leitura (instantâneas). O texto parecido custa uma busca por nota
+//! (medido: dezenas de segundos com 2 mil notas), então as vizinhas de texto ficam num cache por nota e só
+//! as notas novas ou alteradas são buscadas de novo.
 use crate::memoria::{cortar, nota_da_linha, slug_de, so_letras, Nota};
 use crate::{sem_segredos, Base};
 use serde::{Deserialize, Serialize};
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 
 pub const TAG_COMUM_DEMAIS: usize = 30;
 pub const VIZINHOS_DE_TEXTO: usize = 3;
@@ -12,8 +19,17 @@ const PESO_WIKILINK: f32 = 1.0;
 const PESO_CONVERSA: f32 = 0.7;
 const PESO_TAG: f32 = 0.4;
 const PESO_TEXTO: f32 = 0.2;
-/// Quantas candidatas pedir ao índice antes de tirar a própria nota e as de fora do filtro.
-const CANDIDATAS_DE_TEXTO: usize = 12;
+
+/// Uma passada de cada vez: a segunda chamada espera a primeira e já encontra o cache pronto.
+static CALCULO: Mutex<()> = Mutex::new(());
+static PROVISORIOS: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(test)]
+thread_local! { static BUSCAS_DE_TEXTO: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+#[cfg(test)]
+pub(crate) fn buscas_de_texto() -> usize { BUSCAS_DE_TEXTO.with(|c| c.get()) }
+#[cfg(test)]
+pub(crate) fn zerar_buscas_de_texto() { BUSCAS_DE_TEXTO.with(|c| c.set(0)) }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct NotaDoGrafo {
@@ -38,15 +54,27 @@ pub struct Grafo {
     pub ligacoes: Vec<Ligacao>,
 }
 
-impl Base {
-    fn todas_as_notas(&self) -> Vec<Nota> {
-        let Ok(mut pedido) = self.banco.prepare_cached("select slug, titulo, corpo, tags, projeto, origem, conversa from notas order by slug") else { return Vec::new() };
-        let Ok(linhas) = pedido.query_map([], nota_da_linha) else { return Vec::new() };
-        linhas.flatten().collect()
-    }
+/// As vizinhas de texto de uma nota, válidas enquanto a nota não muda (data e impressão do texto).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct TextoDaNota {
+    atualizado_ms: i64,
+    impressao: u64,
+    vizinhas: Vec<String>,
+    /// A nota já pronta para a tela: a limpeza de segredos é cara e só roda para nota nova ou alterada.
+    nota: NotaDoGrafo,
+}
 
-    fn assinatura_das_notas(&self) -> (i64, i64) {
-        self.banco.query_row("select count(*), coalesce(max(atualizado_ms), 0) from notas", [], |l| Ok((l.get(0)?, l.get(1)?))).unwrap_or((0, 0))
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct CacheDoGrafo {
+    #[serde(default)]
+    textos: HashMap<String, TextoDaNota>,
+}
+
+impl Base {
+    fn todas_as_notas(&self) -> Vec<(Nota, i64)> {
+        let Ok(mut pedido) = self.banco.prepare_cached("select slug, titulo, corpo, tags, projeto, origem, conversa, atualizado_ms from notas order by slug") else { return Vec::new() };
+        let Ok(linhas) = pedido.query_map([], |l| Ok((nota_da_linha(l)?, l.get::<_, i64>(7)?))) else { return Vec::new() };
+        linhas.flatten().collect()
     }
 
     fn arquivo_do_cache_do_grafo(&self) -> Option<PathBuf> {
@@ -56,37 +84,28 @@ impl Base {
 
 /// Notas e ligações, calculadas na leitura. `projeto` filtra as notas e, com elas, as ligações.
 pub fn grafo_de_notas(base: &Base, projeto: Option<&str>) -> Grafo {
-    filtrar_por_projeto(calcular(base), projeto)
+    filtrar_por_projeto(calcular(base, &mut HashMap::new()), projeto)
 }
 
-/// Igual a `grafo_de_notas`, mas guarda o grafo inteiro ao lado do banco enquanto as notas não mudam.
-/// Medido numa cópia de 2 mil notas: o cálculo leva dezenas de segundos (uma busca de texto por nota), muito
-/// acima de 500 ms; a assinatura é o total de notas mais o maior `atualizado_ms`.
+/// Igual a `grafo_de_notas`, mas guarda ao lado do banco as vizinhas de texto de cada nota.
 pub fn grafo_com_cache(base: &Base, projeto: Option<&str>) -> Grafo {
-    let assinatura = base.assinatura_das_notas();
+    let _vez = CALCULO.lock().unwrap_or_else(|erro| erro.into_inner());
     let arquivo = base.arquivo_do_cache_do_grafo();
     let guardado = arquivo.as_ref().and_then(|a| std::fs::read(a).ok()).and_then(|b| serde_json::from_slice::<CacheDoGrafo>(&b).ok());
-    let inteiro = match guardado {
-        Some(cache) if cache.assinatura == assinatura => cache.grafo,
-        _ => {
-            let grafo = calcular(base);
-            if let Some(arquivo) = &arquivo { guardar(arquivo, &CacheDoGrafo { assinatura, grafo: grafo.clone() }); }
-            grafo
-        }
-    };
-    filtrar_por_projeto(inteiro, projeto)
+    let mut cache = guardado.unwrap_or_default();
+    let antes = cache.textos.clone();
+    let grafo = calcular(base, &mut cache.textos);
+    if cache.textos != antes || !arquivo.as_ref().is_some_and(|a| a.exists()) {
+        if let Some(arquivo) = &arquivo { guardar(arquivo, &cache); }
+    }
+    filtrar_por_projeto(grafo, projeto)
 }
 
-#[derive(Serialize, Deserialize)]
-struct CacheDoGrafo {
-    assinatura: (i64, i64),
-    grafo: Grafo,
-}
-
-/// Escrita atômica; falhar em guardar só custa recalcular na próxima vez.
+/// Escrita atômica com nome provisório único; falhar em guardar só custa buscar de novo na próxima vez.
 fn guardar(arquivo: &Path, cache: &CacheDoGrafo) {
     let Ok(bytes) = serde_json::to_vec(cache) else { return };
-    let provisorio = arquivo.with_extension("tmp");
+    let numero = PROVISORIOS.fetch_add(1, Ordering::Relaxed);
+    let provisorio = arquivo.with_extension(format!("{}.{numero}.tmp", std::process::id()));
     if std::fs::write(&provisorio, bytes).is_ok() && std::fs::rename(&provisorio, arquivo).is_err() { let _ = std::fs::remove_file(&provisorio); }
 }
 
@@ -98,9 +117,34 @@ fn filtrar_por_projeto(grafo: Grafo, projeto: Option<&str>) -> Grafo {
     Grafo { notas, ligacoes }
 }
 
-fn calcular(base: &Base) -> Grafo {
-    let notas: Vec<Nota> = base.todas_as_notas();
-    let slugs: HashSet<&str> = notas.iter().map(|n| n.slug.as_str()).collect();
+fn impressao_do_texto(nota: &Nota) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    (&nota.titulo, &nota.corpo, &nota.projeto, &nota.tags).hash(&mut hasher);
+    hasher.finish()
+}
+
+fn nota_para_a_tela(nota: &Nota) -> NotaDoGrafo {
+    NotaDoGrafo {
+        slug: nota.slug.clone(),
+        titulo: sem_segredos(&nota.titulo),
+        resumo: cortar(&sem_segredos(&nota.corpo), CARACTERES_DO_RESUMO),
+        tags: tags_de(&sem_segredos(&nota.tags)).into_iter().collect(),
+        projeto: nota.projeto.clone(),
+    }
+}
+
+/// Busca as vizinhas de texto de uma nota. Pede uma a mais: a própria nota costuma voltar na lista.
+fn buscar_vizinhas_de_texto(base: &Base, nota: &Nota) -> Vec<String> {
+    #[cfg(test)]
+    BUSCAS_DE_TEXTO.with(|c| c.set(c.get() + 1));
+    let texto = format!("{} {}", nota.titulo, nota.corpo);
+    base.notas_relacionadas(&texto, &nota.projeto, VIZINHOS_DE_TEXTO + 1)
+        .into_iter().filter(|v| v.slug != nota.slug).take(VIZINHOS_DE_TEXTO).map(|v| v.slug).collect()
+}
+
+fn calcular(base: &Base, textos: &mut HashMap<String, TextoDaNota>) -> Grafo {
+    let lidas = base.todas_as_notas();
+    let slugs: HashSet<&str> = lidas.iter().map(|(n, _)| n.slug.as_str()).collect();
     let mut ligacoes = Vec::new();
     let mut vistas: HashSet<(String, String, &'static str)> = HashSet::new();
     let mut ligar = |de: &str, para: &str, tipo: &'static str, peso: f32| {
@@ -108,27 +152,26 @@ fn calcular(base: &Base) -> Grafo {
         let chave = if de < para { (de.to_owned(), para.to_owned(), tipo) } else { (para.to_owned(), de.to_owned(), tipo) };
         if vistas.insert(chave) { ligacoes.push(Ligacao { de: de.into(), para: para.into(), tipo: tipo.into(), peso }); }
     };
-    for nota in &notas {
+    for (nota, _) in &lidas {
         for alvo in wikilinks(&nota.corpo).into_iter().filter(|a| slugs.contains(a.as_str())) { ligar(&nota.slug, &alvo, "wikilink", PESO_WIKILINK); }
     }
-    for grupo in grupos(notas.iter().filter(|n| !n.conversa.trim().is_empty()).map(|n| (n.conversa.trim().to_owned(), n.slug.as_str()))) {
+    for grupo in grupos(lidas.iter().filter(|(n, _)| !n.conversa.trim().is_empty()).map(|(n, _)| (n.conversa.trim().to_owned(), n.slug.as_str()))) {
         ligar_grupo(&grupo, "conversa", PESO_CONVERSA, &mut ligar);
     }
-    for grupo in grupos(notas.iter().flat_map(|n| tags_de(&n.tags).into_iter().map(move |t| (t, n.slug.as_str())))) {
+    for grupo in grupos(lidas.iter().flat_map(|(n, _)| tags_de(&n.tags).into_iter().map(move |t| (t, n.slug.as_str())))) {
         ligar_grupo(&grupo, "tag", PESO_TAG, &mut ligar);
     }
-    for nota in &notas {
-        let texto = format!("{} {}", nota.titulo, nota.corpo);
-        let parecidas = base.notas_relacionadas(&texto, &nota.projeto, CANDIDATAS_DE_TEXTO);
-        for vizinha in parecidas.iter().filter(|v| v.slug != nota.slug && slugs.contains(v.slug.as_str())).take(VIZINHOS_DE_TEXTO) {
-            ligar(&nota.slug, &vizinha.slug, "texto", PESO_TEXTO);
+    textos.retain(|slug, _| slugs.contains(slug.as_str()));
+    for (nota, atualizado_ms) in &lidas {
+        let impressao = impressao_do_texto(nota);
+        let vale = textos.get(&nota.slug).is_some_and(|t| t.atualizado_ms == *atualizado_ms && t.impressao == impressao);
+        if !vale {
+            let pronta = TextoDaNota { atualizado_ms: *atualizado_ms, impressao, vizinhas: buscar_vizinhas_de_texto(base, nota), nota: nota_para_a_tela(nota) };
+            textos.insert(nota.slug.clone(), pronta);
         }
+        for vizinha in textos[&nota.slug].vizinhas.iter().filter(|v| slugs.contains(v.as_str())) { ligar(&nota.slug, vizinha, "texto", PESO_TEXTO); }
     }
-    let notas = notas.into_iter().map(|n| NotaDoGrafo {
-        resumo: cortar(&sem_segredos(&n.corpo), CARACTERES_DO_RESUMO),
-        tags: tags_de(&n.tags).into_iter().collect(),
-        slug: n.slug, titulo: sem_segredos(&n.titulo), projeto: n.projeto,
-    }).collect();
+    let notas = lidas.iter().map(|(n, _)| textos[&n.slug].nota.clone()).collect();
     Grafo { notas, ligacoes }
 }
 
