@@ -459,6 +459,8 @@ interface Enviado {
   /** Índice da última mensagem já vista no envio. Qualquer mensagem do usuário depois dela é esta. */
   base: number;
   anexos: { nome: string; previa: string | null }[];
+  /** Saiu do balão comum para a fila: é a mais antiga, então chega pela ordem, sem comparar o texto. */
+  porOrdem?: boolean;
 }
 
 /** Ritmo do polling com o agente ativo. 5 s faz a conversa parecer travada; 1,2 s parece ao vivo.
@@ -591,6 +593,7 @@ export const ConversationDetail = memo(function ConversationDetail({ conversatio
     enviadoVivo.current?.anexos.forEach(a => a.previa && URL.revokeObjectURL(a.previa));
   }, []);
 
+  const agenteAceitaFila = Boolean(conversation.capabilities?.enfileirar);
   const trabalhando = conversation.state === "working";
   const ativo = trabalhando || enviado !== null;
   if (ativo && trabalhandoDesde.current === null) trabalhandoDesde.current = enviado?.em ?? Date.now();
@@ -729,15 +732,21 @@ export const ConversationDetail = memo(function ConversationDetail({ conversatio
       && (m.text.trim() === enviado.texto.trim() || indiceDaMensagem(m.id) > enviado.base));
     const acao = data?.actions.find(a => a.id === enviado.acao);
     if (chegou) { descartarEnviado(null); return; }
-    if (acao?.state === "rejected") descartarEnviado(`Não foi enviado: ${acao.error ?? "o agente recusou a entrada"}`);
-  }, [data, enviado, mensagens, descartarEnviado]);
+    if (acao?.state === "rejected") { descartarEnviado(`Não foi enviado: ${acao.error ?? "o agente recusou a entrada"}`); return; }
+    // O agente começou a trabalhar depois da leitura que decidiu o envio: a mensagem espera na fila
+    // da CLI e pode levar um turno inteiro. Fica na fila, sem o relógio de 2 minutos do balão.
+    if (agenteAceitaFila) {
+      setEnviado(null);
+      setFila((atual) => [{ ...enviado, porOrdem: true }, ...atual]);
+    }
+  }, [data, enviado, mensagens, descartarEnviado, agenteAceitaFila]);
 
   // Item da fila sai quando a mensagem aparece no transcript (a CLI a consumiu) ou é recusado.
   useEffect(() => {
     if (fila.length === 0) return;
     const restantes = fila.filter((item) => {
       const chegou = mensagens.some(m => m.role === "user" && (m.kind ?? "text") === "text"
-        && indiceDaMensagem(m.id) > item.base && m.text.trim() === item.texto.trim());
+        && indiceDaMensagem(m.id) > item.base && (item.porOrdem || m.text.trim() === item.texto.trim()));
       const acao = data?.actions.find(a => a.id === item.acao);
       if (acao?.state === "rejected") setFalhaEnvio(`Não entrou na fila: ${acao.error ?? "o agente recusou a entrada"}`);
       // Fila parada há muito tempo (o turno caiu, a sessão fechou): some em vez de mentir.
@@ -892,7 +901,7 @@ export const ConversationDetail = memo(function ConversationDetail({ conversatio
       const revisao = atual.conversation?.capabilities?.revision;
       if (!revisao) throw reason;
       if (kind === "escolher" && atual.conversation?.capabilities?.escolha?.pergunta !== capability.escolha?.pergunta) throw reason;
-      if (kind === "aprovar" && atual.conversation?.capabilities?.approval_text !== capability.approval_text) throw reason;
+      if (kind === "aprovar" && (!capability.approval_id || atual.conversation?.capabilities?.approval_id !== capability.approval_id)) throw reason;
       pending.current = { signature, key: actionKey(), revision: revisao };
       acao = await enviar();
     }
@@ -1001,6 +1010,7 @@ export const ConversationDetail = memo(function ConversationDetail({ conversatio
         const texto = ultimoTexto.current;
         setText((atual) => atual.trim() ? atual : texto);
         descartarEnviado(null);
+        setFila((atual) => atual.filter((item) => !item.porOrdem));
       }
       await ler();
     }
@@ -1077,7 +1087,9 @@ export const ConversationDetail = memo(function ConversationDetail({ conversatio
         // As prévias passam para o balão otimista; quem revoga é ele, quando o transcript chegar.
         anexos: lista.map(a => ({ nome: a.arquivo.name || "anexo", previa: a.previa })),
       };
-      if (paraFila) setFila((atual) => [...atual, item]); else setEnviado(item);
+      // Atrás de outra ainda não confirmada, esta espera a vez: no balão comum ela apagaria a anterior,
+      // e a chegada da anterior a tiraria da tela.
+      if (paraFila || enviadoVivo.current || fila.length > 0) setFila((atual) => [...atual, item]); else setEnviado(item);
       ultimoTexto.current = text;
       setText("");
       setAnexos([]);

@@ -29,6 +29,9 @@ impl Interaction {
 #[derive(Clone, serde::Serialize)]
 pub struct Capabilities {
     pub prompt: bool, pub approve: bool, pub revision: String, pub approval_text: Option<String>, pub reason: Option<String>,
+    /// O que identifica a pergunta aberta, sem o resto da tela (`identidade_da_aprovacao`). `None`
+    /// quando não dá para saber: quem compara trata como pergunta diferente.
+    pub approval_id: Option<String>,
     /// O agente está no meio de um turno, mas o campo da CLI está vazio e aceita digitação: uma
     /// mensagem mandada agora entra na fila da própria CLI, como digitar no terminal.
     #[serde(default)]
@@ -462,12 +465,8 @@ pub fn submeter_colagem(session: &Arc<LiveSession>) -> Result<()> {
 /// Only single-use choices with exact labels. Persistent permission choices are never sent.
 pub fn approval(text: &str, provider: &str) -> Option<(String, String, String)> {
     let lines: Vec<_> = text.lines().map(str::trim).collect();
-    let (question,yes,no) = match provider {
-        "claude" => ("Do you want to proceed?","1. Yes","3. No"),
-        "codex" => ("Would you like to run the following command?","1. Yes, proceed (y)","3. No, and tell Codex what to do differently (esc)"),
-        _ => return None,
-    };
-    let normalize = |line: &str| line.trim_start_matches(['❯','›',' ']).to_string();
+    let (question,yes,no) = textos_da_aprovacao(provider)?;
+    let normalize = sem_selecao;
     // The question and choices must be one contiguous dialog, not old scrollback. Everything is
     // counted from the question down: the user's own message above it also starts with `❯`/`›`, and
     // counting the whole screen made every real dialog look like it had two selections.
@@ -479,6 +478,37 @@ pub fn approval(text: &str, provider: &str) -> Option<(String, String, String)> 
         || dialog.iter().filter(|l| normalize(l) == no).count() != 1 { return None; }
     Some((if provider == "codex" { "y" } else { "1\r" }.into(),
         if provider == "codex" { "\x1b" } else { "3\r" }.into(),text.trim().to_owned()))
+}
+
+/// (pergunta, sim, não) do diálogo de aprovação de cada CLI.
+fn textos_da_aprovacao(provider: &str) -> Option<(&'static str, &'static str, &'static str)> {
+    match provider {
+        "claude" => Some(("Do you want to proceed?","1. Yes","3. No")),
+        "codex" => Some(("Would you like to run the following command?","1. Yes, proceed (y)","3. No, and tell Codex what to do differently (esc)")),
+        _ => None,
+    }
+}
+fn sem_selecao(line: &str) -> &str { line.trim_start_matches(['❯','›',' ']) }
+
+/// O bloco do diálogo aberto, sem o resto da tela: é o que diz se duas leituras mostram a mesma
+/// pergunta. `approval_text` e a versão da tela não servem, porque mudam com qualquer redesenho.
+///
+/// O bloco vai da borda do diálogo até a opção "não". No Claude a borda é a linha de traços e o comando
+/// fica **acima** da pergunta; no Codex o diálogo começa na pergunta e o comando vem abaixo dela.
+/// Sem exatamente uma borda (rolou para fora da tela, ou o comando tem uma linha de traços) não dá
+/// para saber onde o diálogo começa: `None`, e um comando trocado nunca passa pela mesma pergunta.
+pub fn identidade_da_aprovacao(text: &str, provider: &str) -> Option<String> {
+    approval(text,provider)?;
+    let (question,_,no) = textos_da_aprovacao(provider)?;
+    let lines: Vec<_> = text.lines().map(str::trim).collect();
+    let pergunta = lines.iter().rposition(|l| *l == question)?;
+    let fim = pergunta + lines[pergunta..].iter().position(|l| sem_selecao(l) == no)?;
+    let inicio = if provider == "claude" {
+        let bordas: Vec<_> = (0..pergunta).filter(|&i| !lines[i].is_empty() && lines[i].chars().all(|c| c == '─')).collect();
+        let [borda] = bordas[..] else { return None };
+        borda
+    } else { pergunta };
+    Some(lines[inicio..=fim].join("\n"))
 }
 
 /// Nome do executável de cada CLI quando difere do id do provider.
@@ -626,7 +656,8 @@ pub fn capabilities(session: &Arc<LiveSession>) -> Capabilities {
         "antigravity" => motivo_antigravity(context.parser.screen(), available, session.reserved.load(Ordering::SeqCst)),
         _ => "Entrada do CLI não reconhecida ou sessão ocupada".into(),
     });
-    Capabilities { prompt, approve, revision: context.revision(session), approval_text: dialog.map(|d|d.2), reason, enfileirar, escolha, iniciando: !rodando }
+    let approval_id = identidade_da_aprovacao(&context.parser.screen().contents(),provider);
+    Capabilities { prompt, approve, revision: context.revision(session), approval_text: dialog.map(|d|d.2), approval_id, reason, enfileirar, escolha, iniciando: !rodando }
 }
 
 /// Por que o campo do Antigravity não foi reconhecido, em palavras: qual das condições do `ready`
@@ -1506,6 +1537,52 @@ Ready to submit your answers?
     /// Acervo de telas (`tests-fixtures/telas/<cli>.<esperado>.<nome>.txt`): cada arquivo diz o que o
     /// engine tem de reconhecer nele. CLI mudou o texto? Capture com a `sonda_aprovacao`
     /// (`OMNI_SONDA_SALVAR`) e este teste aponta o que deixou de casar, sem escrever Rust.
+    fn tela_de_aprovacao(arquivo: &str) -> String {
+        let caminho = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests-fixtures/telas").join(arquivo);
+        std::fs::read_to_string(caminho).unwrap().replace("\r\n", "\n")
+    }
+    const CLAUDE_APROVACAO: &str = "claude.aprovacao.comando-2.1.305.txt";
+    const CODEX_APROVACAO: &str = "codex.aprovacao.comando-0.154.0.txt";
+
+    #[test] fn redesenho_fora_do_dialogo_mantem_a_identidade() {
+        let tela = tela_de_aprovacao(CLAUDE_APROVACAO);
+        let redesenhada = tela.replace("❯ Run exactly this shell command and nothing else: cmd /c ver", "✻ Pensando… 12s");
+        assert_ne!(tela, redesenhada);
+        assert!(identidade_da_aprovacao(&tela, "claude").is_some());
+        assert_eq!(identidade_da_aprovacao(&tela, "claude"), identidade_da_aprovacao(&redesenhada, "claude"));
+
+        let tela = tela_de_aprovacao(CODEX_APROVACAO);
+        let redesenhada = tela.replace("• Running cmd /c echo oi", "• Working (12s)");
+        assert_ne!(tela, redesenhada);
+        assert!(identidade_da_aprovacao(&tela, "codex").is_some());
+        assert_eq!(identidade_da_aprovacao(&tela, "codex"), identidade_da_aprovacao(&redesenhada, "codex"));
+    }
+
+    /// No Claude o comando fica acima de "Do you want to proceed?"; no Codex, abaixo.
+    #[test] fn comando_trocado_muda_a_identidade() {
+        for (arquivo, cli, comando) in [(CLAUDE_APROVACAO, "claude", "cmd /c ver"), (CODEX_APROVACAO, "codex", "cmd /c echo oi")] {
+            let tela = tela_de_aprovacao(arquivo);
+            let trocada = tela.replace(comando, "rm -rf /");
+            assert!(approval(&trocada, cli).is_some(), "{cli}: a tela trocada ainda é um diálogo");
+            assert!(identidade_da_aprovacao(&trocada, cli).is_some());
+            assert_ne!(identidade_da_aprovacao(&tela, cli), identidade_da_aprovacao(&trocada, cli), "{cli}");
+        }
+    }
+
+    #[test] fn sem_a_borda_certa_nao_ha_identidade() {
+        let tela = tela_de_aprovacao(CLAUDE_APROVACAO);
+        let sem_borda = tela.lines().filter(|l| !l.trim().starts_with('─')).collect::<Vec<_>>().join("\n");
+        assert!(approval(&sem_borda, "claude").is_some());
+        assert_eq!(identidade_da_aprovacao(&sem_borda, "claude"), None, "borda rolou para fora da tela");
+
+        let duas_bordas = tela.replace(" cmd /c ver\n This command", " cmd /c ver\n ──────\n outro\n This command");
+        assert_ne!(tela, duas_bordas);
+        assert!(approval(&duas_bordas, "claude").is_some());
+        assert_eq!(identidade_da_aprovacao(&duas_bordas, "claude"), None, "um traço no comando não pode virar a borda");
+
+        assert_eq!(identidade_da_aprovacao("Claude Code", "claude"), None);
+    }
+
     #[test] fn telas_do_acervo() {
         let pasta = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests-fixtures/telas");
         let mut vistas = 0;

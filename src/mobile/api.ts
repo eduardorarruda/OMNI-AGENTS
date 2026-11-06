@@ -6,6 +6,8 @@ export interface Conversation {
   mode?: string | null;
   capabilities: {
     prompt: boolean; approve: boolean; revision: string; approval_text: string | null; reason: string | null;
+    /** O que identifica a pergunta aberta, sem o resto da tela. Nulo: não dá para saber; relendo, recusa. */
+    approval_id?: string | null;
     /** Agente no meio do turno com o campo livre: mensagem mandada agora entra na fila da CLI. */
     enfileirar?: boolean;
     /** Menu da CLI ou pergunta do agente travando o campo: responde-se pelo número. */

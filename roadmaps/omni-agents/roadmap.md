@@ -410,10 +410,10 @@ arquivos tocados e o próximo passo. Quando a pendência for resolvida, risque d
 
 ### Oito melhorias: planejamento (2026-11-06)
 
-Design aprovado (`docs/superpowers/specs/2026-11-06-omni-oito-itens-design.md`). Plano em `docs/superpowers/plans/2026-11-06-omni-oito-itens.md`. Nada implementado.
+Design aprovado (`docs/superpowers/specs/2026-11-06-omni-oito-itens-design.md`). Plano em `docs/superpowers/plans/2026-11-06-omni-oito-itens.md`. Em execução, tarefa a tarefa: entregas marcadas abaixo.
 
 - [ ] Fase 1: erro de contexto ao enviar mensagem (item 10, prioridade), arquivo citado que "não existe" e reconhecimento do Linux (`servidores.rs`).
-- [x] Tarefa 1A (item 10): mensagem não confere mais a versão da tela (`exige_versao_da_tela`, `mobile.rs`); com o agente ocupado e o campo livre entra na fila da CLI. Aprovação com a mesma pergunta relê e tenta uma vez. Falta conferir ao vivo.
+- [x] Tarefa 1A (item 10): mensagem não confere mais a versão da tela (`exige_versao_da_tela`, `mobile.rs`); com o agente ocupado e o campo livre entra na fila da CLI. Aprovação relê e tenta uma vez se a pergunta for a mesma (`approval_id`, o bloco do diálogo; sem ele, recusa). Mensagem aceita com o agente já ocupado vai para a fila da tela, sem aviso falso. Falta conferir ao vivo.
 - [ ] Fase 2: Fluxos (acompanhamento ao vivo, botão Aprovar, subfluxos, sem limites, autonomia pelo MCP).
 - [ ] Fase 3: Tarefas em Segundo Plano e panorama do projeto.
 - [ ] Fase 4: uso da conta (detalhe ao clicar, tokens dos históricos locais).

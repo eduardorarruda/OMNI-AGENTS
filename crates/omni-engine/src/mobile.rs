@@ -1750,8 +1750,8 @@ fn enqueue(state:&Arc<EngineState>,id:&str,headers:&HeaderMap,kind:ActionKind) -
     let session = session.ok_or_else(||error(StatusCode::CONFLICT,"Nenhuma sessão existente para esta conversa"))?;
     let capability = interaction::capabilities(&session);
     let supported = match kind {
-        // Trocar de modo é tecla no composer: vale a mesma porta do prompt (CLI ocioso e tela
-        // reconhecida). Com o agente no meio de um turno, o shift+tab não é para ele.
+        // Trocar de modo é tecla no composer: só com o CLI ocioso e a tela reconhecida. Com o agente
+        // no meio de um turno, o shift+tab não é para ele.
         // Reabrir no meio de um turno mataria o trabalho em andamento.
         ActionKind::Modo(_) | ActionKind::Ajustes(_) => capability.prompt,
         // Mensagem vale com o agente parado ou trabalhando com o campo livre: se ele começou um turno
@@ -3663,6 +3663,22 @@ quebra"}"#] {
             assert_eq!(app.oneshot(pedido_com_versao("/conversas/c/aprovar",r#"{"permitir":true}"#,&atual)).await.unwrap().status(),StatusCode::ACCEPTED);
         }
 
+        /// O que o cliente compara ao reler: a versão muda com a tela, a identidade da pergunta não.
+        #[cfg(unix)] #[test] fn aprovacao_redesenhada_muda_a_versao_e_mantem_a_identidade() {
+            let (_dir,state) = fixture();
+            let tela = include_str!("../tests-fixtures/telas/claude.aprovacao.comando-2.1.305.txt").replace('\n',"\r\n");
+            let (session,_,_) = fake_session(&state,&tela);
+            let _cli = CliDeMentira::no_lugar_de(&session);
+            let antes = interaction::capabilities(&session);
+            redesenhar(&session,"\x1b[1;1H✻ Pensando… 12s");
+            let depois = interaction::capabilities(&session);
+            assert!(antes.approve && depois.approve);
+            assert_ne!(antes.revision,depois.revision);
+            assert_ne!(antes.approval_text,depois.approval_text);
+            assert!(antes.approval_id.is_some());
+            assert_eq!(antes.approval_id,depois.approval_id);
+        }
+
         #[cfg(unix)] #[tokio::test] async fn escolha_com_versao_velha_continua_412() {
             let (_dir,state) = fixture();
             let menu = include_str!("../tests-fixtures/telas/claude.escolha.pergunta-2.1.302.txt").replace('\n',"\r\n");
@@ -3696,6 +3712,7 @@ quebra"}"#] {
             assert!(exige_versao_da_tela(&ActionKind::Approval(true)));
             assert!(exige_versao_da_tela(&ActionKind::Escolha(opcao)));
             assert!(exige_versao_da_tela(&ActionKind::Modo(texto)));
+            assert!(exige_versao_da_tela(&ActionKind::Ajustes(Ajustes{profile_id:None,model:None,effort:None})));
         }
 
         /// A consulta de uso segura a sessão: a mensagem continua recusada, mas pelo motivo certo.

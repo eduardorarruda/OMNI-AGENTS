@@ -644,7 +644,9 @@ it("conversa fica presa na tela e acompanha a resposta crescendo sem mensagem no
 describe("versão da tela", () => {
   type Capacidades = NonNullable<Conversation["capabilities"]>;
   const RECUSA = JSON.stringify({ error: "O contexto mudou; atualize antes de responder" });
-  const PERGUNTA = "Do you want to proceed?\nrm -rf build";
+  /** A tela inteira muda a cada redesenho; o bloco do diálogo, não. */
+  const pendente = { prompt: false, approve: true, approval_text: "✻ 1s\nDo you want to proceed?", approval_id: "rm -rf build" };
+  const redesenhada = { ...pendente, revision: '"r2"', approval_text: "✻ 2s\nDo you want to proceed?" };
 
   /** O servidor recusa o primeiro POST com 412; a timeline, depois disso, mostra `depois`. */
   function servidorQueRecusaUmaVez(antes: Partial<Capacidades>, depois: Partial<Capacidades>) {
@@ -682,8 +684,7 @@ describe("versão da tela", () => {
   });
 
   it("aprovação com a mesma pergunta relê e aprova", async () => {
-    const pendente = { prompt: false, approve: true, approval_text: PERGUNTA };
-    const posts = servidorQueRecusaUmaVez(pendente, { ...pendente, revision: '"r2"' });
+    const posts = servidorQueRecusaUmaVez(pendente, redesenhada);
     render(<MobileApp />);
     await abrirConversa();
     const permitir = await screen.findByRole("button", { name: "Permitir" });
@@ -694,13 +695,120 @@ describe("versão da tela", () => {
   });
 
   it("aprovação com pergunta trocada continua recusando", async () => {
-    const pendente = { prompt: false, approve: true, approval_text: PERGUNTA };
-    const posts = servidorQueRecusaUmaVez(pendente, { ...pendente, revision: '"r2"', approval_text: "Do you want to proceed?\ngit push --force" });
+    const posts = servidorQueRecusaUmaVez(pendente, { ...redesenhada, approval_id: "git push --force" });
     render(<MobileApp />);
     await abrirConversa();
     const permitir = await screen.findByRole("button", { name: "Permitir" });
     await act(async () => { await userEvent.click(permitir); });
     expect(await screen.findByText(/contexto mudou/i)).toBeInTheDocument();
     expect(posts).toHaveLength(1);
+  });
+
+  it("aprovação sem identidade da pergunta continua recusando", async () => {
+    const semIdentidade = { ...pendente, approval_id: null };
+    const posts = servidorQueRecusaUmaVez(semIdentidade, { ...semIdentidade, revision: '"r2"' });
+    render(<MobileApp />);
+    await abrirConversa();
+    const permitir = await screen.findByRole("button", { name: "Permitir" });
+    await act(async () => { await userEvent.click(permitir); });
+    expect(await screen.findByText(/contexto mudou/i)).toBeInTheDocument();
+    expect(posts).toHaveLength(1);
+  });
+});
+
+describe("mensagem aceita depois de o agente começar", () => {
+  const LIVRE = { prompt: true, approve: false, revision: '"r"', approval_text: null, reason: null };
+  const OCUPADO = { ...LIVRE, prompt: false, enfileirar: true };
+
+  /** `capacidades` e `transcript` mudam no meio do teste, como o PC mudaria entre uma leitura e outra.
+   *  `ocuparNoEnvio`: o agente começa a trabalhar no instante do POST, depois da leitura que decidiu o envio. */
+  function servidorVivo() {
+    const vivo = { capacidades: LIVRE as typeof LIVRE & { enfileirar?: boolean }, transcript: [] as { id: string; role: string; text: string; provider: string }[], posts: 0, ocuparNoEnvio: false };
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (init?.method === "POST" && url.endsWith("/parar")) return new Response(JSON.stringify({ limpou: true, parou: true }));
+      if (init?.method === "POST") {
+        vivo.posts += 1;
+        if (vivo.ocuparNoEnvio) vivo.capacidades = OCUPADO;
+        return new Response(JSON.stringify({ id: `a${vivo.posts}`, state: "queued" }), { status: 202 });
+      }
+      const atual = conversaPronta({ capabilities: vivo.capacidades, live: true, state: vivo.capacidades.enfileirar ? "working" : "answered" });
+      return new Response(JSON.stringify(
+        url.includes("timeline")
+          ? { timeline: { ...TIMELINE_VAZIA.timeline, messages: vivo.transcript }, actions: [], conversation: atual }
+          : url === "/projetos" ? PROJETOS : url === "/atencao" ? [] : [atual]));
+    }));
+    return vivo;
+  }
+  async function enviar(texto: string) {
+    await act(async () => {
+      await userEvent.type(screen.getByLabelText("Sua resposta"), texto);
+      await userEvent.click(screen.getByRole("button", { name: "Enviar resposta" }));
+    });
+  }
+
+  it("agente ocupado na leitura seguinte: vira fila e não dá aviso falso depois de 2 minutos", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const vivo = servidorVivo();
+      history.replaceState(null, "", "/#/c/c");
+      render(<MobileApp />);
+      await screen.findByLabelText("Sua resposta");
+      vivo.ocuparNoEnvio = true;
+      await enviar("depois do turno");
+
+      const fila = await screen.findByLabelText("Mensagens na fila");
+      expect(within(fila).getByText("depois do turno")).toBeInTheDocument();
+
+      await act(async () => { vi.advanceTimersByTime(121_000); });
+      expect(screen.queryByText(/Não consegui confirmar o envio/)).not.toBeInTheDocument();
+      expect(within(screen.getByLabelText("Mensagens na fila")).getByText("depois do turno")).toBeInTheDocument();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("a primeira mensagem chegar não tira da tela a segunda, que ainda espera", async () => {
+    const vivo = servidorVivo();
+    history.replaceState(null, "", "/#/c/c");
+    render(<MobileApp />);
+    await screen.findByLabelText("Sua resposta");
+    await enviar("primeira");
+    await enviar("segunda");
+    expect(screen.getByText("primeira")).toBeInTheDocument();
+    expect(within(screen.getByLabelText("Mensagens na fila")).getByText("segunda")).toBeInTheDocument();
+
+    vivo.transcript = [{ id: "c:0", role: "user", text: "primeira", provider: "claude" }];
+
+    // Só o balão da primeira sai: sobra um pendente, o da segunda.
+    await waitFor(() => expect(document.querySelectorAll(".bubble-pending")).toHaveLength(1), { timeout: 5_000 });
+    expect(within(screen.getByLabelText("Mensagens na fila")).getByText("segunda")).toBeInTheDocument();
+  });
+
+  it("Parar devolve ao campo a mensagem que tinha ido para a fila, sem deixar o balão", async () => {
+    const vivo = servidorVivo();
+    history.replaceState(null, "", "/#/c/c");
+    render(<MobileApp />);
+    await screen.findByLabelText("Sua resposta");
+    vivo.ocuparNoEnvio = true;
+    await enviar("volta para o campo");
+    await screen.findByLabelText("Mensagens na fila");
+
+    await act(async () => { await userEvent.click(screen.getByRole("button", { name: /Parar/ })); });
+
+    await waitFor(() => expect(screen.queryByLabelText("Mensagens na fila")).not.toBeInTheDocument());
+    expect(screen.getByLabelText("Sua resposta")).toHaveValue("volta para o campo");
+  });
+
+  it("mensagem com texto transformado pela CLI sai da fila quando chega", async () => {
+    const vivo = servidorVivo();
+    history.replaceState(null, "", "/#/c/c");
+    render(<MobileApp />);
+    await screen.findByLabelText("Sua resposta");
+    vivo.ocuparNoEnvio = true;
+    await enviar("com anexo");
+    await screen.findByLabelText("Mensagens na fila");
+
+    vivo.transcript = [{ id: "c:0", role: "user", text: "[Pasted text #1]", provider: "claude" }];
+
+    // Chega pela leitura periódica, que anda sozinha com o agente trabalhando.
+    await waitFor(() => expect(screen.queryByLabelText("Mensagens na fila")).not.toBeInTheDocument(), { timeout: 5_000 });
   });
 });
