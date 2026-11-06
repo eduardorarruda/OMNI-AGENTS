@@ -10,6 +10,8 @@ use std::{
 };
 use tokio::sync::Notify;
 
+#[path = "fila.rs"] mod fila;
+
 #[cfg(mobile_assets)]
 static ASSETS: include_dir::Dir<'_> = include_dir::include_dir!("$CARGO_MANIFEST_DIR/../../dist-mobile");
 
@@ -29,6 +31,7 @@ pub struct MobileRuntime {
     changed: Notify,
     actions: Mutex<VecDeque<Action>>,
     pending: Notify,
+    filas: Mutex<fila::Filas>,
     history: Mutex<MobileHistory>,
     /// Transcripts já lidos: a conversa aberta é consultada a cada 1,5 s e só o trecho novo é lido.
     feeds: Mutex<omni_core::feed::FeedCache>,
@@ -55,7 +58,7 @@ struct Action {
 }
 #[derive(Clone, PartialEq)]
 enum ActionKind { Prompt(String), Approval(bool), Spawn(SpawnPlan), Modo(String), Ajustes(Ajustes), Retomar(Retomada),
-    /// Mensagem mandada com o agente no meio de um turno: entra na fila da CLI.
+    /// O que o OMNI manda sozinho (`/compact`, "continue"): pode entrar na fila da CLI no meio do turno.
     Fila(String),
     /// Resposta a um menu da CLI (`interaction::escolha`).
     Escolha(Resposta) }
@@ -122,6 +125,7 @@ impl MobileRuntime {
             serve_state: Mutex::new((None,None)),
             pareamento: Mutex::new(Pareamento::default()),
             status: Mutex::new((None,None)),changed: Notify::new(),actions: Mutex::new(VecDeque::new()),pending: Notify::new(),
+            filas: Mutex::new(fila::carregar(dir)),
             history: Mutex::new(MobileHistory::default()),
             feeds: Mutex::new(omni_core::feed::FeedCache::default()),
             codex_descoberto_em: Mutex::new(0), arquivos: Mutex::new(HashMap::new()) }
@@ -500,6 +504,7 @@ pub fn start(state: Arc<EngineState>) {
         let aquecer = state.clone();
         tokio::task::spawn_blocking(move || { historical_entries(&aquecer); });
     }
+    fila::iniciar(state.clone());
     let worker = state.clone();
     tokio::spawn(async move {
         loop {
@@ -510,10 +515,7 @@ pub fn start(state: Arc<EngineState>) {
                 let Some(action) = next else { break };
                 let engine = worker.clone(); let input = action.clone();
                 let outcome = tokio::task::spawn_blocking(move || execute(&engine,&input)).await;
-                let error = match outcome { Ok(Ok(())) => None, Ok(Err(e)) => Some(e.to_string()), Err(e) => Some(e.to_string()) };
-                if let Some(record) = worker.mobile.actions.lock().expect("actions poisoned").iter_mut().find(|a| a.id == action.id) {
-                    record.state = if error.is_some() { "rejected" } else { "sent" }.into(); record.error = error;
-                }
+                fila::concluir_acao(&worker,&action,outcome.unwrap_or_else(|e| Err(e.into())));
             }
         }
     });
@@ -619,6 +621,7 @@ fn rotas() -> Router<Arc<EngineState>> {
         .route("/atencao",get(attention))
         .route("/sessoes",post(create_session))
         .route("/parear",post(parear))
+        .merge(fila::rotas())
 }
 
 fn router(state: Arc<EngineState>) -> Router {
@@ -1198,7 +1201,7 @@ async fn timeline(State(state): State<Arc<EngineState>>, RoutePath(id): RoutePat
     let resultado = tokio::task::spawn_blocking(move || -> Result<Value, ApiError> {
         let dir = state.state_file.parent().unwrap();
         let profiles = omni_core::profiles(dir);
-        if let Ok((conversation,_)) = current(&state,&id) {
+        if let Ok((conversation,sessao)) = current(&state,&id) {
             let timeline = {
                 let mut feeds = state.mobile.feeds.lock().expect("feeds poisoned");
                 omni_core::conversations::timeline_cached(&conversation,&profiles,page.cursor,TIMELINE_PAGINA,&mut feeds)
@@ -1206,7 +1209,7 @@ async fn timeline(State(state): State<Arc<EngineState>>, RoutePath(id): RoutePat
             let actions: Vec<_> = state.mobile.actions.lock().expect("actions poisoned").iter().filter(|a|a.conversation_id == id).cloned().collect();
             // O estado da conversa vem junto: o chat aberto não precisa recarregar a lista inteira a
             // cada 1,5 s só para saber se o agente terminou.
-            return Ok(json!({"timeline":timeline,"actions":actions,"conversation":resumo(&state,&conversation)}));
+            return Ok(json!({"timeline":timeline,"actions":actions,"conversation":resumo(&state,&conversation),"fila":fila::para_a_tela(&state,&id,sessao.as_ref())}));
         }
         let entry = historical_entries(&state).into_iter().find(|entry|history_id(entry) == id)
             .ok_or_else(||error(StatusCode::NOT_FOUND,"Conversa não encontrada"))?;
@@ -1436,6 +1439,7 @@ async fn parar(State(state): State<Arc<EngineState>>, RoutePath(id): RoutePath<S
         let (sessao_id, provider) = sessao.meta.lock().map(|meta| (meta.id.clone(), meta.provider.clone().unwrap_or_default()))
             .map_err(|_|error(StatusCode::INTERNAL_SERVER_ERROR,"Sessão indisponível"))?;
         let (limpou, parou) = interromper(&state,&sessao,&sessao_id,&provider)?;
+        fila::pausar(&state,&id);
         Ok(Json(json!({"ok":true,"limpou":limpou,"parou":parou})))
     }).await.map_err(|_|error(StatusCode::INTERNAL_SERVER_ERROR,"Falha ao parar"))?
 }
@@ -1618,7 +1622,8 @@ fn percent_decode(valor: &str) -> String {
 
 /// Prompt e entrada de fluxo: uma análise grande leva o contexto inteiro. O teto só protege o terminal.
 const TEXTO_LONGO_MAX: usize = 1024 * 1024;
-#[derive(Deserialize)] #[serde(deny_unknown_fields)] struct PromptBody { texto: String, #[serde(default)] fila: bool }
+/// `fila`: mandado por tela antiga, ainda em cache. Quem decide agora é o engine.
+#[derive(Deserialize)] #[serde(deny_unknown_fields)] struct PromptBody { texto: String, #[serde(default, rename = "fila")] _fila: bool }
 #[derive(Deserialize)] #[serde(deny_unknown_fields)] struct ApprovalBody { permitir: bool }
 async fn prompt(State(state): State<Arc<EngineState>>, RoutePath(id): RoutePath<String>, headers: HeaderMap, Json(body): Json<PromptBody>) -> Result<(StatusCode,Json<Value>),ApiError> {
     // `/comando` passa: colado na CLI e confirmado com Enter, ela executa como se fosse digitado
@@ -1627,8 +1632,7 @@ async fn prompt(State(state): State<Arc<EngineState>>, RoutePath(id): RoutePath<
     if body.texto.trim().is_empty() || body.texto.len() > TEXTO_LONGO_MAX || body.texto.chars().any(|c|c.is_control() && c != '\n' && c != '\t') {
         return Err(error(StatusCode::BAD_REQUEST,"Envie texto de até 1 MB, sem caracteres de controle"));
     }
-    let kind = if body.fila { ActionKind::Fila(body.texto) } else { ActionKind::Prompt(body.texto) };
-    enqueue_async(state,id,headers,kind).await
+    enqueue_async(state,id,headers,ActionKind::Prompt(body.texto)).await
 }
 async fn approve(State(state): State<Arc<EngineState>>, RoutePath(id): RoutePath<String>, headers: HeaderMap, Json(body): Json<ApprovalBody>) -> Result<(StatusCode,Json<Value>),ApiError> {
     enqueue_async(state,id,headers,ActionKind::Approval(body.permitir)).await
@@ -1757,13 +1761,17 @@ fn enqueue(state:&Arc<EngineState>,id:&str,headers:&HeaderMap,kind:ActionKind) -
     let (_,session) = current(state,id)?;
     let session = session.ok_or_else(||error(StatusCode::CONFLICT,"Nenhuma sessão existente para esta conversa"))?;
     let capability = interaction::capabilities(&session);
+    if let ActionKind::Prompt(texto) = &kind {
+        if fila::deve_guardar(state,id,&session,&capability,&actions) {
+            return fila::guardar_pedido(state,id,key,&session,capability.revision,texto,&mut actions);
+        }
+    }
     let supported = match kind {
         // Trocar de modo é tecla no composer: só com o CLI ocioso e a tela reconhecida. Com o agente
         // no meio de um turno, o shift+tab não é para ele.
         // Reabrir no meio de um turno mataria o trabalho em andamento.
         ActionKind::Modo(_) | ActionKind::Ajustes(_) => capability.prompt,
-        // Mensagem vale com o agente parado ou trabalhando com o campo livre: se ele começou um turno
-        // depois da última leitura da tela, ela entra na fila da CLI em vez de virar erro.
+        // Só chega aqui o que não vai para a fila do OMNI: CLI medida, ou o que o OMNI manda sozinho.
         ActionKind::Prompt(_) | ActionKind::Fila(_) => capability.prompt || capability.enfileirar,
         ActionKind::Approval(_) => capability.approve,
         ActionKind::Escolha(resposta) => capability.escolha.as_ref().is_some_and(|menu| match resposta {
@@ -2682,16 +2690,17 @@ fn execute_checked(state:&Arc<EngineState>, action:&Action, is_running: impl Fn(
     let sessions = state.sessions.lock().map_err(|_|anyhow!("sessions poisoned"))?;
     if !matches!(sessions.get(&action.session_id),Some(SessionEntry::Live(s)) if Arc::ptr_eq(s,&session)) { return Err(anyhow!("Sessão trocada")); }
     let mut context = session.interaction.lock().map_err(|_|anyhow!("screen poisoned"))?;
-    if session.reserved.load(Ordering::SeqCst) { return Err(anyhow!("Sessão ocupada com a consulta de uso")); }
+    if session.reserved.load(Ordering::SeqCst) { return Err(fila::TelaNaoLivre("Sessão ocupada com a consulta de uso").into()); }
     if exige_versao_da_tela(&action.kind) && context.revision(&session) != action.revision { return Err(anyhow!("Contexto mudou antes da execução")); }
     let meta = session.meta.lock().map_err(|_|anyhow!("metadata poisoned"))?.clone();
     let provider = meta.provider.as_deref().unwrap_or("");
     if !is_running(meta.pid,provider) { return Err(anyhow!("CLI não está mais ativo")); }
     // Prompt vai em duas partes: a colagem agora, o Enter depois que ela aparece no campo (ver
     // `interaction::submeter_colagem`). Aprovação é tecla de menu e continua num write só.
+    let aceita_no_turno = matches!(action.kind,ActionKind::Fila(_)) || !fila::usa_fila_do_omni(&session);
     let (data, submeter) = match &action.kind {
         ActionKind::Prompt(text) | ActionKind::Fila(text) if interaction::ready(context.parser.screen(),provider)
-            || interaction::pode_enfileirar(context.parser.screen(),provider) => (format!("\x1b[200~{text}\x1b[201~"), true),
+            || (aceita_no_turno && interaction::pode_enfileirar(context.parser.screen(),provider)) => (format!("\x1b[200~{text}\x1b[201~"), true),
         ActionKind::Approval(allow) => { let dialog = interaction::approval(&context.parser.screen().contents(),provider).ok_or_else(||anyhow!("Aprovação não reconhecida"))?; (if *allow { dialog.0 } else { dialog.1 }, false) },
         // O número sozinho escolhe (confirmado num Claude Code 2.1.302 real); Esc fecha o menu.
         ActionKind::Escolha(opcao) => {
@@ -2731,7 +2740,7 @@ fn execute_checked(state:&Arc<EngineState>, action:&Action, is_running: impl Fn(
                 Resposta::Fechar => ("\x1b".into(), false),
             }
         }
-        _ => return Err(anyhow!("Entrada não está disponível")),
+        _ => return Err(fila::TelaNaoLivre("Entrada não está disponível").into()),
     };
     context.input_revision += 1;
     {
@@ -2828,7 +2837,7 @@ mod tests {
 
     use axum::body::{Body,to_bytes};
 
-    fn fixture() -> (tempfile::TempDir, Arc<EngineState>) {
+    pub(in crate::mobile) fn fixture() -> (tempfile::TempDir, Arc<EngineState>) {
         let dir = tempfile::tempdir().unwrap();
         let state = Arc::new(EngineState { persist_lock:Mutex::new(()),mobile:MobileRuntime::new(dir.path()),
             token:"test-only".into(),state_file:dir.path().join("sessions.json"),sessions:Mutex::new(HashMap::new()),id_sequence:AtomicU64::new(1) });
@@ -2889,7 +2898,7 @@ mod tests {
             tokio::select! { _ = stop.notified() => {}, _ = tokio::time::sleep(std::time::Duration::from_secs(600)) => {} }
         }).await.unwrap();
     }
-    fn req(method:&str, uri:&str, origin:&str, body:&str) -> Request {
+    pub(in crate::mobile) fn req(method:&str, uri:&str, origin:&str, body:&str) -> Request {
         Request::builder().method(method).uri(uri).header("host","127.0.0.1:47322").header("origin",origin)
             .header("content-type","application/json").header("idempotency-key","test-key").body(Body::from(body.to_owned())).unwrap()
     }
@@ -3579,7 +3588,7 @@ quebra"}"#] {
         assert!(validate(&MobileConfig{enabled:true,bind:"127.0.0.1:47321".into(),token:String::new(),serve:false,totp_secret:String::new(),totp_confirmed:false}).is_err());
     }
 
-    mod actions {
+    pub(in crate::mobile) mod actions {
         use super::*;
         #[derive(Debug)] struct FakeChild;
         impl portable_pty::ChildKiller for FakeChild {
@@ -3607,7 +3616,7 @@ quebra"}"#] {
             fn write(&mut self,bytes:&[u8]) -> std::io::Result<usize> { self.0.lock().unwrap().extend_from_slice(bytes); Ok(bytes.len()) }
             fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
         }
-        fn fake_session(state:&Arc<EngineState>,text:&str) -> (Arc<LiveSession>,Arc<Mutex<Vec<u8>>>,Action) {
+        pub(in crate::mobile) fn fake_session(state:&Arc<EngineState>,text:&str) -> (Arc<LiveSession>,Arc<Mutex<Vec<u8>>>,Action) {
             let bytes = Arc::new(Mutex::new(Vec::new()));
             let meta:TerminalSession = serde_json::from_value(json!({"id":"s","project_id":"p","name":"Test","cwd":"C:/test","shell":"test",
                 "state":"answered","pid":42,"created_at_ms":1,"last_activity_at_ms":1,"output_seq":0,"rows":20,"cols":100,
@@ -3628,9 +3637,9 @@ quebra"}"#] {
         const DIALOGO_DE_APROVACAO: &str = "Claude Code\r\nDo you want to proceed?\r\n❯ 1. Yes\r\n2. Yes, always\r\n3. No";
         /// `capabilities` confere o processo de verdade pelo `ps`: sem um "claude" vivo, toda rota cairia
         /// no 409 antes de chegar à versão da tela. Um `sleep` com esse nome faz o papel da CLI.
-        #[cfg(unix)] struct CliDeMentira(std::process::Child);
+        #[cfg(unix)] pub(in crate::mobile) struct CliDeMentira(std::process::Child);
         #[cfg(unix)] impl CliDeMentira {
-            fn no_lugar_de(session:&Arc<LiveSession>) -> Self {
+            pub(in crate::mobile) fn no_lugar_de(session:&Arc<LiveSession>) -> Self {
                 use std::os::unix::process::CommandExt as _;
                 let processo = std::process::Command::new("sleep").arg0("claude").arg("60").spawn().unwrap();
                 session.meta.lock().unwrap().pid = Some(processo.id());
@@ -3645,7 +3654,7 @@ quebra"}"#] {
             pedido.headers_mut().insert("if-match",versao.parse().unwrap());
             pedido
         }
-        fn redesenhar(session:&Arc<LiveSession>,quadro:&str) {
+        pub(in crate::mobile) fn redesenhar(session:&Arc<LiveSession>,quadro:&str) {
             session.interaction.lock().unwrap().parser.process(quadro.as_bytes());
         }
 
@@ -3668,36 +3677,49 @@ quebra"}"#] {
             assert!(String::from_utf8_lossy(&bytes.lock().unwrap()).starts_with("\x1b[200~Olá\nmundo\x1b[201~"));
         }
 
-        /// A tela lida mostrava o agente parado e ele começou a trabalhar antes do envio: com o campo
-        /// livre a mensagem entra na fila da CLI, tanto na chegada quanto na execução.
-        #[cfg(unix)] #[tokio::test] async fn agente_comecou_a_trabalhar_prompt_entra_na_fila_da_cli() {
+        /// A tela lida mostrava o agente parado e ele começou a trabalhar antes do envio: a mensagem
+        /// fica na fila do OMNI, tanto na chegada quanto na execução, e nada vai para a CLI.
+        #[cfg(unix)] #[tokio::test] async fn agente_comecou_a_trabalhar_prompt_fica_na_fila_do_omni() {
             let (_dir,state) = fixture(); let (session,bytes,antes) = fake_session(&state,"Claude Code\r\n❯ ");
             let _cli = CliDeMentira::no_lugar_de(&session);
-            redesenhar(&session,"\x1b[1;1H✻ Pensando… (esc to interrupt)\x1b[2;3H");
-            let resposta = router(state.clone()).oneshot(pedido_com_versao("/conversas/c/prompt",r#"{"texto":"e depois isso"}"#,&antes.revision)).await.unwrap();
+            let resposta = router(state.clone()).oneshot(pedido_com_versao("/conversas/c/prompt",r#"{"texto":"na execução"}"#,&antes.revision)).await.unwrap();
             assert_eq!(resposta.status(),StatusCode::ACCEPTED);
+            redesenhar(&session,"\x1b[1;1H✻ Pensando… (esc to interrupt)\x1b[2;3H");
             let action = state.mobile.actions.lock().unwrap()[0].clone();
             assert!(matches!(action.kind,ActionKind::Prompt(_)));
-            execute_checked(&state,&action,|_,_| true).unwrap();
-            assert!(String::from_utf8_lossy(&bytes.lock().unwrap()).starts_with("\x1b[200~e depois isso\x1b[201~"));
+            let resultado = execute(&state,&action);
+            fila::concluir_acao(&state,&action,resultado);
+            assert_eq!(state.mobile.actions.lock().unwrap()[0].state,"guardada");
+
+            let mut pedido = pedido_com_versao("/conversas/c/prompt",r#"{"texto":"na chegada"}"#,&antes.revision);
+            pedido.headers_mut().insert("idempotency-key","outra".parse().unwrap());
+            assert_eq!(router(state.clone()).oneshot(pedido).await.unwrap().status(),StatusCode::ACCEPTED);
+            assert_eq!(state.mobile.actions.lock().unwrap()[1].state,"guardada");
+            assert!(bytes.lock().unwrap().is_empty());
+            let lista = fila::para_a_tela(&state,"c",Some(&session));
+            assert_eq!(lista["itens"][0]["texto"],"na execução");
+            assert_eq!(lista["itens"][1]["texto"],"na chegada");
         }
 
         /// Sem a versão da tela, é o campo vazio que impede colar em cima do que a pessoa digitou no PC.
-        #[cfg(unix)] #[tokio::test] async fn campo_com_rascunho_continua_recusando() {
+        /// A mensagem não vira erro: espera na fila do OMNI até o campo ficar livre.
+        #[cfg(unix)] #[tokio::test] async fn campo_com_rascunho_nao_recebe_colagem() {
             let (_dir,state) = fixture(); let (session,bytes,action) = fake_session(&state,"Claude Code\r\n❯ ");
             let _cli = CliDeMentira::no_lugar_de(&session);
             redesenhar(&session,"\x1b[2;3Hmeu rascunho");
             let resposta = router(state.clone()).oneshot(pedido_com_versao("/conversas/c/prompt",r#"{"texto":"oi"}"#,&action.revision)).await.unwrap();
-            assert_eq!(resposta.status(),StatusCode::CONFLICT);
+            assert_eq!(resposta.status(),StatusCode::ACCEPTED);
+            assert_eq!(state.mobile.actions.lock().unwrap()[0].state,"guardada");
             assert!(execute_checked(&state,&action,|_,_| true).is_err());
             assert!(bytes.lock().unwrap().is_empty());
         }
 
-        #[cfg(unix)] #[tokio::test] async fn prompt_com_aprovacao_aberta_continua_recusando() {
+        #[cfg(unix)] #[tokio::test] async fn prompt_com_aprovacao_aberta_nao_recebe_colagem() {
             let (_dir,state) = fixture(); let (session,bytes,action) = fake_session(&state,DIALOGO_DE_APROVACAO);
             let _cli = CliDeMentira::no_lugar_de(&session);
             let resposta = router(state.clone()).oneshot(pedido_com_versao("/conversas/c/prompt",r#"{"texto":"oi"}"#,&action.revision)).await.unwrap();
-            assert_eq!(resposta.status(),StatusCode::CONFLICT);
+            assert_eq!(resposta.status(),StatusCode::ACCEPTED);
+            assert_eq!(state.mobile.actions.lock().unwrap()[0].state,"guardada");
             assert!(execute_checked(&state,&action,|_,_| true).is_err());
             assert!(bytes.lock().unwrap().is_empty());
         }

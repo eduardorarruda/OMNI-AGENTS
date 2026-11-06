@@ -4,6 +4,7 @@ pub mod conta_gh;
 pub mod usage;
 pub mod conversations;
 pub mod feed;
+pub mod fila;
 pub mod history;
 pub mod runtime;
 pub mod targets;

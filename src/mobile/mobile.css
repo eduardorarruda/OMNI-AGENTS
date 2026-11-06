@@ -156,6 +156,8 @@
   color: rgb(var(--c-text-secondary));
 }
 .bubble-time { margin-left: auto; padding-left: .75rem; font-weight: 400; color: rgb(var(--c-text-muted)); }
+.bubble-tirar { display: inline-flex; align-items: center; justify-content: center; width: 1.75rem; height: 1.75rem; margin: -.375rem -.375rem -.375rem 0; border-radius: .375rem; color: rgb(var(--c-text-muted)); }
+.bubble-tirar:hover, .bubble-tirar:focus-visible { color: rgb(var(--c-text-primary)); background: rgb(var(--c-text-primary) / .1); }
 .mobile-message { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .875rem; }
 
 /* Markdown da resposta com as cores do tema (o plugin de tipografia nasce pensado para fundo claro).

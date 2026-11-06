@@ -716,64 +716,194 @@ describe("versão da tela", () => {
   });
 });
 
-describe("mensagem aceita depois de o agente começar", () => {
+describe("fila do OMNI", () => {
   const LIVRE = { prompt: true, approve: false, revision: '"r"', approval_text: null, reason: null };
   const OCUPADO = { ...LIVRE, prompt: false, enfileirar: true };
+  const NAO_RECONHECIDA = { ...LIVRE, prompt: false, reason: "Entrada do CLI não reconhecida ou sessão ocupada" };
 
-  /** `capacidades` e `transcript` mudam no meio do teste, como o PC mudaria entre uma leitura e outra.
-   *  `ocuparNoEnvio`: o agente começa a trabalhar no instante do POST, depois da leitura que decidiu o envio. */
+  interface ItemFalso { id: string; texto: string; anexos: string[]; em_ms: number }
+
+  /** O engine de mentira: `capacidades`, `transcript` e `itens` mudam no meio do teste, como o PC mudaria.
+   *  `guardarNoEnvio`: a mensagem chega à colagem com o agente já ocupado, e o engine a guarda depois da resposta. */
   function servidorVivo() {
-    const vivo = { capacidades: LIVRE as typeof LIVRE & { enfileirar?: boolean }, transcript: [] as { id: string; role: string; text: string; provider: string }[], posts: 0, ocuparNoEnvio: false };
+    const vivo = {
+      capacidades: LIVRE as typeof LIVRE & { enfileirar?: boolean }, trabalhando: false,
+      transcript: [] as { id: string; role: string; text: string; provider: string }[],
+      itens: [] as ItemFalso[], acoes: [] as { id: string; state: string; error: string | null }[],
+      pausada: false, aviso: null as string | null, posts: 0, guardarNoEnvio: false,
+      deletes: [] as string[], respostaDoDelete: null as Response | null,
+    };
     vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
       if (init?.method === "POST" && url.endsWith("/parar")) return new Response(JSON.stringify({ limpou: true, parou: true }));
+      if (init?.method === "DELETE") {
+        vivo.deletes.push(url);
+        if (vivo.respostaDoDelete) return vivo.respostaDoDelete;
+        vivo.itens = vivo.itens.filter((item) => !url.endsWith(`/${item.id}`));
+        return new Response(JSON.stringify({ itens: vivo.itens, entregando: null, pausada: false, aviso: null }));
+      }
       if (init?.method === "POST") {
         vivo.posts += 1;
-        if (vivo.ocuparNoEnvio) vivo.capacidades = OCUPADO;
-        return new Response(JSON.stringify({ id: `a${vivo.posts}`, state: "queued" }), { status: 202 });
+        const id = `a${vivo.posts}`;
+        const { texto } = JSON.parse(String(init.body)) as { texto: string };
+        const ocupado = !vivo.capacidades.prompt || vivo.itens.length > 0;
+        if (ocupado) vivo.itens = [...vivo.itens, { id, texto, anexos: [], em_ms: 1 }];
+        else if (vivo.guardarNoEnvio) {
+          vivo.capacidades = OCUPADO; vivo.trabalhando = true;
+          vivo.itens = [...vivo.itens, { id, texto, anexos: [], em_ms: 1 }];
+          vivo.acoes = [...vivo.acoes, { id, state: "guardada", error: null }];
+          return new Response(JSON.stringify({ id, state: "queued" }), { status: 202 });
+        }
+        return new Response(JSON.stringify({ id, state: ocupado ? "guardada" : "queued" }), { status: 202 });
       }
-      const atual = conversaPronta({ capabilities: vivo.capacidades, live: true, state: vivo.capacidades.enfileirar ? "working" : "answered" });
+      const atual = conversaPronta({ capabilities: vivo.capacidades, live: true, state: vivo.trabalhando ? "working" : "answered" });
       return new Response(JSON.stringify(
         url.includes("timeline")
-          ? { timeline: { ...TIMELINE_VAZIA.timeline, messages: vivo.transcript }, actions: [], conversation: atual }
+          ? { timeline: { ...TIMELINE_VAZIA.timeline, messages: vivo.transcript }, actions: vivo.acoes, conversation: atual,
+              fila: { itens: vivo.itens, entregando: null, pausada: vivo.pausada, aviso: vivo.aviso } }
           : url === "/projetos" ? PROJETOS : url === "/atencao" ? [] : [atual]));
     }));
     return vivo;
   }
+  function ocupar(vivo: ReturnType<typeof servidorVivo>) { vivo.capacidades = OCUPADO; vivo.trabalhando = true; }
+  async function abrir() {
+    history.replaceState(null, "", "/#/c/c");
+    render(<MobileApp />);
+    await screen.findByLabelText("Sua resposta");
+  }
   async function enviar(texto: string) {
     await act(async () => {
       await userEvent.type(screen.getByLabelText("Sua resposta"), texto);
-      await userEvent.click(screen.getByRole("button", { name: "Enviar resposta" }));
+      await userEvent.click(screen.getByRole("button", { name: /Enviar (resposta|para a fila)/ }));
     });
   }
+  async function abrirComUmaNaFila(texto = "na fila") {
+    const vivo = servidorVivo();
+    ocupar(vivo);
+    vivo.itens = [{ id: "i1", texto, anexos: [], em_ms: 1 }];
+    await abrir();
+    await screen.findByLabelText("Mensagens na fila");
+    return vivo;
+  }
 
-  it("agente ocupado na leitura seguinte: vira fila e não dá aviso falso depois de 2 minutos", async () => {
+  it("mensagem na fila mostra o X", async () => {
+    const vivo = servidorVivo();
+    ocupar(vivo);
+    await abrir();
+    await enviar("depois do turno");
+    const fila = await screen.findByLabelText("Mensagens na fila");
+    expect(within(fila).getByText("depois do turno")).toBeInTheDocument();
+    expect(within(fila).getByRole("button", { name: "Tirar da fila" })).toBeInTheDocument();
+    expect(document.querySelectorAll(".bubble-pending")).toHaveLength(1);
+  });
+
+  it("clicar no X tira a mensagem", async () => {
+    const vivo = await abrirComUmaNaFila();
+    await act(async () => { await userEvent.click(screen.getByRole("button", { name: "Tirar da fila" })); });
+    await waitFor(() => expect(screen.queryByLabelText("Mensagens na fila")).not.toBeInTheDocument());
+    expect(vivo.deletes).toEqual(["/conversas/c/fila/i1"]);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("409 avisa que já foi entregue", async () => {
+    const vivo = await abrirComUmaNaFila();
+    vivo.respostaDoDelete = new Response(JSON.stringify({ error: "Essa mensagem já foi entregue ao agente" }), { status: 409 });
+    await act(async () => { await userEvent.click(screen.getByRole("button", { name: "Tirar da fila" })); });
+    expect(await screen.findByRole("alert")).toHaveTextContent("já foi entregue");
+  });
+
+  it("falha mantém a mensagem e mostra o motivo", async () => {
+    const vivo = await abrirComUmaNaFila("continua aqui");
+    vivo.respostaDoDelete = new Response(JSON.stringify({ error: "Disco cheio" }), { status: 500 });
+    await act(async () => { await userEvent.click(screen.getByRole("button", { name: "Tirar da fila" })); });
+    expect(await screen.findByRole("alert")).toHaveTextContent(/Não consegui tirar da fila.*Disco cheio/);
+    expect(within(screen.getByLabelText("Mensagens na fila")).getByText("continua aqui")).toBeInTheDocument();
+  });
+
+  it("fila aparece igual no celular", async () => {
+    // Mandada do PC: esta tela nunca enviou nada, e lê a mesma lista do engine, com o mesmo X.
+    const vivo = await abrirComUmaNaFila("mandada do PC");
+    expect(vivo.posts).toBe(0);
+    const fila = screen.getByLabelText("Mensagens na fila");
+    expect(within(fila).getByText("mandada do PC")).toBeInTheDocument();
+    expect(within(fila).getByRole("button", { name: "Tirar da fila" })).toBeInTheDocument();
+  });
+
+  it("mensagem enviada com o agente parado não ganha X", async () => {
+    servidorVivo();
+    await abrir();
+    await enviar("direto");
+    expect(await screen.findByText("direto")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Tirar da fila" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Mensagens na fila")).not.toBeInTheDocument();
+  });
+
+  it("tela não reconhecida aceita a mensagem e ela vai para a fila", async () => {
+    const vivo = servidorVivo();
+    vivo.capacidades = NAO_RECONHECIDA;
+    await abrir();
+    await enviar("guarda");
+    expect(within(await screen.findByLabelText("Mensagens na fila")).getByText("guarda")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("agente começa antes da colagem: vira fila e não dá aviso falso depois de 2 minutos", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
       const vivo = servidorVivo();
-      history.replaceState(null, "", "/#/c/c");
-      render(<MobileApp />);
-      await screen.findByLabelText("Sua resposta");
-      vivo.ocuparNoEnvio = true;
+      await abrir();
+      vivo.guardarNoEnvio = true;
       await enviar("depois do turno");
 
       const fila = await screen.findByLabelText("Mensagens na fila");
       expect(within(fila).getByText("depois do turno")).toBeInTheDocument();
+      expect(document.querySelectorAll(".bubble-pending")).toHaveLength(1);
 
-      await act(async () => { vi.advanceTimersByTime(121_000); });
+      for (let segundos = 0; segundos < 125; segundos += 5) await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
       expect(screen.queryByText(/Não consegui confirmar o envio/)).not.toBeInTheDocument();
       expect(within(screen.getByLabelText("Mensagens na fila")).getByText("depois do turno")).toBeInTheDocument();
     } finally { vi.useRealTimers(); }
   });
 
+  it("mensagem colada em turno longo não dá aviso falso e não some", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const vivo = servidorVivo();
+      await abrir();
+      await enviar("colada");
+      ocupar(vivo);
+      for (let segundos = 0; segundos < 300; segundos += 5) await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+      expect(screen.queryByText(/Não consegui confirmar o envio/)).not.toBeInTheDocument();
+      expect(screen.getByText("colada")).toBeInTheDocument();
+
+      // O turno acabou e ela não apareceu: aí sim o aviso é verdadeiro.
+      vivo.capacidades = LIVRE; vivo.trabalhando = false;
+      for (let segundos = 0; segundos < 20; segundos += 5) await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+      expect(screen.getByText(/Não consegui confirmar o envio/)).toBeInTheDocument();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("sem rede o aviso de envio não confirmado ainda aparece, mesmo com o agente trabalhando", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const vivo = servidorVivo();
+      await abrir();
+      await enviar("sem rede");
+      ocupar(vivo);
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+      vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("Failed to fetch"); }));
+      for (let segundos = 0; segundos < 150; segundos += 5) await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+      expect(screen.getByText(/Não consegui confirmar o envio/)).toBeInTheDocument();
+    } finally { vi.useRealTimers(); }
+  });
+
   it("a primeira mensagem chegar não tira da tela a segunda, que ainda espera", async () => {
     const vivo = servidorVivo();
-    history.replaceState(null, "", "/#/c/c");
-    render(<MobileApp />);
-    await screen.findByLabelText("Sua resposta");
+    await abrir();
     await enviar("primeira");
+    ocupar(vivo);
     await enviar("segunda");
     expect(screen.getByText("primeira")).toBeInTheDocument();
-    expect(within(screen.getByLabelText("Mensagens na fila")).getByText("segunda")).toBeInTheDocument();
+    expect(within(await screen.findByLabelText("Mensagens na fila")).getByText("segunda")).toBeInTheDocument();
 
     vivo.transcript = [{ id: "c:0", role: "user", text: "primeira", provider: "claude" }];
 
@@ -782,33 +912,44 @@ describe("mensagem aceita depois de o agente começar", () => {
     expect(within(screen.getByLabelText("Mensagens na fila")).getByText("segunda")).toBeInTheDocument();
   });
 
-  it("Parar devolve ao campo a mensagem que tinha ido para a fila, sem deixar o balão", async () => {
+  it("Parar devolve ao campo a mensagem que a CLI devolveu, sem deixar o balão", async () => {
     const vivo = servidorVivo();
-    history.replaceState(null, "", "/#/c/c");
-    render(<MobileApp />);
-    await screen.findByLabelText("Sua resposta");
-    vivo.ocuparNoEnvio = true;
+    await abrir();
     await enviar("volta para o campo");
+    ocupar(vivo);
+    await screen.findByRole("button", { name: /Parar/ }, { timeout: 5_000 });
+
+    await act(async () => { await userEvent.click(screen.getByRole("button", { name: /Parar/ })); });
+
+    await waitFor(() => expect(document.querySelectorAll(".bubble-pending")).toHaveLength(0));
+    expect(screen.getByLabelText("Sua resposta")).toHaveValue("volta para o campo");
+  });
+
+  it("Parar não devolve ao campo a mensagem que continua na fila", async () => {
+    const vivo = servidorVivo();
+    ocupar(vivo);
+    await abrir();
+    await enviar("segue guardada");
     await screen.findByLabelText("Mensagens na fila");
 
     await act(async () => { await userEvent.click(screen.getByRole("button", { name: /Parar/ })); });
 
-    await waitFor(() => expect(screen.queryByLabelText("Mensagens na fila")).not.toBeInTheDocument());
-    expect(screen.getByLabelText("Sua resposta")).toHaveValue("volta para o campo");
+    expect(screen.getByLabelText("Sua resposta")).toHaveValue("");
+    expect(within(screen.getByLabelText("Mensagens na fila")).getByText("segue guardada")).toBeInTheDocument();
   });
 
-  it("mensagem com texto transformado pela CLI sai da fila quando chega", async () => {
-    const vivo = servidorVivo();
-    history.replaceState(null, "", "/#/c/c");
-    render(<MobileApp />);
-    await screen.findByLabelText("Sua resposta");
-    vivo.ocuparNoEnvio = true;
-    await enviar("com anexo");
-    await screen.findByLabelText("Mensagens na fila");
+  it("fila pausada e sessão encerrada dizem o que está acontecendo", async () => {
+    const vivo = await abrirComUmaNaFila();
+    vivo.pausada = true;
+    vivo.aviso = "A sessão foi encerrada. As mensagens continuam guardadas e entram quando a conversa voltar.";
+    expect(await screen.findByText(/A sessão foi encerrada/, undefined, { timeout: 5_000 })).toBeInTheDocument();
+    expect(screen.getByText(/Fila pausada/)).toBeInTheDocument();
+  });
 
+  it("item entregue sai da fila quando o engine tira", async () => {
+    const vivo = await abrirComUmaNaFila();
+    vivo.itens = [];
     vivo.transcript = [{ id: "c:0", role: "user", text: "[Pasted text #1]", provider: "claude" }];
-
-    // Chega pela leitura periódica, que anda sozinha com o agente trabalhando.
     await waitFor(() => expect(screen.queryByLabelText("Mensagens na fila")).not.toBeInTheDocument(), { timeout: 5_000 });
   });
 });

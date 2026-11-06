@@ -186,7 +186,15 @@ it("com o agente trabalhando, a mensagem vai para a fila e o Parar continua à m
     state: "working", live: true, tokens: "1.2k",
     capabilities: { prompt: false, approve: false, revision: '"r"', approval_text: null, reason: null, enfileirar: true },
   });
-  vi.stubGlobal("fetch", servidor([trabalhando], enviados));
+  const base = servidor([trabalhando], enviados);
+  // Quem guarda é o engine: depois do envio a mensagem vem na fila da timeline.
+  vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+    const resposta = await base(url, init);
+    if (init?.method === "POST") return new Response(JSON.stringify({ id: "a", state: "guardada" }), { status: 202 });
+    if (!url.includes("timeline") || enviados.length === 0) return resposta;
+    const itens = [{ id: "a", texto: "e depois isso", anexos: [], em_ms: 1 }];
+    return new Response(JSON.stringify({ ...TIMELINE, fila: { itens, entregando: null, pausada: false, aviso: null } }));
+  }));
   render(<WebApp />);
   await screen.findByRole("button", { name: "Projeto" });
   await act(async () => {
@@ -203,7 +211,7 @@ it("com o agente trabalhando, a mensagem vai para a fila e o Parar continua à m
     await userEvent.click(screen.getByRole("button", { name: "Enviar para a fila" }));
   });
   await waitFor(() => expect(enviados.some((item) => item.url.endsWith("/prompt"))).toBe(true));
-  expect(enviados.find((item) => item.url.endsWith("/prompt"))?.body).toEqual({ texto: "e depois isso", fila: true });
+  expect(enviados.find((item) => item.url.endsWith("/prompt"))?.body).toEqual({ texto: "e depois isso" });
   expect(await screen.findByText("na fila")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Parar" })).toBeInTheDocument();
 });
