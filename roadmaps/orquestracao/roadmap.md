@@ -100,6 +100,9 @@ Instruções do agente (system prompt)...
 - [x] A IA cria e roda fluxos sem confirmação; o que ela inicia passa sozinho pelas Aprovações, com registro na linha do
       tempo. Exceção: sessão que leu tarefa externa marca `veio_de_fora`, herdado por subfluxos e agentes, e a Aprovação
       para (Tarefa 12, `crates/omni-rag/src/mcp_fluxos.rs`, `crates/omni-engine/src/fluxos.rs`).
+- [x] Execução marcada para antes da primeira etapa que age se não houver Aprovação antes (recusar cancela a execução). A marca
+      fica em disco por pasta, com validade de 24 h (`crates/omni-rag/src/marca_de_fora.rs`), e `listar_tarefas`/`listar_cartoes`
+      com texto de fora também marcam. Limitação: fluxo salvo por sessão marcada e rodado por sessão limpa não para.
 - [ ] Conferir numa sessão real se o MCP herda `OMNI_VEIO_DE_FORA`, em especial no Codex (só testado até o ambiente do processo da CLI).
 
 ### Sem limites (2026-11-06, plano das oito melhorias)

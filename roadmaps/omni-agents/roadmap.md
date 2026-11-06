@@ -410,9 +410,9 @@ arquivos tocados e o próximo passo. Quando a pendência for resolvida, risque d
 
 ### Oito melhorias: planejamento (2026-11-06)
 
-Design aprovado (`docs/superpowers/specs/2026-11-06-omni-oito-itens-design.md`). Plano em `docs/superpowers/plans/2026-11-06-omni-oito-itens.md`. Em execução, tarefa a tarefa: entregas marcadas abaixo.
+Design aprovado (`docs/superpowers/specs/2026-11-06-omni-oito-itens-design.md`). Plano em `docs/superpowers/plans/2026-11-06-omni-oito-itens.md`. Executado tarefa a tarefa: entregas marcadas abaixo.
 
-- [ ] Fase 1: erro de contexto ao enviar mensagem (item 10, prioridade), arquivo citado que "não existe" e reconhecimento do Linux (`servidores.rs`).
+- [x] Fase 1: erro de contexto ao enviar mensagem (item 10, prioridade), arquivo citado que "não existe" e reconhecimento do Linux (`servidores.rs`).
 - [x] Tarefa 1A (item 10): mensagem não confere mais a versão da tela (`exige_versao_da_tela`, `mobile.rs`); com o agente ocupado e o campo livre entra na fila da CLI. Aprovação relê e tenta uma vez se a pergunta for a mesma (`approval_id`, o bloco do diálogo; sem ele, recusa). Mensagem aceita com o agente já ocupado vai para a fila da tela, sem aviso falso. Falta conferir ao vivo.
 - [x] Tarefa 1 (item 8): arquivo citado é achado pelo nome. `resolverCitado` tenta absoluto, pasta da conversa, raiz do projeto e então busca pelo nome (comando `localizar_arquivo`, máx. 20, ignora `node_modules`/`.git`/`target`/`dist`); vários achados viram lista para escolher; nada achado diz "Não achei X em projeto". Pendente: confirmar ao vivo qual hipótese do spec valia (passo de logar em `npm run dev` pulado por proibição de build); as duas estão cobertas.
 - [x] Tarefa 2 (item 4): Servidores Locais funcionam no Linux (`ss -ltnpH`, reserva `/proc/net/tcp`, dados em `/proc/<pid>`) e no macOS (`lsof`); derrubar leva a árvore (TERM, 2 s, KILL; `omni_core::processos::descendentes`). Windows intacto. macOS NÃO foi testado numa máquina: coberto só por saída gravada de `lsof`/`ps`. Falta conferir ao vivo no CachyOS (pendente: depende de `npm run dev`).
@@ -430,10 +430,19 @@ Design aprovado (`docs/superpowers/specs/2026-11-06-omni-oito-itens-design.md`).
 - [x] Tarefa 20 (item 7, triagem): botão Atualizar no Kanban (`kanban_atualizar_externas`, mesma busca e bloqueio de `tarefas_atualizar`, só no clique) manda o resultado para `POST /kanban/externas` (chave origem + id; origem = endereço da API; quem saiu fica com `sumiu`, quem virou cartão não volta). `TriagemExterna.tsx` mostra a fila "Externas"; `POST /kanban/externas/{id}/projeto` vira cartão no Backlog. Triagem guarda até 500 tarefas (o quadro volta numa resposta de 4 MB). Dispatcher abre sessão com `OMNI_VEIO_DE_FORA=1` para cartão externo, não reaproveita sessão sem a marca e cola o texto entre as marcas de dados. Falta conferir ao vivo.
 - [x] Tarefa 21 (item 7, MCP): `listar_cartoes`, `pegar_cartao` e `mover_cartao` (`mcp_kanban.rs`). O MCP fala pelo protocolo local com `engine.token` e cai em `mobile::local`, sem `somente_leitura_no_http`: a regra do celular não mudou e testes travam os dois lados. Pegar é atômico (`POST /kanban/cartoes/{id}/pegar`, segundo agente leva 409), recusa triagem e cartão externo liga a marca. Texto de fora sempre entre as marcas de dados. Fora do brief: `Cartao.pegoPor` (sem ele o dispatcher dava o cartão do agente como falho) e `useKanban` relê o `GET /kanban` local a cada 3 s (a tela não via o MCP). Falta conferir ao vivo.
 - [x] Correção das Tarefas 20 e 21: dispatcher reserva o cartão no engine antes de abrir a sessão (`POST /kanban/cartoes/{id}/iniciar`, só `ready`; 409/404 desiste); falha depois da reserva vira Falhou com aviso e erro não para mais o laço. `listar_cartoes` liga a marca quando mostra algo externo, e o id da triagem vai dentro das marcas. Origem passa a ser `host:porta`. Registrado, sem fazer: botão Descartar na triagem (decisão de produto), resposta de `/kanban` acima de 4 MB, marca escrita com maiúsculas ou caractere invisível.
-- [ ] Fase 3: Tarefas em Segundo Plano e panorama do projeto.
-- [ ] Fase 4: uso da conta (detalhe ao clicar, tokens dos históricos locais).
-- [ ] Fase 5: Kanban no engine e tarefas externas (triagem, busca só no clique).
-- [ ] Fase 6: grafo de conhecimento.
-- [ ] Fase 7: X para tirar mensagem da fila (fila do OMNI por padrão; fila da CLI só onde a tecla for medida).
+- [x] Tarefa 13 (item 3): `GET /segundo-plano` (sessões com agente em segundo plano, subagentes pelos `.jsonl` dos últimos 2 min, fluxos vivos). Só o Claude gera linha de sessão. Pendente: tela real de segundo plano no acervo (`tela_capturada_marca_segundo_plano` está `#[ignore]`).
+- [x] Tarefa 14 (item 3): aba "Tarefas em segundo plano" na lateral, com contador, Abrir e Parar. O hook real tem teste de ritmo: consulta em laço corrigida.
+- [x] Tarefa 15 (item 5): faixa "rodando neste projeto" no workspace e aba "O que roda", com mini-grafo só de leitura. Não reaproveita `panoramaModel.ts`: o painel é de um projeto só.
+- [x] Tarefas 16 e 17 (item 1): detalhe da conta ao clicar e tokens dos históricos locais (`contas_tokens.rs`, `DetalheDaConta.tsx`); sem leitura aparece "não disponível".
+- [x] Tarefas 18 e 19 (item 7): Kanban no engine (`kanban.json`, `crates/omni-engine/src/kanban.rs`), migração do `localStorage` com marcador `migrado`; o token do celular só lê (`somente_leitura_no_http`).
+- [x] Tarefas 22 e 23 (item 6): grafo de conhecimento (citação, conversa, tag, texto), cache incremental por nota, comando `memoria_grafo`, aba Grafo na lateral e em aba grande (d3-force 3.0.0). Frio cerca de 1 min em debug com 2 mil notas; quente abaixo de 0,5 s. Vizinhas de texto só mudam quando a própria nota muda.
+- [x] Tarefa 24 (item 9): fila do OMNI no engine, persistida, com X para tirar a mensagem, igual no PC e no celular. Parar pausa antes de interromper; entrega recente apagada pelo Parar volta à frente da fila (até 30 s). Esc direto no terminal não pausa. Sem botão Retomar: mensagem nova ou tirar o último item retoma. Falta conferir com CLI real.
+- [x] Tarefa 25 (fila da CLI): sem medição (pede CLI real); só registro, toda CLI usa a fila do OMNI.
+- [x] Correção da Tarefa 12: execução marcada para antes da primeira etapa que age se não houver Aprovação antes; a marca vai a disco; `listar_tarefas` com itens marca a sessão. Parar anda de forma iterativa em cadeia funda de subfluxo, sem teto de profundidade. Limitação: fluxo salvo por sessão marcada e rodado depois por sessão limpa não para.
+- [x] Fase 3: Tarefas em Segundo Plano e panorama do projeto.
+- [x] Fase 4: uso da conta (detalhe ao clicar, tokens dos históricos locais).
+- [x] Fase 5: Kanban no engine e tarefas externas (triagem, busca só no clique).
+- [x] Fase 6: grafo de conhecimento.
+- [x] Fase 7: X para tirar mensagem da fila (fila do OMNI por padrão; fila da CLI só onde a tecla for medida).
 
-Próximo passo: o usuário revisa o plano e pede a execução; a Tarefa 0 commita o trabalho aberto antes de tudo.
+Próximo passo: conferir ao vivo o que os testes não alcançam (CLI real, tela real no acervo, marca chegando ao MCP no Codex, macOS e Windows). Decisão de produto em aberto: botão Descartar na triagem. Novidades escritas como 0.7.13; a versão só sobe na release.

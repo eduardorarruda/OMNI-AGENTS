@@ -14,6 +14,23 @@ export interface EntradaChangelog {
 
 export const CHANGELOG: EntradaChangelog[] = [
   {
+    version: "0.7.13",
+    date: "2026-11-06",
+    changes: [
+      "Corrigido: mandar mensagem não dá mais o erro \"O contexto mudou; atualize antes de responder\". Com o agente ocupado, ela espera a vez sozinha.",
+      "Fila de mensagens: clique no X para tirar uma mensagem antes de ela entrar, no computador e no celular. Parar segura a fila, e a mensagem que ia entrar volta para ela.",
+      "Fluxos: acompanhe a execução ao vivo, com a linha do tempo sempre à vista e um selo no topo do app. Aprovar e Recusar ganharam uma faixa grande.",
+      "Fluxos: um fluxo agora pode chamar outro, e você navega entre eles pela trilha no topo. Sem teto de custo, voltas ou pastas: limite só se você definir.",
+      "A IA cria e roda fluxos sem pedir confirmação. Tarefa vinda de fora continua parando para você aprovar.",
+      "Novo: aba Tarefas em segundo plano, com o que está rodando agora, e aba O que roda, com o panorama do projeto.",
+      "Uso da conta: clique na conta para ver o detalhe do consumo. O que não dá para saber aparece como \"não disponível\".",
+      "Kanban: o quadro agora fica guardado no app. Tarefas externas chegam por uma triagem, só quando você clica em Atualizar, e você escolhe o projeto. Agentes também podem pegar cartões.",
+      "Novo: grafo de conhecimento, com as ligações entre as suas notas de memória.",
+      "Corrigido: arquivo citado na conversa que aparecia como \"Não existe no disco\" agora é achado pelo nome.",
+      "Servidores Locais agora funcionam no Linux, e derrubar um servidor leva junto o que ele abriu.",
+    ],
+  },
+  {
     version: "0.7.12",
     date: "2026-11-05",
     changes: [
