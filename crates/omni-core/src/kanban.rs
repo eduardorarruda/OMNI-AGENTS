@@ -188,8 +188,12 @@ pub fn editar(quadro: &mut Quadro, id: &str, mudancas: &Value) -> Result<Cartao,
     for (chave, valor) in mudancas {
         alvo.insert(chave.clone(), valor.clone());
     }
-    let novo: Cartao = serde_json::from_value(atual).map_err(|e| ErroKanban::Invalido(format!("Valor inválido: {e}")))?;
+    let mut novo: Cartao = serde_json::from_value(atual).map_err(|e| ErroKanban::Invalido(format!("Valor inválido: {e}")))?;
     validar(&novo).map_err(ErroKanban::Invalido)?;
+    // Fora de Rodando ninguém está com o cartão: se ele voltar à fila, é o dispatcher quem olha.
+    if novo.status != "doing" {
+        novo.pego_por = None;
+    }
     quadro.tarefas[posicao] = novo.clone();
     Ok(novo)
 }
@@ -202,6 +206,19 @@ pub fn pegar(quadro: &mut Quadro, id: &str, agora: &str) -> Result<Cartao, ErroK
     }
     cartao.status = "doing".into();
     cartao.pego_por = Some(PEGO_PELO_MCP.into());
+    cartao.updated_at = agora.to_owned();
+    Ok(cartao.clone())
+}
+
+/// O dispatcher reservando o próximo da fila antes de abrir a sessão. Só `ready`: cartão que um agente
+/// pegou, ou que o usuário tirou da fila, volta como `Conflito`. Sem `pego_por`, porque quem acompanha é ele.
+pub fn iniciar(quadro: &mut Quadro, id: &str, agora: &str) -> Result<Cartao, ErroKanban> {
+    let cartao = quadro.tarefas.iter_mut().find(|c| c.id == id).ok_or_else(|| ErroKanban::NaoEncontrado("Cartão não encontrado".into()))?;
+    if cartao.status != "ready" {
+        return Err(ErroKanban::Conflito("Só dá para iniciar cartão de Pronta".into()));
+    }
+    cartao.status = "doing".into();
+    cartao.pego_por = None;
     cartao.updated_at = agora.to_owned();
     Ok(cartao.clone())
 }
@@ -376,6 +393,17 @@ mod tests {
         assert!(matches!(editar(&mut q, "a", &json!({"status":"voando"})), Err(ErroKanban::Invalido(_))));
         assert!(matches!(editar(&mut q, "zz", &json!({"title":"x"})), Err(ErroKanban::NaoEncontrado(_))));
         assert_eq!(q.tarefas[0], cartao("a"));
+    }
+
+    #[test]
+    fn sair_de_rodando_limpa_quem_pegou() {
+        let mut q = Quadro::default();
+        criar(&mut q, cartao("a")).unwrap();
+        pegar(&mut q, "a", "agora").unwrap();
+        editar(&mut q, "a", &json!({"title":"Novo"})).unwrap();
+        assert_eq!(q.tarefas[0].pego_por.as_deref(), Some("mcp"), "status não mudou");
+        editar(&mut q, "a", &json!({"status":"ready"})).unwrap();
+        assert_eq!(q.tarefas[0].pego_por, None);
     }
 
     #[test]

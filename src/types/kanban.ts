@@ -71,6 +71,7 @@ export type KanbanAction =
   | { type: "MOVE_TASK"; id: string; status: KanbanStatus }
   | { type: "SET_AGENT_FOR_PROJECT"; projectId: string; agentId: AgentCliId }
   | { type: "SET_DISPATCHER_ENABLED"; enabled: boolean }
+  /** O engine já gravou, na reserva do dispatcher: só acerta a tela. */
   | { type: "TASK_STARTED"; id: string }
   | { type: "TASK_FINISHED"; id: string; outcome: "done" | "failed"; resultNote: string }
   | { type: "RECORD_FAILURE" }

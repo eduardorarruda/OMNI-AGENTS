@@ -95,6 +95,11 @@ async fn cartao_pegar(State(state): State<Arc<EngineState>>, RoutePath(id): Rout
     alterar(&arquivo_do_kanban(&state), |q| regras::pegar(q, &id, &agora)).map(Json)
 }
 
+async fn cartao_iniciar(State(state): State<Arc<EngineState>>, RoutePath(id): RoutePath<String>) -> Result<Json<Cartao>, ApiError> {
+    let agora = regras::instante_agora();
+    alterar(&arquivo_do_kanban(&state), |q| regras::iniciar(q, &id, &agora)).map(Json)
+}
+
 async fn ajustes_editar(State(state): State<Arc<EngineState>>, Json(mudancas): Json<Value>) -> Result<Json<Value>, ApiError> {
     alterar(&arquivo_do_kanban(&state), |q| regras::ajustar(q, &mudancas).map(|()| q.ajustes.clone())).map(Json)
 }
@@ -152,6 +157,7 @@ pub(crate) fn rotas() -> Router<Arc<EngineState>> {
             patch(cartao_editar).delete(cartao_remover).layer(DefaultBodyLimit::max(CARTAO_MAX_BYTES)),
         )
         .route("/kanban/cartoes/{id}/pegar", post(cartao_pegar))
+        .route("/kanban/cartoes/{id}/iniciar", post(cartao_iniciar))
         .route("/kanban/ajustes", patch(ajustes_editar).layer(DefaultBodyLimit::max(CARTAO_MAX_BYTES)))
         .route("/kanban/migrar", post(migrar).layer(DefaultBodyLimit::max(MIGRAR_MAX_BYTES)))
         .route("/kanban/externas", post(externas_importar).layer(DefaultBodyLimit::max(MIGRAR_MAX_BYTES)))
@@ -494,6 +500,12 @@ mod tests {
         assert_eq!(quadro["triagem"].as_array().unwrap().len(), 0);
     }
 
+    /// A mensagem também: um 403 de outra camada (Host, origem) passaria sem provar nada sobre esta regra.
+    async fn assert_recusa_do_kanban(resposta: axum::response::Response) {
+        let corpo = to_bytes(resposta.into_body(), 1 << 20).await.unwrap();
+        assert_eq!(serde_json::from_slice::<Value>(&corpo).unwrap()["error"], "O Kanban só é alterado pelo app do computador");
+    }
+
     #[tokio::test]
     async fn pegar_so_vale_uma_vez_e_so_antes_de_rodar() {
         let (_dir, state) = fixture();
@@ -506,11 +518,44 @@ mod tests {
         // dois agentes no mesmo cartão: o segundo perde
         let (status, _) = chamar(&app, "POST", "/kanban/cartoes/a/pegar", "").await;
         assert_eq!(status, StatusCode::CONFLICT);
-        chamar(&app, "PATCH", "/kanban/cartoes/a", r#"{"status":"done","pegoPor":null}"#).await;
+        let (_, concluido) = chamar(&app, "PATCH", "/kanban/cartoes/a", r#"{"status":"done"}"#).await;
+        assert!(concluido.get("pegoPor").is_none(), "sair de Rodando limpa quem pegou: {concluido}");
         let (status, _) = chamar(&app, "POST", "/kanban/cartoes/a/pegar", "").await;
         assert_eq!(status, StatusCode::CONFLICT, "cartão concluído não volta a rodar por aqui");
         let (status, _) = chamar(&app, "POST", "/kanban/cartoes/nao-existe/pegar", "").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn iniciar_so_aceita_pronta_e_uma_vez() {
+        let (_dir, state) = fixture();
+        let app = app_local(state);
+        chamar(&app, "POST", "/kanban/cartoes", &cartao("a").to_string()).await;
+        let (status, _) = chamar(&app, "POST", "/kanban/cartoes/a/iniciar", "").await;
+        assert_eq!(status, StatusCode::CONFLICT, "cartão do Backlog não é da fila do dispatcher");
+        chamar(&app, "PATCH", "/kanban/cartoes/a", r#"{"status":"ready"}"#).await;
+        let (status, iniciado) = chamar(&app, "POST", "/kanban/cartoes/a/iniciar", "").await;
+        assert_eq!(status, StatusCode::OK, "{iniciado}");
+        assert_eq!(iniciado["status"], "doing");
+        assert!(iniciado.get("pegoPor").is_none(), "quem olha o cartão é o dispatcher: {iniciado}");
+        assert_ne!(iniciado["updatedAt"], cartao("a")["updatedAt"]);
+        let (status, _) = chamar(&app, "POST", "/kanban/cartoes/a/iniciar", "").await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        let (status, _) = chamar(&app, "POST", "/kanban/cartoes/nao-existe/iniciar", "").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn agente_e_dispatcher_nao_levam_o_mesmo_cartao() {
+        let (_dir, state) = fixture();
+        let app = app_local(state);
+        let mut pronto = cartao("a");
+        pronto["status"] = json!("ready");
+        chamar(&app, "POST", "/kanban/cartoes", &pronto.to_string()).await;
+        let (status, _) = chamar(&app, "POST", "/kanban/cartoes/a/pegar", "").await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = chamar(&app, "POST", "/kanban/cartoes/a/iniciar", "").await;
+        assert_eq!(status, StatusCode::CONFLICT);
     }
 
     /// O caminho do MCP: `EngineRequest::Api`, com o token do engine, cai em `mobile::local`, que monta
@@ -533,9 +578,14 @@ mod tests {
         let criado = mobile::local(state.clone(), "POST", "/kanban/cartoes", Some(cartao("a").to_string()), None, vec![]).await;
         assert!(matches!(criado, EngineResponse::Api { status: 201, .. }));
         let app = router(state.clone());
-        for (metodo, uri, corpo) in [("POST", "/kanban/cartoes/a/pegar", ""), ("PATCH", "/kanban/cartoes/a", r#"{"status":"done"}"#)] {
+        for (metodo, uri, corpo) in [
+            ("POST", "/kanban/cartoes/a/pegar", ""),
+            ("POST", "/kanban/cartoes/a/iniciar", ""),
+            ("PATCH", "/kanban/cartoes/a", r#"{"status":"done"}"#),
+        ] {
             let r = app.clone().oneshot(pedido(metodo, uri, corpo, Some("segredo"))).await.unwrap();
             assert_eq!(r.status(), StatusCode::FORBIDDEN, "{metodo} {uri} com token de dispositivo");
+            assert_recusa_do_kanban(r).await;
         }
         let quadro = ler(&arquivo_do_kanban(&state)).unwrap();
         assert_eq!((quadro.tarefas[0].status.as_str(), quadro.tarefas[0].pego_por.as_deref()), ("backlog", None));
@@ -556,9 +606,12 @@ mod tests {
             ("POST", "/kanban/migrar", r#"{"versao":1}"#.to_string()),
             ("POST", "/kanban/externas", importacao(json!([{"id":"7","titulo":"x"}]))),
             ("POST", "/kanban/externas/7/projeto", r#"{"projectId":"p"}"#.to_string()),
+            ("POST", "/kanban/cartoes/x/pegar", String::new()),
+            ("POST", "/kanban/cartoes/x/iniciar", String::new()),
         ] {
             let r = app.clone().oneshot(pedido(metodo, uri, &corpo, Some("segredo"))).await.unwrap();
             assert_eq!(r.status(), StatusCode::FORBIDDEN, "{metodo} {uri} com token de dispositivo");
+            assert_recusa_do_kanban(r).await;
         }
         let r = app.oneshot(pedido("GET", "/kanban", "", Some("segredo"))).await.unwrap();
         let corpo = to_bytes(r.into_body(), 1 << 20).await.unwrap();
@@ -579,6 +632,8 @@ mod tests {
             ("POST", "/kanban/migrar", r#"{"versao":1}"#),
             ("POST", "/kanban/externas", r#"{}"#),
             ("POST", "/kanban/externas/7/projeto", r#"{}"#),
+            ("POST", "/kanban/cartoes/a/pegar", ""),
+            ("POST", "/kanban/cartoes/a/iniciar", ""),
         ] {
             let r = app.clone().oneshot(pedido(metodo, uri, corpo, None)).await.unwrap();
             assert_eq!(r.status(), StatusCode::UNAUTHORIZED, "{metodo} {uri} sem token");

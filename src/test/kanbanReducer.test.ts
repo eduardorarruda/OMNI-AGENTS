@@ -126,4 +126,12 @@ describe("kanbanReducer", () => {
     state = kanbanReducer(state, { type: "MOVE_TASK", id, status: "ready" });
     expect(state.tasks[0].pegoPor).toBeUndefined();
   });
+
+  it("soltar na mesma coluna mantém quem pegou", () => {
+    let state = kanbanReducer(emptyKanban(), { type: "CREATE_TASK", projectId: "p1", title: "T", description: "" });
+    const id = state.tasks[0].id;
+    state = { ...state, tasks: [{ ...state.tasks[0], status: "doing", pegoPor: "mcp" }] };
+    state = kanbanReducer(state, { type: "MOVE_TASK", id, status: "doing" });
+    expect(state.tasks[0].pegoPor).toBe("mcp");
+  });
 });

@@ -145,6 +145,15 @@ export async function atualizarExternas(): Promise<ResumoDaImportacao> {
   return invoke<ResumoDaImportacao>("kanban_atualizar_externas");
 }
 
+/** Reserva o cartão para o dispatcher, antes de abrir a sessão. `false`: outro levou (409) ou ele sumiu
+ * (404). Qualquer outra falha lança: não dá para saber de quem é o cartão, e o dispatcher tenta de novo. */
+export async function reservarCartao(id: string): Promise<boolean> {
+  const resposta = await engineApi("POST", `/kanban/cartoes/${encodeURIComponent(id)}/iniciar`, null);
+  if (resposta.status === 409 || resposta.status === 404) return false;
+  if (resposta.status >= 400) throw new Error(`O engine respondeu ${resposta.status} ao reservar o cartão`);
+  return true;
+}
+
 export function escolherProjetoDaExterna(tarefa: KanbanExterna, projectId: string): Promise<KanbanTask> {
   return chamar<KanbanTask>("POST", `/kanban/externas/${encodeURIComponent(tarefa.id)}/projeto`, { projectId, origem: tarefa.origem });
 }

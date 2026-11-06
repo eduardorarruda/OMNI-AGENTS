@@ -34,6 +34,7 @@ export function useKanban() {
   const origem = useRef<OrigemDoKanban>("engine");
   /** Sobe a cada gesto: leitura que saiu antes dele veio velha e é descartada. */
   const gestos = useRef(0);
+  const lendo = useRef(false);
 
   const trocar = useCallback((estado: KanbanState) => {
     atual.current = estado;
@@ -69,9 +70,11 @@ export function useKanban() {
     let vivo = true;
     const ocupado = () => drenando.current || pendentes.current.length > 0;
     async function reler() {
-      if (!aceitando.current || origem.current !== "engine" || ocupado()) return;
+      if (lendo.current || !aceitando.current || origem.current !== "engine" || ocupado()) return;
+      lendo.current = true;
       const gesto = gestos.current;
       const estado = await lerDoEngine().catch(() => null);
+      lendo.current = false;
       if (!vivo || !estado || gesto !== gestos.current || ocupado()) return;
       if (JSON.stringify(estado) !== JSON.stringify(atual.current)) trocar(estado);
     }
@@ -115,7 +118,7 @@ export function useKanban() {
       const depois = kanbanReducer(antes, acao);
       if (depois === antes) return;
       trocar(depois);
-      if (acao.type === "REPLACE_STATE") return;
+      if (acao.type === "REPLACE_STATE" || acao.type === "TASK_STARTED") return;
       pendentes.current.push({ antes, depois });
       void drenar();
     },

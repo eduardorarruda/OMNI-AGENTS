@@ -482,10 +482,11 @@ pub fn entre_as_marcas(texto: &str) -> String {
     format!("{MARCA} {dados} {FIM_DOS_DADOS}")
 }
 
-/// Chave da origem no Kanban: só o endereço. O resto da URL pode levar parâmetro, e isto vai para a tela.
+/// Chave da origem no Kanban: endereço e porta, porque duas APIs na mesma máquina são duas origens. O
+/// resto da URL pode levar parâmetro, e isto vai para a tela.
 pub fn origem_da_url(url: &str) -> String {
     let resto = url.split_once("://").map_or(url, |(_, resto)| resto);
-    host_da_autoridade(resto.split(['/', '?', '#']).next().unwrap_or_default()).to_ascii_lowercase()
+    resto.split(['/', '?', '#']).next().unwrap_or_default().to_ascii_lowercase()
 }
 
 /// O resultado da busca como o Kanban guarda: limpo antes de cortar, e em uma linha, porque o dispatcher

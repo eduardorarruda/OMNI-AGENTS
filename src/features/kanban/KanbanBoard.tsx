@@ -30,7 +30,8 @@ export function KanbanBoard({ projectId, kanban, dispatch }: KanbanBoardProps) {
   function drop(event: React.DragEvent, status: KanbanStatus) {
     event.preventDefault();
     const dragged = readDraggedCard(event.dataTransfer);
-    if (dragged) dispatch({ type: "MOVE_TASK", id: dragged.taskId, status });
+    const cartao = dragged ? kanban.tasks.find((task) => task.id === dragged.taskId) : undefined;
+    if (dragged && cartao?.status !== status) dispatch({ type: "MOVE_TASK", id: dragged.taskId, status });
   }
 
   return (

@@ -433,6 +433,7 @@ fn busca_vira_importacao_em_uma_linha_sem_segredo() {
 
 #[test]
 fn origem_da_api_e_so_o_endereco() {
-    assert_eq!(origem_da_url("https://API.exemplo.test:8443/dados?chave=segredo"), "api.exemplo.test");
-    assert_eq!(origem_da_url("http://localhost:3000/x"), "localhost");
+    assert_eq!(origem_da_url("https://API.exemplo.test:8443/dados?chave=segredo"), "api.exemplo.test:8443");
+    assert_eq!(origem_da_url("http://localhost:3000/x"), "localhost:3000");
+    assert_eq!(origem_da_url("https://api.exemplo.test/x"), "api.exemplo.test");
 }

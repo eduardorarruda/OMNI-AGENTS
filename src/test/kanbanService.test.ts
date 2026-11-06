@@ -247,4 +247,28 @@ describe("mudança feita fora da tela", () => {
     });
     expect(result.current.kanban.tasks[0].status).toBe("ready");
   }, 15_000);
+
+  it("engine lento não acumula releituras", async () => {
+    engineFalso({ tarefas: [cartao("a")], migrado: true });
+    const { result } = renderHook(() => useKanban());
+    await waitFor(() => expect(result.current.carregado).toBe(true));
+    let leituras = 0;
+    api.mockImplementation(async () => {
+      leituras += 1;
+      return new Promise(() => undefined);
+    });
+    await new Promise((resolve) => setTimeout(resolve, 7_000));
+    expect(leituras).toBe(1);
+  }, 15_000);
+
+  it("início do dispatcher não grava de novo o que a reserva já gravou", async () => {
+    const { chamadas } = engineFalso({ tarefas: [cartao("a", { status: "ready" })], migrado: true });
+    const { result } = renderHook(() => useKanban());
+    await waitFor(() => expect(result.current.carregado).toBe(true));
+    chamadas.length = 0;
+    act(() => result.current.dispatch({ type: "TASK_STARTED", id: "a" }));
+    expect(result.current.kanban.tasks[0].status).toBe("doing");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(chamadas.filter((c) => c.metodo !== "GET")).toHaveLength(0);
+  });
 });

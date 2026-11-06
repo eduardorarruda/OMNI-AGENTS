@@ -25,6 +25,7 @@ function textoDoResumo(resumo: ResumoDaImportacao): string {
 export function TriagemExterna({ projectId, kanban, dispatch }: TriagemExternaProps) {
   const triagem = kanban.triagem ?? [];
   const [buscando, setBuscando] = useState(false);
+  const [enviando, setEnviando] = useState(false);
   const [mensagem, setMensagem] = useState<string | null>(null);
   const [erro, setErro] = useState<string | null>(null);
   const [projetos, setProjetos] = useState<ProjetoDoEngine[]>([]);
@@ -45,8 +46,14 @@ export function TriagemExterna({ projectId, kanban, dispatch }: TriagemExternaPr
     };
   }, [temTriagem]);
 
-  async function reler() {
-    dispatch({ type: "REPLACE_STATE", state: await lerDoEngine() });
+  /** `false`: a gravação valeu, só a tela ficou para trás. O `useKanban` relê sozinho em instantes. */
+  async function reler(): Promise<boolean> {
+    try {
+      dispatch({ type: "REPLACE_STATE", state: await lerDoEngine() });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async function atualizar() {
@@ -65,12 +72,17 @@ export function TriagemExterna({ projectId, kanban, dispatch }: TriagemExternaPr
   }
 
   async function escolher(tarefa: KanbanExterna, escolhido: string) {
+    setEnviando(true);
+    setMensagem(null);
     setErro(null);
+    const nome = tarefa.titulo || tarefa.id;
     try {
       await escolherProjetoDaExterna(tarefa, escolhido);
-      await reler();
+      if (!(await reler())) setMensagem(`"${nome}" foi para o Backlog. A tela se atualiza em instantes.`);
     } catch {
-      setErro(`Não foi possível mandar "${tarefa.titulo || tarefa.id}" para o Backlog.`);
+      setErro(`Não foi possível mandar "${nome}" para o Backlog.`);
+    } finally {
+      setEnviando(false);
     }
   }
 
@@ -96,6 +108,7 @@ export function TriagemExterna({ projectId, kanban, dispatch }: TriagemExternaPr
               tarefa={tarefa}
               projetos={projetos}
               projetoAberto={projectId}
+              enviando={enviando}
               onEscolher={(escolhido) => void escolher(tarefa, escolhido)}
             />
           ))}
@@ -109,11 +122,13 @@ function CartaoDaTriagem({
   tarefa,
   projetos,
   projetoAberto,
+  enviando,
   onEscolher,
 }: {
   tarefa: KanbanExterna;
   projetos: ProjetoDoEngine[];
   projetoAberto: string;
+  enviando: boolean;
   onEscolher: (projectId: string) => void;
 }) {
   const [escolhido, setEscolhido] = useState(projetoAberto);
@@ -142,7 +157,7 @@ function CartaoDaTriagem({
           </option>
         ))}
       </select>
-      <Button size="sm" variant="glass" onClick={() => onEscolher(escolhido)}>
+      <Button size="sm" variant="glass" disabled={enviando} onClick={() => onEscolher(escolhido)}>
         Mandar para o Backlog
       </Button>
     </li>

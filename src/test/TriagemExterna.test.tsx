@@ -1,7 +1,10 @@
 import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
+import { KanbanBoard } from "../features/kanban/KanbanBoard";
+import { KANBAN_CARD_DRAG_TYPE } from "../features/kanban/kanbanDrag";
 import { TriagemExterna } from "../features/kanban/TriagemExterna";
+import { avisoDoKanban, limparAvisoDoKanban } from "../features/kanban/kanbanAviso";
 import { emptyKanban } from "../features/kanban/kanbanReducer";
 import { useKanbanDispatcher } from "../features/kanban/useKanbanDispatcher";
 import {
@@ -12,7 +15,7 @@ import {
   writeTerminal,
   type TerminalSession,
 } from "../features/terminal/terminalService";
-import type { KanbanState, KanbanTask } from "../types/kanban";
+import type { KanbanAction, KanbanState, KanbanTask } from "../types/kanban";
 import type { Project } from "../types/workspace";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -47,6 +50,8 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.restoreAllMocks();
+  limparAvisoDoKanban();
 });
 
 describe("TriagemExterna", () => {
@@ -110,6 +115,87 @@ describe("TriagemExterna", () => {
     const pedido = vi.mocked(engineApi).mock.calls.find(([metodo]) => metodo === "POST");
     expect(pedido?.[1]).toBe("/kanban/externas/7/projeto");
     expect(JSON.parse(pedido?.[2] as string)).toEqual({ projectId: "p2", origem: "central.exemplo" });
+  });
+});
+
+describe("soltar cartão no quadro", () => {
+  const pego: KanbanTask = {
+    id: "c1", projectId: "p1", title: "Com agente", description: "", status: "doing", position: 1, loopTotal: null, loopRemaining: null,
+    resultNote: null, createdAt: "2026-11-06T00:00:00Z", updatedAt: "2026-11-06T00:00:00Z", pegoPor: "mcp",
+  };
+
+  function soltarEm(coluna: RegExp, dispatch: React.Dispatch<KanbanAction>) {
+    vi.mocked(listAgentClis).mockResolvedValue([]);
+    render(<KanbanBoard projectId="p1" kanban={{ ...emptyKanban(), tasks: [pego] }} dispatch={dispatch} />);
+    const alvo = screen.getByText(coluna).parentElement as HTMLElement;
+    fireEvent.drop(alvo, { dataTransfer: { getData: (tipo: string) => (tipo === KANBAN_CARD_DRAG_TYPE ? JSON.stringify({ taskId: "c1" }) : "") } });
+  }
+
+  it("na mesma coluna não mexe no cartão", async () => {
+    const dispatch = vi.fn();
+    soltarEm(/^Rodando \(/, dispatch);
+    await waitFor(() => expect(listAgentClis).toHaveBeenCalled());
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it("em outra coluna move", async () => {
+    const dispatch = vi.fn();
+    soltarEm(/^Pronta \(/, dispatch);
+    await waitFor(() => expect(listAgentClis).toHaveBeenCalled());
+    expect(dispatch).toHaveBeenCalledWith({ type: "MOVE_TASK", id: "c1", status: "ready" });
+  });
+});
+
+describe("TriagemExterna quando a releitura falha", () => {
+  function comPostLento() {
+    let soltar: (() => void) | undefined;
+    vi.mocked(engineApi).mockImplementation(async (metodo, caminho) => {
+      if (metodo === "POST") {
+        await new Promise<void>((resolve) => { soltar = resolve; });
+        return { status: 200, body: "{}" } as never;
+      }
+      if (caminho === "/kanban") throw new Error("engine caiu");
+      return { status: 200, body: JSON.stringify(projetos) } as never;
+    });
+    return () => soltar?.();
+  }
+
+  it("POST aceito com releitura falha não diz que não mandou", async () => {
+    const soltar = comPostLento();
+    const dispatch = vi.fn();
+    render(<TriagemExterna projectId="p1" kanban={quadro()} dispatch={dispatch} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Mandar para o Backlog" }));
+    await waitFor(() => expect(vi.mocked(engineApi).mock.calls.some(([metodo]) => metodo === "POST")).toBe(true));
+    soltar();
+    expect(await screen.findByText(/foi para o Backlog/)).toBeTruthy();
+    expect(screen.queryByText(/Não foi possível mandar/)).toBeNull();
+  });
+
+  it("botão trava enquanto o pedido está em voo", async () => {
+    const soltar = comPostLento();
+    render(<TriagemExterna projectId="p1" kanban={quadro()} dispatch={vi.fn()} />);
+    const botao = await screen.findByRole("button", { name: "Mandar para o Backlog" });
+    fireEvent.click(botao);
+    await waitFor(() => expect((botao as HTMLButtonElement).disabled).toBe(true));
+    fireEvent.click(botao);
+    await waitFor(() => expect(vi.mocked(engineApi).mock.calls.filter(([metodo]) => metodo === "POST")).toHaveLength(1));
+    soltar();
+    await waitFor(() => expect((botao as HTMLButtonElement).disabled).toBe(false));
+  });
+
+  it("busca aceita com releitura falha mostra o resumo", async () => {
+    let leituras = 0;
+    vi.mocked(engineApi).mockImplementation(async (_metodo, caminho) => {
+      if (caminho !== "/kanban") return { status: 200, body: JSON.stringify(projetos) } as never;
+      leituras += 1;
+      // A primeira leitura é a conferência da migração; a que falha é a de depois da busca.
+      if (leituras > 1) throw new Error("engine caiu");
+      return { status: 200, body: JSON.stringify({ versao: 1, tarefas: [], triagem: [], migrado: true }) } as never;
+    });
+    render(<TriagemExterna projectId="p1" kanban={quadro()} dispatch={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Atualizar" }));
+    expect(await screen.findByText(/2 novas/)).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 });
 
@@ -185,5 +271,59 @@ describe("dispatcher e tarefas externas", () => {
     const estado = { ...emptyKanban(), dispatcherEnabled: true, tasks: [cartao({ id: "agente", status: "doing", pegoPor: "mcp" }), cartao({ status: "doing" })] };
     renderHook(() => useKanbanDispatcher(estado, dispatch, [projeto], []));
     await waitFor(() => expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: "TASK_FINISHED", id: "c1", outcome: "failed" })));
+  });
+
+  const reservas = () => vi.mocked(engineApi).mock.calls.filter(([metodo, caminho]) => metodo === "POST" && caminho.endsWith("/iniciar"));
+
+  it("reserva o cartão antes de abrir a sessão", async () => {
+    const dispatch = vi.fn();
+    renderHook(() => useKanbanDispatcher({ ...emptyKanban(), dispatcherEnabled: true, tasks: [cartao()] }, dispatch, [projeto], []));
+    await waitFor(() => expect(spawnTerminal).toHaveBeenCalled());
+    expect(reservas()[0][1]).toBe("/kanban/cartoes/c1/iniciar");
+    const ordem = vi.mocked(engineApi).mock.invocationCallOrder[vi.mocked(engineApi).mock.calls.indexOf(reservas()[0])];
+    expect(ordem).toBeLessThan(vi.mocked(spawnTerminal).mock.invocationCallOrder[0]);
+    expect(dispatch).toHaveBeenCalledWith({ type: "TASK_STARTED", id: "c1" });
+  });
+
+  it.each([409, 404])("cartão que outro levou (%i) não abre sessão", async (status) => {
+    vi.mocked(engineApi).mockResolvedValue({ status, body: "{}" } as never);
+    const dispatch = vi.fn();
+    renderHook(() => useKanbanDispatcher({ ...emptyKanban(), dispatcherEnabled: true, tasks: [cartao()] }, dispatch, [projeto], []));
+    await waitFor(() => expect(reservas().length).toBeGreaterThan(0));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(spawnTerminal).not.toHaveBeenCalled();
+    expect(writeTerminal).not.toHaveBeenCalled();
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it("sem agente disponível o cartão fica em Pronta", async () => {
+    vi.mocked(listAgentClis).mockResolvedValue([]);
+    renderHook(() => useKanbanDispatcher({ ...emptyKanban(), dispatcherEnabled: true, tasks: [cartao()] }, vi.fn(), [projeto], []));
+    await waitFor(() => expect(listAgentClis).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(reservas()).toHaveLength(0);
+  });
+
+  it("falha depois da reserva vira Falhou com aviso e o laço segue", async () => {
+    vi.mocked(spawnTerminal).mockRejectedValue(new Error("sem pty"));
+    const dispatch = vi.fn();
+    const pronto = { ...emptyKanban(), dispatcherEnabled: true, tasks: [cartao()] };
+    const { rerender } = renderHook(({ quadroAtual }) => useKanbanDispatcher(quadroAtual, dispatch, [projeto], []), { initialProps: { quadroAtual: pronto } });
+    await waitFor(() => expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: "TASK_FINISHED", id: "c1", outcome: "failed" })));
+    expect(vi.mocked(dispatch).mock.calls.find(([acao]) => acao.type === "TASK_FINISHED")?.[0]).toMatchObject({ resultNote: expect.stringContaining("sem pty") });
+    expect(dispatch).toHaveBeenCalledWith({ type: "RECORD_FAILURE" });
+    expect(avisoDoKanban()).toMatch(/sem pty/);
+    const antes = reservas().length;
+    rerender({ quadroAtual: pronto });
+    await waitFor(() => expect(reservas().length).toBeGreaterThan(antes), { timeout: 4_000 });
+  });
+
+  it("erro antes da reserva não para o laço nem mexe no cartão", async () => {
+    vi.mocked(listAgentClis).mockRejectedValue(new Error("sem resposta"));
+    const dispatch = vi.fn();
+    renderHook(() => useKanbanDispatcher({ ...emptyKanban(), dispatcherEnabled: true, tasks: [cartao()] }, dispatch, [projeto], []));
+    await waitFor(() => expect(vi.mocked(listAgentClis).mock.calls.length).toBeGreaterThan(1), { timeout: 4_000 });
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(avisoDoKanban()).toMatch(/sem resposta/);
   });
 });
