@@ -24,9 +24,9 @@ describe("arquivo citado na conversa", () => {
     usarAbrirArquivo(abrir);
     render(<MessageBubble lado="agent" provider="claude" texto={TEXTO} />);
     await userEvent.click(screen.getByRole("button", { name: "src/App.tsx:42" }));
-    expect(abrir).toHaveBeenCalledWith("src/App.tsx:42");
+    expect(abrir).toHaveBeenCalledWith("src/App.tsx:42", undefined);
     await userEvent.click(screen.getByRole("button", { name: "roadmap" }));
-    expect(abrir).toHaveBeenLastCalledWith("roadmaps/omni-agents/roadmap.md#L10");
+    expect(abrir).toHaveBeenLastCalledWith("roadmaps/omni-agents/roadmap.md#L10", undefined);
     expect(screen.queryByRole("button", { name: "npm test" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "console.log" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /cat src/ })).not.toBeInTheDocument();
@@ -43,5 +43,27 @@ describe("arquivo citado na conversa", () => {
     render(<MessageBubble lado="agent" provider="claude" texto={TEXTO} />);
     expect(screen.queryByRole("button", { name: "src/App.tsx:42" })).not.toBeInTheDocument();
     expect(screen.getByText("src/App.tsx:42")).toBeInTheDocument();
+  });
+});
+
+describe("arquivo citado: busca pelo nome", () => {
+  afterEach(() => usarAbrirArquivo(null));
+
+  it("mostra Não achei <nome> em <projeto> quando nada é encontrado", async () => {
+    usarAbrirArquivo(() => Promise.reject(new Error("Não achei analise.md em EBPOS_360")));
+    render(<MessageBubble lado="agent" provider="claude" texto="Veja `analise.md`." />);
+    await userEvent.click(screen.getByRole("button", { name: "analise.md" }));
+    expect(await screen.findByRole("status")).toHaveTextContent("Não achei analise.md em EBPOS_360");
+  });
+
+  it("com o mesmo nome em duas pastas, mostra um botão por caminho e abre o escolhido", async () => {
+    const abrir = vi.fn((caminho: string) => caminho === "x.md" ? Promise.resolve(["/p/a/x.md", "/p/b/x.md"]) : Promise.resolve());
+    usarAbrirArquivo(abrir);
+    render(<MessageBubble lado="agent" provider="claude" texto="Veja `x.md`." />);
+    await userEvent.click(screen.getByRole("button", { name: "x.md" }));
+    expect(await screen.findByRole("button", { name: "/p/a/x.md" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "/p/b/x.md" }));
+    expect(abrir).toHaveBeenLastCalledWith("/p/b/x.md", undefined);
+    expect(screen.queryByRole("button", { name: "/p/a/x.md" })).not.toBeInTheDocument();
   });
 });

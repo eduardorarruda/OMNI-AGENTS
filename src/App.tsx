@@ -5,10 +5,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { AppBackground } from "./components/backgrounds/AppBackground";
 import { SettingsView } from "./components/SettingsView";
 import { Sidebar } from "./components/Sidebar";
-import { fileKind, joinPath } from "./features/files/filesService";
+import { fileKind } from "./features/files/filesService";
 import { semLocal } from "./mobile/api";
 import { exists } from "@tauri-apps/plugin-fs";
 import { homeDir } from "@tauri-apps/api/path";
+import { invoke } from "@tauri-apps/api/core";
+import { resolverCitado } from "./features/files/resolverCitado";
 import { EVENTO_ABRIR_ARQUIVO } from "./mobile/anexos";
 import { QuickOpen } from "./features/files/QuickOpen";
 import { useWorkspace } from "./features/workspace/useWorkspace";
@@ -174,24 +176,24 @@ export function App() {
     setView("workspace");
   }
 
-  // Arquivo citado na conversa (`src/App.tsx:42`): relativo é do projeto, absoluto vale como está.
-  // Fora do projeto o painel recusa ler, como em qualquer arquivo aberto.
+  // Arquivo citado na conversa: absoluto vale como está; relativo é da pasta da conversa, depois do
+  // projeto; senão procura pelo nome dentro do projeto (`resolverCitado`). Fora do projeto o painel
+  // recusa ler, como em qualquer arquivo aberto.
   const abrirCitado = useRef(openFile);
   abrirCitado.current = openFile;
   const projetoDaCitacao = activeProject?.path ?? null;
   useEffect(() => {
-    if (!projetoDaCitacao) return;
     const abrir = (evento: Event) => {
-      const { caminho: citado, ok, falha } = (evento as CustomEvent<{ caminho: string; ok: () => void; falha: (motivo: Error) => void }>).detail;
-      const caminho = semLocal(citado).replace(/^\.[\\/]/, "");
-      const resolver = async () => {
-        if (/^~[\\/]/.test(caminho)) return joinPath(await homeDir(), caminho.slice(2));
-        return /^([A-Za-z]:)?[\\/]/.test(caminho) ? caminho : joinPath(projetoDaCitacao, caminho);
-      };
-      // Citado mas inexistente (o agente ainda vai criar, ou foi apagado): avisa sem abrir aba vazia.
-      resolver().then(async (absoluto) => {
-        if (!await exists(absoluto)) return falha(new Error("Não existe no disco"));
-        abrirCitado.current(absoluto, fileKind(absoluto));
+      const { caminho: citado, pasta, ok, falha } = (evento as CustomEvent<{ caminho: string; pasta?: string; ok: (escolhas?: string[]) => void; falha: (motivo: Error) => void }>).detail;
+      const bases = [pasta, projetoDaCitacao].filter((b, i, todas): b is string => !!b && todas.indexOf(b) === i);
+      if (bases.length === 0) return falha(new Error("Abra um projeto para achar o arquivo"));
+      resolverCitado(semLocal(citado), bases, {
+        exists, homeDir,
+        localizar: (raiz, nome) => invoke<string[]>("localizar_arquivo", { raiz, nome }),
+      }).then((achado) => {
+        if (achado.tipo === "nenhum") return falha(new Error(`Não achei ${achado.nome} em ${achado.raiz.split(/[\\/]/).filter(Boolean).pop() ?? achado.raiz}`));
+        if (achado.tipo === "varios") return ok(achado.caminhos);
+        abrirCitado.current(achado.caminho, fileKind(achado.caminho));
         ok();
       }).catch(falha);
     };

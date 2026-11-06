@@ -20,6 +20,7 @@ mod agentes;
 mod fluxos;
 mod microfone;
 mod inicio_com_windows;
+mod localizar;
 
 pub fn run() {
     #[cfg(unix)]
@@ -57,6 +58,7 @@ pub fn run() {
         )
         .invoke_handler(tauri::generate_handler![
             inicio_com_windows::inicio_com_windows,
+            localizar::localizar_arquivo,
             inicio_com_windows::definir_inicio_com_windows,
             engine_client::engine_status,
             account_usage::account_usage,

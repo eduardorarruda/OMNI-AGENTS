@@ -151,7 +151,9 @@ export interface Comando { nome: string; descricao: string; origem: string }
 /** Quem abre um arquivo citado na conversa. Só o app do PC tem onde abrir (`usarAbrirArquivo` em
  *  `src/main.tsx`); na web e no celular fica `null` e o caminho continua texto. */
 /** Rejeita com o motivo quando não há o que abrir (arquivo que não existe no disco). */
-type Abridor = (caminho: string) => void | Promise<void>;
+/** `pasta` é a pasta da conversa (base do caminho relativo). Resolve com a lista quando o nome existe
+ *  em mais de um lugar: quem chamou mostra a escolha. */
+type Abridor = (caminho: string, pasta?: string) => void | Promise<void | string[]>;
 let abridor: Abridor | null = null;
 export function usarAbrirArquivo(novo: Abridor | null) {
   abridor = novo;

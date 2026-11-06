@@ -1637,6 +1637,7 @@
 .bubble-arquivo:hover > code, a.bubble-arquivo:hover, button.bubble-arquivo:hover { color: rgb(var(--c-accent)); text-decoration-style: solid; }
 .bubble-arquivo:focus-visible { outline: 2px solid rgb(var(--c-accent)); outline-offset: 1px; }
 .bubble-arquivo-falta { margin-left: .4em; padding: 0 .4em; font-size: .75em; color: rgb(var(--c-danger)); background: rgb(var(--c-danger) / .12); border-radius: 4px; }
+.bubble-arquivo-escolhas { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; margin: .25em 0 .25em .4em; font-size: .85em; }
 
 /* Seletor de layouts prontos: miniatura + nome, em grade. */
 .layout-opcao { display: flex; flex-direction: column; align-items: center; gap: .3rem; width: 5.25rem; padding: .45rem .3rem .4rem; font-size: 10px; line-height: 1.15; text-align: center; color: rgb(var(--c-text-secondary)); border: 1px solid transparent; }

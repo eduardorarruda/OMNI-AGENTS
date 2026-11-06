@@ -9,6 +9,7 @@ import type { TerminalSession } from "../terminal/terminalService";
 import { EVENTO_ANEXAR, EVENTO_ARRASTANDO, EVENTO_TEXTO, tipoPelaExtensao } from "../../mobile/anexos";
 import { EVENTO_TEXTO_DA_SESSAO, type TextoDaSessao } from "./colarNaSessao";
 import { ConversationDetail } from "../../mobile/MobileApp";
+import { PastaDaConversa } from "../../mobile/Chat";
 import { ritmo } from "../../lib/modoLeve";
 import { listTerminalSessions } from "../terminal/terminalService";
 import { useSessionProvider } from "../terminal/sessionProviders";
@@ -292,7 +293,9 @@ function ChatDaSessao({ sessionId, onVerTerminal }: { sessionId: string; onVerTe
           onVerTerminal={onVerTerminal} onPular={() => setAberta(true)} />
       ) : conversa ? (
         <div className="w-painel-central">
-          <ConversationDetail key={conversa.id} conversation={conversa} refresh={carregar} />
+          <PastaDaConversa.Provider value={pasta ?? undefined}>
+            <ConversationDetail key={conversa.id} conversation={conversa} refresh={carregar} />
+          </PastaDaConversa.Provider>
         </div>
       ) : (
         <div className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center">

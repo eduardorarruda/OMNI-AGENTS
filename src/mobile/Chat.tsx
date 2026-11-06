@@ -270,9 +270,14 @@ function BotaoCopiar({ texto, rotulo, className }: { texto: string | (() => stri
 }
 
 /** Arquivo citado pelo agente: no app do PC abre num painel; na web e no celular continua texto. */
+/** Pasta onde a conversa roda: base dos caminhos relativos que o agente cita. Vem da aba de agente. */
+export const PastaDaConversa = createContext<string | undefined>(undefined);
+
 function Arquivo({ caminho, children }: { caminho: string; children: ReactNode }) {
   const abrir = abridorDeArquivo();
+  const pasta = useContext(PastaDaConversa);
   const [falta, setFalta] = useState<string | null>(null);
+  const [escolhas, setEscolhas] = useState<string[] | null>(null);
   useEffect(() => {
     if (!falta) return;
     const t = window.setTimeout(() => setFalta(null), 4000);
@@ -282,9 +287,21 @@ function Arquivo({ caminho, children }: { caminho: string; children: ReactNode }
   return (
     <>
       <button type="button" className="bubble-arquivo" title={`Abrir ${caminho}`}
-        onClick={() => void Promise.resolve(abrir(caminho)).catch((motivo) => setFalta(motivo instanceof Error ? motivo.message : String(motivo)))}>
+        onClick={() => void Promise.resolve(abrir(caminho, pasta))
+          .then((achados) => { if (Array.isArray(achados)) setEscolhas(achados); })
+          .catch((motivo) => setFalta(motivo instanceof Error ? motivo.message : String(motivo)))}>
         {children}
       </button>
+      {escolhas && (
+        <span role="group" aria-label={`Qual ${caminho}?`} className="bubble-arquivo-escolhas">
+          {escolhas.map((achado) => (
+            <button key={achado} type="button" className="bubble-arquivo" title={achado}
+              onClick={() => { setEscolhas(null); void Promise.resolve(abrir(achado, pasta)).catch((motivo) => setFalta(motivo instanceof Error ? motivo.message : String(motivo))); }}>
+              {achado}
+            </button>
+          ))}
+        </span>
+      )}
       {falta && <span role="status" className="bubble-arquivo-falta">{falta}</span>}
     </>
   );

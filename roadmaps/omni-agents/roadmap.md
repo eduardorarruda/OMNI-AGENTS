@@ -414,6 +414,7 @@ Design aprovado (`docs/superpowers/specs/2026-11-06-omni-oito-itens-design.md`).
 
 - [ ] Fase 1: erro de contexto ao enviar mensagem (item 10, prioridade), arquivo citado que "não existe" e reconhecimento do Linux (`servidores.rs`).
 - [x] Tarefa 1A (item 10): mensagem não confere mais a versão da tela (`exige_versao_da_tela`, `mobile.rs`); com o agente ocupado e o campo livre entra na fila da CLI. Aprovação relê e tenta uma vez se a pergunta for a mesma (`approval_id`, o bloco do diálogo; sem ele, recusa). Mensagem aceita com o agente já ocupado vai para a fila da tela, sem aviso falso. Falta conferir ao vivo.
+- [x] Tarefa 1 (item 8): arquivo citado é achado pelo nome. `resolverCitado` tenta absoluto, pasta da conversa, raiz do projeto e então busca pelo nome (comando `localizar_arquivo`, máx. 20, ignora `node_modules`/`.git`/`target`/`dist`); vários achados viram lista para escolher; nada achado diz "Não achei X em projeto". Pendente: confirmar ao vivo qual hipótese do spec valia (passo de logar em `npm run dev` pulado por proibição de build); as duas estão cobertas.
 - [ ] Fase 2: Fluxos (acompanhamento ao vivo, botão Aprovar, subfluxos, sem limites, autonomia pelo MCP).
 - [ ] Fase 3: Tarefas em Segundo Plano e panorama do projeto.
 - [ ] Fase 4: uso da conta (detalhe ao clicar, tokens dos históricos locais).

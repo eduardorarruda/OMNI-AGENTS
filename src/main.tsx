@@ -13,8 +13,8 @@ import { transporteDoEngine } from "./features/conversa/transporteDoEngine";
 usarTransporte(transporteDoEngine);
 // E no PC o arquivo citado pelo agente abre num painel (o `App` escuta o evento).
 // O `App` responde: abriu ou o motivo de não abrir (arquivo que não existe).
-usarAbrirArquivo((caminho) => new Promise<void>((ok, falha) => {
-  window.dispatchEvent(new CustomEvent(EVENTO_ABRIR_ARQUIVO, { detail: { caminho, ok, falha } }));
+usarAbrirArquivo((caminho, pasta) => new Promise<void | string[]>((ok, falha) => {
+  window.dispatchEvent(new CustomEvent(EVENTO_ABRIR_ARQUIVO, { detail: { caminho, pasta, ok, falha } }));
 }));
 
 // Ícone da ferramenta chamada na conversa: o PC busca na rede e salva para a web/celular também.
