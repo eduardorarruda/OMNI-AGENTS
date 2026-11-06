@@ -3985,6 +3985,12 @@ quebra"}"#] {
             assert_eq!(interromper(&state,&session,"s","claude").unwrap(),(false,true));
             assert_eq!(bytes.lock().unwrap().as_slice(),b"\x1b");
         }
+        /// Com conversa viva, a saída cedo de `/segundo-plano` não pode esconder a sessão.
+        #[test] fn segundo_plano_ve_a_sessao_viva() {
+            let (_dir,state) = fixture(); fake_session(&state,"✻ Waiting for 1 background agent to finish\r\n\r\n❯ ");
+            let itens = crate::segundo_plano::coletar(&state,Some("p"));
+            assert!(itens.iter().any(|item| item.tipo == "sessao" && item.sessao.as_deref() == Some("c")));
+        }
         /// O caso comprovado na CLI 2.1.318: o Esc não encerra agente em segundo plano, um Ctrl+C
         /// encerra tudo. A tela guarda o "Waiting for" depois disso e o segundo Ctrl+C não pode sair.
         #[test] fn parar_com_agente_em_segundo_plano_manda_um_ctrl_c_so() {

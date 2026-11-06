@@ -444,5 +444,6 @@ Design aprovado (`docs/superpowers/specs/2026-11-06-omni-oito-itens-design.md`).
 - [x] Fase 5: Kanban no engine e tarefas externas (triagem, busca só no clique).
 - [x] Fase 6: grafo de conhecimento.
 - [x] Fase 7: X para tirar mensagem da fila (fila do OMNI por padrão; fila da CLI só onde a tecla for medida).
+- [x] Revisão final do branch: aba "O que roda" não apaga mais o workspace (e aba desconhecida sai sozinha); migração do Kanban guarda cartão grande inteiro e avisa quantos ficaram de fora; pegar cartão externo marca antes; `/segundo-plano` não lê o índice em repouso; atividade de fluxo sem segredo.
 
 Próximo passo: conferir ao vivo o que os testes não alcançam (CLI real, tela real no acervo, marca chegando ao MCP no Codex, macOS e Windows). Decisão de produto em aberto: botão Descartar na triagem. Novidades escritas como 0.7.13; a versão só sobe na release.

@@ -102,15 +102,19 @@ fn texto_do_cartao(cartao: &Value, argumentos: &Value) -> String {
     format!("Cartão {id} agora em Rodando. Ao terminar, use mover_cartao.\nTítulo: {titulo}\nDescrição: {descricao}")
 }
 
-/// A rota decide quem pega: dois agentes no mesmo cartão, o segundo recebe a recusa. A marca só liga
-/// depois disso, quando o texto de fora de fato vai para a sessão.
+/// A rota decide quem pega: dois agentes no mesmo cartão, o segundo recebe a recusa. A marca liga antes
+/// dela: se falhasse depois, o cartão ficaria em Rodando sem ninguém e travaria a fila do projeto. Marcar
+/// à toa, com a rota recusando, só pede uma aprovação a mais. Cartão que entrou depois da leitura marca
+/// na volta, porque texto de fora nunca chega sem marca.
 fn pegar(contexto: &Contexto, argumentos: &Value) -> Result<String, String> {
     let id = argumentos["id"].as_str().ok_or("informe o id do cartão")?;
     let quadro = api(contexto, "GET", "/kanban", None)?;
-    let so_na_triagem = !itens(&quadro, "tarefas").iter().any(|cartao| cartao["id"] == id) && itens(&quadro, "triagem").iter().any(|tarefa| tarefa["id"] == id);
-    if so_na_triagem { return Err(SO_O_USUARIO_ESCOLHE.into()); }
+    let lido = itens(&quadro, "tarefas").iter().find(|cartao| cartao["id"] == id);
+    if lido.is_none() && itens(&quadro, "triagem").iter().any(|tarefa| tarefa["id"] == id) { return Err(SO_O_USUARIO_ESCOLHE.into()); }
+    let ja_marcou = lido.is_some_and(|cartao| cartao["externa"].is_object());
+    if ja_marcou { marca_de_fora::marcar(contexto)?; }
     let cartao = api(contexto, "POST", &format!("/kanban/cartoes/{}/pegar", segmento(id)?), None)?;
-    if cartao["externa"].is_object() { marca_de_fora::marcar(contexto)?; }
+    if !ja_marcou && cartao["externa"].is_object() { marca_de_fora::marcar(contexto)?; }
     Ok(texto_do_cartao(&cartao, argumentos))
 }
 

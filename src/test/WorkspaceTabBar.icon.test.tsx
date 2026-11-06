@@ -3,6 +3,7 @@ import { fireEvent, render } from "@testing-library/react";
 import { WorkspaceTabBar } from "../features/workspace/WorkspaceTabBar";
 import { SessionProvidersContext } from "../features/terminal/sessionProviders";
 import { ClaudeIcon, CursorIcon, GptIcon } from "../components/ui/AgentIcon";
+import { PlayIcon, ShapesIcon } from "../components/ui/PixelIcon";
 import type { PaneNode, WorkspaceTab } from "../types/workspace";
 import type { TerminalSession } from "../features/terminal/terminalService";
 
@@ -43,6 +44,13 @@ describe("ícone da aba de agente", () => {
     const semProvider = tabIconPath({ id: "t", kind: "agent", title: "Novo agente" });
     expect(semProvider).not.toBe("");
     expect(semProvider).not.toBe(pathOf(ClaudeIcon));
+  });
+});
+
+describe("ícone da aba sem arquivo", () => {
+  it("O que roda e Grafo têm ícone próprio", () => {
+    expect(tabIconPath({ id: "t", kind: "execucao-projeto", title: "O que roda" })).toBe(pathOf(PlayIcon));
+    expect(tabIconPath({ id: "t", kind: "grafo", title: "Grafo" })).toBe(pathOf(ShapesIcon));
   });
 });
 

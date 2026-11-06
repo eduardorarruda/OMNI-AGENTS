@@ -1,7 +1,7 @@
 import { GlifoFechar, GlifoMais } from "../../components/ui/PixelGlyph";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ChatIcon, CircuitIcon, KanbanIcon, ShapesIcon, ListIcon, TerminalIcon, GitBranchIcon } from "../../components/ui/PixelIcon";
+import { ChatIcon, CircuitIcon, KanbanIcon, ShapesIcon, ListIcon, PlayIcon, TerminalIcon, GitBranchIcon } from "../../components/ui/PixelIcon";
 import { AGENT_ICON } from "../../components/ui/AgentIcon";
 import { useSession, useSessionProvider } from "../terminal/sessionProviders";
 import { EditableLabel } from "../../components/ui/EditableLabel";
@@ -228,6 +228,7 @@ const ICONE_POR_KIND: Partial<Record<PaneNode["tabs"][number]["kind"], React.Com
   kanban: KanbanIcon,
   grafo: ShapesIcon,
   fluxos: CircuitIcon,
+  "execucao-projeto": PlayIcon,
   "git-graph": GitBranchIcon,
   "git-diff": GitBranchIcon,
 };

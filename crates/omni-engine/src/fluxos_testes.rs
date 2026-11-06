@@ -602,6 +602,47 @@ fn atividade_repetida_nao_vira_evento() {
     assert_eq!(obter(&id).unwrap().nos["ap"].atividade, "Editando main.rs");
 }
 
+fn chave_de_teste() -> String { format!("sk-{}", "a".repeat(30)) }
+
+#[test]
+fn atividade_do_agente_nao_mostra_segredo() {
+    let chave = chave_de_teste();
+    let codex = json!({"type": "item.started", "item": {"type": "command_execution", "command": format!("curl -H {chave} exemplo")}});
+    let texto = atividade_do_evento(&codex).unwrap();
+    assert!(texto.starts_with("Shell · curl") && !texto.contains(&chave), "{texto}");
+    let claude = json!({"type": "assistant", "uuid": "u", "timestamp": "2026-11-06T10:00:00Z", "message": {"role": "assistant", "content": [
+        {"type": "tool_use", "name": "Bash", "input": {"command": format!("curl -H {chave} exemplo")}}]}});
+    let texto = atividade_do_evento(&claude).unwrap();
+    assert!(!texto.contains(&chave), "{texto}");
+}
+
+#[test]
+fn segredo_na_beira_do_corte_nao_sobra_pela_metade() {
+    let comando = format!("{} {}", "x".repeat(130), chave_de_teste());
+    let texto = atividade_do_evento(&json!({"type": "item.started", "item": {"type": "command_execution", "command": comando}})).unwrap();
+    assert!(!texto.contains("sk-"), "{texto}");
+    let linha = linha_de_atividade(&format!("{} {}", "x".repeat(190), chave_de_teste()));
+    assert!(!linha.contains("sk-"), "{linha}");
+}
+
+#[test]
+fn saida_de_comando_na_atividade_nao_mostra_segredo() {
+    assert_eq!(linha_de_atividade("DB_PASSWORD=hunter2"), "DB_PASSWORD=[segredo removido]");
+}
+
+#[test]
+fn etapa_comando_nao_mostra_segredo_na_atividade() {
+    let amb = ambiente();
+    let chave = chave_de_teste();
+    let id = amb.iniciar(json!({"id": "s", "nome": "S", "na_pasta_do_projeto": true, "nos": [
+        {"id": "e", "tipo": "entrada"}, comando("c", &format!("true {chave}")), {"id": "f", "tipo": "fim"}],
+        "conexoes": [{"de": "e", "para": "c"}, {"de": "c", "para": "f", "saida": "sim"}]}));
+    ate_parar(&id);
+    let atividades: Vec<_> = so_eventos(&amb, &id, 0).into_iter().filter(|e| e.tipo == "atividade").map(|e| e.texto).collect();
+    assert!(atividades.iter().any(|t| t.starts_with("$ true")), "{atividades:?}");
+    assert!(!atividades.iter().any(|t| t.contains(&chave)), "{atividades:?}");
+}
+
 #[test]
 fn volta_nova_separa_o_log() {
     let amb = ambiente();

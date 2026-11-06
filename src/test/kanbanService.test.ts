@@ -136,8 +136,7 @@ describe("migração que não pode perder nem ressuscitar", () => {
     expect(avisoDoKanban()).toMatch(/migra/i);
 
     const { result } = renderHook(() => useKanban());
-    await waitFor(() => expect(result.current.carregado).toBe(true));
-    expect(result.current.kanban.tasks).toHaveLength(2);
+    await waitFor(() => expect(result.current.kanban.tasks).toHaveLength(2));
     act(() => result.current.dispatch({ type: "CREATE_TASK", projectId: "p", title: "Nova", description: "" }));
     await waitFor(() => expect(avisoDoKanban()).toMatch(/não foi possível/i));
     await waitFor(() => expect(result.current.kanban.tasks).toHaveLength(2));
@@ -216,7 +215,7 @@ describe("gravação por cartão", () => {
   it("falha na primeira de duas ações em voo descarta a segunda e relê o engine uma vez", async () => {
     const { quadro, chamadas } = engineFalso({ tarefas: [cartao("base")], migrado: true });
     const { result } = renderHook(() => useKanban());
-    await waitFor(() => expect(result.current.carregado).toBe(true));
+    await waitFor(() => expect(result.current.kanban.tasks).toHaveLength(1));
     const normal = api.getMockImplementation()!;
     api.mockImplementation(async (metodo, caminho, corpo, extra) => {
       if (metodo === "POST" && caminho === "/kanban/cartoes" && corpo?.includes("Ruim1")) throw new Error("disco cheio");
@@ -262,20 +261,20 @@ describe("gravação por cartão", () => {
   });
 
   it("falha ao gravar desfaz na tela e mostra erro", async () => {
-    const { quadro } = engineFalso();
+    const { quadro } = engineFalso({ tarefas: [cartao("base")], migrado: true });
     const { result } = renderHook(() => useKanban());
-    await waitFor(() => expect(result.current.carregado).toBe(true));
+    await waitFor(() => expect(result.current.kanban.tasks).toHaveLength(1));
     act(() => result.current.dispatch({ type: "CREATE_TASK", projectId: "p", title: "Boa", description: "" }));
-    await waitFor(() => expect(quadro.tarefas).toHaveLength(1));
+    await waitFor(() => expect(quadro.tarefas).toHaveLength(2));
     const antes = api.getMockImplementation()!;
     api.mockImplementation(async (metodo, caminho, corpo, extra) => {
       if (metodo === "POST" && caminho === "/kanban/cartoes") throw new Error("disco cheio");
       return antes(metodo, caminho, corpo, extra);
     });
     act(() => result.current.dispatch({ type: "CREATE_TASK", projectId: "p", title: "Ruim", description: "" }));
-    expect(result.current.kanban.tasks).toHaveLength(2); // aparece na hora
-    await waitFor(() => expect(result.current.kanban.tasks).toHaveLength(1)); // e é desfeito
-    expect(result.current.kanban.tasks[0].title).toBe("Boa");
+    expect(result.current.kanban.tasks).toHaveLength(3); // aparece na hora
+    await waitFor(() => expect(result.current.kanban.tasks).toHaveLength(2)); // e é desfeito
+    expect(result.current.kanban.tasks.map((t) => t.title)).toEqual(["T base", "Boa"]);
     expect(avisoDoKanban()).toMatch(/não foi possível/i);
   });
 });
@@ -284,7 +283,7 @@ describe("mudança feita fora da tela", () => {
   it("a tela vê o cartão que o agente pegou pelo MCP", async () => {
     const { quadro } = engineFalso({ tarefas: [cartao("a", { status: "ready" })], migrado: true });
     const { result } = renderHook(() => useKanban());
-    await waitFor(() => expect(result.current.carregado).toBe(true));
+    await waitFor(() => expect(result.current.kanban.tasks).toHaveLength(1));
     Object.assign(quadro.tarefas[0], { status: "doing", pegoPor: "mcp" });
     await waitFor(() => expect(result.current.kanban.tasks[0].status).toBe("doing"), { timeout: 8_000 });
     expect(result.current.kanban.tasks[0].pegoPor).toBe("mcp");
@@ -293,7 +292,7 @@ describe("mudança feita fora da tela", () => {
   it("releitura que saiu antes de um gesto não desfaz o gesto", async () => {
     const { quadro } = engineFalso({ tarefas: [cartao("a")], migrado: true });
     const { result } = renderHook(() => useKanban());
-    await waitFor(() => expect(result.current.carregado).toBe(true));
+    await waitFor(() => expect(result.current.kanban.tasks).toHaveLength(1));
     const normal = api.getMockImplementation()!;
     const velho = JSON.stringify(quadro);
     let soltar: (() => void) | undefined;
@@ -317,7 +316,7 @@ describe("mudança feita fora da tela", () => {
   it("engine lento não acumula releituras", async () => {
     engineFalso({ tarefas: [cartao("a")], migrado: true });
     const { result } = renderHook(() => useKanban());
-    await waitFor(() => expect(result.current.carregado).toBe(true));
+    await waitFor(() => expect(result.current.kanban.tasks).toHaveLength(1));
     let leituras = 0;
     api.mockImplementation(async () => {
       leituras += 1;
@@ -330,7 +329,7 @@ describe("mudança feita fora da tela", () => {
   it("início do dispatcher não grava de novo o que a reserva já gravou", async () => {
     const { chamadas } = engineFalso({ tarefas: [cartao("a", { status: "ready" })], migrado: true });
     const { result } = renderHook(() => useKanban());
-    await waitFor(() => expect(result.current.carregado).toBe(true));
+    await waitFor(() => expect(result.current.kanban.tasks).toHaveLength(1));
     chamadas.length = 0;
     act(() => result.current.dispatch({ type: "TASK_STARTED", id: "a" }));
     expect(result.current.kanban.tasks[0].status).toBe("doing");

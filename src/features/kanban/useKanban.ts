@@ -26,7 +26,6 @@ interface Operacao {
  * Com o quadro vindo só da cópia local (engine fora, ou migração que falhou), nada é gravado. */
 export function useKanban() {
   const [kanban, setKanban] = useState<KanbanState>(emptyKanban);
-  const [carregado, setCarregado] = useState(false);
   const atual = useRef(kanban);
   const pendentes = useRef<Operacao[]>([]);
   const drenando = useRef(false);
@@ -55,7 +54,6 @@ export function useKanban() {
       // Cópia local só serve para olhar: depois da primeira carga não é reposta por cima do que está na tela.
       if (resultado.origem === "engine" || !aceitando.current) trocar(resultado.estado);
       aceitando.current = true;
-      setCarregado(true);
       // Engine fora do ar (ou migração caída): tenta de novo até dar certo.
       if (resultado.origem === "local") temporizador = window.setTimeout(() => void carregar(), REPETIR_CARGA_MS);
     }
@@ -125,5 +123,5 @@ export function useKanban() {
     [drenar, trocar],
   );
 
-  return { kanban, dispatch, carregado };
+  return { kanban, dispatch };
 }

@@ -51,10 +51,16 @@ fn pasta_de_subagentes(transcript: &str) -> PathBuf {
     caminho.with_extension("").join("subagents")
 }
 
+/// Só em memória: a rota é chamada a cada 4 s, e em repouso não vale ler e abrir o índice de conversas.
+fn ha_conversa_viva(state: &EngineState) -> bool {
+    state.sessions.lock().is_ok_and(|sessoes| sessoes.values().any(|entrada| matches!(entrada,
+        SessionEntry::Live(sessao) if sessao.meta.lock().is_ok_and(|meta| meta.conversation_id.is_some()))))
+}
+
 /// As sessões vivas do OMNI. Conversa que só existe no histórico da CLI não passa por aqui.
-fn sessoes_do_omni(state: &EngineState) -> Vec<SessaoNoOmni> {
-    let dir = state.state_file.parent().unwrap();
-    omni_core::conversations::read_index(dir).into_iter().filter_map(|c| {
+fn sessoes_do_omni(state: &EngineState, ler_indice: impl FnOnce() -> Vec<omni_core::conversations::Conversation>) -> Vec<SessaoNoOmni> {
+    if !ha_conversa_viva(state) { return Vec::new(); }
+    ler_indice().into_iter().filter_map(|c| {
         let viva = mobile::linked_session(state, &c)?;
         let segmento = c.segments.last()?;
         let texto = viva.interaction.lock().ok().map(|i| i.parser.screen().contents()).unwrap_or_default();
@@ -67,9 +73,16 @@ fn sessoes_do_omni(state: &EngineState) -> Vec<SessaoNoOmni> {
     }).collect()
 }
 
+fn indice(state: &EngineState) -> Vec<omni_core::conversations::Conversation> {
+    omni_core::conversations::read_index(state.state_file.parent().unwrap())
+}
+
+fn coletar_com(state: &EngineState, execucoes: &[Value], projeto: Option<&str>, ler_indice: impl FnOnce() -> Vec<omni_core::conversations::Conversation>) -> Vec<ItemDeFundo> {
+    filtrar_por_projeto(reunir(&sessoes_do_omni(state, ler_indice), execucoes, now_ms()), projeto)
+}
+
 pub fn coletar(state: &EngineState, projeto: Option<&str>) -> Vec<ItemDeFundo> {
-    let itens = reunir(&sessoes_do_omni(state), &fluxos::listar(), now_ms());
-    filtrar_por_projeto(itens, projeto)
+    coletar_com(state, &fluxos::listar(), projeto, || indice(state))
 }
 
 #[derive(Deserialize)] struct Filtro { #[serde(default)] projeto: Option<String> }
@@ -130,7 +143,26 @@ mod tests {
             "id":"c","project_id":"p","cwd":"/x","title":"T","created_at_ms":1,"segments":[{"provider":"claude","profile_id":null,
             "external_session_id":null,"transcript_path":dir.path().join("t.jsonl").to_string_lossy(),"terminal_session_id":null,
             "started_at_ms":1,"ended_at_ms":null}]}]}).to_string()).unwrap();
-        assert!(reunir(&sessoes_do_omni(&state), &[], agora()).is_empty(), "o registro global de fluxos fica de fora: outros testes o usam");
+        assert!(reunir(&sessoes_do_omni(&state, || indice(&state)), &[], agora()).is_empty(), "o registro global de fluxos fica de fora: outros testes o usam");
+    }
+
+    #[test]
+    fn em_repouso_nao_le_o_indice_e_mantem_os_fluxos() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state_de_teste(dir.path());
+        let execucoes = [json!({"id":"e1","fluxo":"Revisar","projeto_id":"pa","status":"rodando","criado_ms":9})];
+        let itens = coletar_com(&state, &execucoes, None, || panic!("sem sessão viva, o índice não pode ser lido"));
+        assert_eq!(itens.iter().map(|i| i.execucao.as_deref()).collect::<Vec<_>>(), [Some("e1")]);
+    }
+
+    #[test]
+    fn sessao_que_ja_terminou_nao_custa_a_leitura_do_indice() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state_de_teste(dir.path());
+        let historica = serde_json::from_value(json!({"id":"s","project_id":"p","name":"T","cwd":"/x","shell":"sh","state":"stopped","pid":null,
+            "created_at_ms":1,"last_activity_at_ms":1,"output_seq":0,"rows":20,"cols":100,"conversation_id":"c"})).unwrap();
+        state.sessions.lock().unwrap().insert("s".into(), SessionEntry::Historical(historica));
+        coletar_com(&state, &[], None, || panic!("só sessão terminada: o índice não pode ser lido"));
     }
 
     fn state_de_teste(dir: &Path) -> Arc<EngineState> {

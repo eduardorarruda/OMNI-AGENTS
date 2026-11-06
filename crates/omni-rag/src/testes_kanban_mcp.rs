@@ -129,11 +129,33 @@ fn pegar_cartao_externo_liga_a_marca() {
 }
 
 #[test]
-fn pegar_que_o_engine_recusa_nao_liga_a_marca() {
-    let (porta, _) = engine_falso(vec![("GET /kanban", quadro(json!([externo("e", "x")]), json!([])))]);
+fn pegar_externo_marca_antes_de_ir_para_rodando() {
+    let (porta, pedidos) = engine_falso(vec![("GET /kanban", quadro(json!([externo("e", "x")]), json!([]))), ("POST /kanban/cartoes/e/pegar", externo("e", "x"))]);
     let local = ambiente(porta);
-    assert!(chamar(&local.contexto, "pegar_cartao", json!({"id": "e"})).is_err());
-    assert!(!local.contexto.veio_de_fora.load(Ordering::SeqCst));
+    // Um arquivo no lugar da pasta das marcas: gravar a marca falha.
+    fs::write(local.contexto.pasta_do_engine.join(crate::marca_de_fora::PASTA_DAS_MARCAS), "").expect("arquivo");
+
+    let erro = chamar(&local.contexto, "pegar_cartao", json!({"id": "e"})).expect_err("sem marca, não entrega");
+
+    assert!(erro.contains("marcar"), "{erro}");
+    assert!(escritas(&pedidos).is_empty(), "o cartão não pode ficar preso em Rodando");
+}
+
+#[test]
+fn pegar_que_o_engine_recusa_ja_marcou_e_nao_entrega_o_texto() {
+    let (porta, _) = engine_falso(vec![("GET /kanban", quadro(json!([externo("e", "segredo de fora")]), json!([])))]);
+    let local = ambiente(porta);
+    let erro = chamar(&local.contexto, "pegar_cartao", json!({"id": "e"})).expect_err("recusa");
+    assert!(!erro.contains("segredo de fora"), "{erro}");
+    assert!(local.contexto.veio_de_fora.load(Ordering::SeqCst), "marcar à toa só pede uma aprovação a mais");
+}
+
+#[test]
+fn cartao_externo_criado_depois_da_leitura_ainda_liga_a_marca() {
+    let (porta, _) = engine_falso(vec![("GET /kanban", quadro(json!([]), json!([]))), ("POST /kanban/cartoes/e/pegar", externo("e", "x"))]);
+    let local = ambiente(porta);
+    chamar(&local.contexto, "pegar_cartao", json!({"id": "e"})).expect("pegou");
+    assert!(local.contexto.veio_de_fora.load(Ordering::SeqCst));
 }
 
 #[test]

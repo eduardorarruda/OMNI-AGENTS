@@ -4,6 +4,7 @@
 //! rodando volta como pausado. O histórico de cada nó (eventos da CLI) fica em `<id>/<no>.log`.
 
 use super::*;
+use omni_core::exportar::sem_segredos;
 use omni_core::fluxos::{self, Contexto, Fluxo, TipoDeNo};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -593,9 +594,10 @@ fn texto_de(config: &Value, chave: &str) -> Option<String> {
 /// Só letras, números e `._-`: modelo e esforço viram argumento de linha de comando.
 fn argumento_seguro(v: &str) -> bool { !v.is_empty() && v.len() <= 64 && v.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c)) }
 
-/// Uma linha curta do que o evento mostra: "Edit · src/x.ts" ou o começo da fala.
+/// Uma linha curta do que o evento mostra: "Edit · src/x.ts" ou o começo da fala. A atividade chega à
+/// tela e ao celular: o segredo sai antes do corte, senão sobra pela metade e a máscara não o reconhece.
 fn atividade_do_evento(ev: &Value) -> Option<String> {
-    let curto = |t: &str| { let t = t.trim().replace(['\n', '\r'], " "); if t.chars().count() > 140 { format!("{}…", t.chars().take(140).collect::<String>()) } else { t } };
+    let curto = |t: &str| { let t = sem_segredos(t.trim()).replace(['\n', '\r'], " "); if t.chars().count() > 140 { format!("{}…", t.chars().take(140).collect::<String>()) } else { t } };
     match ev["type"].as_str()? {
         "assistant" => omni_core::feed::items(ev, "claude").into_iter().last().map(|i| match i.tool { Some(f) => format!("{f} · {}", curto(&i.text)), None => curto(&i.text) }),
         "item.started" | "item.completed" => match ev["item"]["type"].as_str()? {
@@ -722,6 +724,8 @@ fn rodar_na_conta(state: &EngineState, v: &Viva, no: &str, modelo: &omni_core::a
     Ok(final_texto)
 }
 
+fn linha_de_atividade(linha: &str) -> String { sem_segredos(linha).chars().take(200).collect() }
+
 /// Etapa Comando: o shell do sistema roda `comando` na pasta da execução, com stdout e stderr juntos
 /// no log da etapa. Devolve se saiu com 0 e o fim da saída (o erro, quando falha). O comando é o que
 /// está salvo no fluxo — nada digitado ao executar entra nele, então não há injeção pela tarefa.
@@ -737,7 +741,7 @@ fn rodar_comando(state: &EngineState, v: &Viva, no: &str, comando: &str, pasta: 
     let run_id = v.lock().map_err(|_| anyhow!("execucao"))?.id.clone();
     let mut processo = guardar_processo(v, &run_id, no, c.spawn().with_context(|| format!("não consegui rodar: {comando}"))?);
     let filho = &mut processo.filho;
-    definir_atividade(state, v, no, &format!("$ {comando}"));
+    definir_atividade(state, v, no, &format!("$ {}", sem_segredos(comando)));
 
     let log = pasta_execucoes(state).join(&run_id);
     let _ = fs::create_dir_all(&log);
@@ -761,7 +765,7 @@ fn rodar_comando(state: &EngineState, v: &Viva, no: &str, comando: &str, pasta: 
         // ponytail: a atividade vai para o JSON da execução em disco — no máximo 2x por segundo.
         if !linha.trim().is_empty() && ultima_tela.elapsed() >= std::time::Duration::from_millis(500) {
             ultima_tela = std::time::Instant::now();
-            definir_atividade(state, v, no, &linha.chars().take(200).collect::<String>());
+            definir_atividade(state, v, no, &linha_de_atividade(&linha));
         }
     }
     for l in leitores { let _ = l.join(); }
