@@ -14,7 +14,6 @@ pub struct SessaoNoOmni {
     pub titulo: String,
     pub projeto_id: String,
     pub provider: String,
-    pub desde_ms: u64,
     /// A CLI mostra agente em segundo plano pendente (só o Claude).
     pub em_segundo_plano: bool,
     /// Pasta `<conversa>/subagents` do transcript da sessão.
@@ -27,23 +26,23 @@ pub fn reunir(sessoes: &[SessaoNoOmni], execucoes: &[Value], agora_ms: u64) -> V
     for s in sessoes {
         if s.provider == "claude" && s.em_segundo_plano {
             itens.push(ItemDeFundo { tipo: "sessao".into(), titulo: s.titulo.clone(), atividade: "Esperando um agente em segundo plano terminar".into(),
-                desde_ms: s.desde_ms, projeto_id: s.projeto_id.clone(), sessao: Some(s.conversa_id.clone()), execucao: None });
+                desde_ms: None, projeto_id: s.projeto_id.clone(), sessao: Some(s.conversa_id.clone()), execucao: None });
         }
         let subagentes = s.pasta_de_subagentes.as_deref().filter(|_| s.provider == "claude").map(|p| subagentes_ativos(p, agora_ms)).unwrap_or_default();
         for a in subagentes {
             itens.push(ItemDeFundo { tipo: "subagente".into(), titulo: a.nome,
                 atividade: if a.ultima_acao.is_empty() { "Trabalhando".into() } else { a.ultima_acao },
-                desde_ms: a.desde_ms, projeto_id: s.projeto_id.clone(), sessao: Some(s.conversa_id.clone()), execucao: None });
+                desde_ms: Some(a.desde_ms), projeto_id: s.projeto_id.clone(), sessao: Some(s.conversa_id.clone()), execucao: None });
         }
     }
     for e in execucoes {
         if !matches!(e["status"].as_str(), Some("rodando" | "aguardando")) { continue; }
         itens.push(ItemDeFundo { tipo: "fluxo".into(), titulo: e["fluxo"].as_str().unwrap_or("Fluxo").to_string(),
             atividade: if e["status"] == "aguardando" { "Esperando a sua aprovação".into() } else { "Rodando".into() },
-            desde_ms: e["criado_ms"].as_u64().unwrap_or(0), projeto_id: e["projeto_id"].as_str().unwrap_or("").to_string(),
+            desde_ms: e["criado_ms"].as_u64(), projeto_id: e["projeto_id"].as_str().unwrap_or("").to_string(),
             sessao: None, execucao: e["id"].as_str().map(str::to_string) });
     }
-    itens.sort_by_key(|i| i.desde_ms);
+    itens.sort_by_key(|i| i.desde_ms.unwrap_or(0));
     itens
 }
 
@@ -61,7 +60,7 @@ fn sessoes_do_omni(state: &EngineState) -> Vec<SessaoNoOmni> {
         let texto = viva.interaction.lock().ok().map(|i| i.parser.screen().contents()).unwrap_or_default();
         Some(SessaoNoOmni {
             titulo: omni_core::conversations::display_title(&c), projeto_id: c.project_id.clone(), conversa_id: c.id.clone(),
-            provider: segmento.provider.clone(), desde_ms: segmento.started_at_ms,
+            provider: segmento.provider.clone(),
             em_segundo_plano: segmento.provider == "claude" && interaction::agente_em_segundo_plano(&texto),
             pasta_de_subagentes: segmento.transcript_path.as_deref().map(pasta_de_subagentes),
         })
@@ -90,7 +89,7 @@ mod tests {
 
     fn sessao(conversa: &str, projeto: &str, pasta: Option<PathBuf>, em_fundo: bool) -> SessaoNoOmni {
         SessaoNoOmni { conversa_id: conversa.into(), titulo: format!("conversa {conversa}"), projeto_id: projeto.into(), provider: "claude".into(),
-            desde_ms: 5, em_segundo_plano: em_fundo, pasta_de_subagentes: pasta }
+            em_segundo_plano: em_fundo, pasta_de_subagentes: pasta }
     }
 
     fn subagente_recente(pasta: &Path) {
@@ -113,8 +112,9 @@ mod tests {
         let todos = reunir(&sessoes, &execucoes, agora());
         assert_eq!(todos.len(), 5, "sessão+subagente de pa, subagente de pb, fluxos e1 e e3 (e2 terminou)");
         let so_a = filtrar_por_projeto(todos, Some("pa"));
-        assert_eq!(so_a.iter().map(|i| i.tipo.as_str()).collect::<Vec<_>>().len(), 3);
+        assert_eq!(so_a.iter().map(|i| i.tipo.as_str()).count(), 3);
         assert!(so_a.iter().all(|i| i.projeto_id == "pa"));
+        assert!(so_a.iter().find(|i| i.tipo == "sessao").is_some_and(|i| i.desde_ms.is_none()), "sessão não tem início do segundo plano: sem tempo");
         assert!(so_a.iter().any(|i| i.tipo == "fluxo" && i.execucao.as_deref() == Some("e1")));
     }
 

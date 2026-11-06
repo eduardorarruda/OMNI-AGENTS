@@ -74,7 +74,7 @@ export function PainelDoProjeto({ projetoId }: { projetoId: string }) {
                 <strong>{t.titulo}</strong>
                 <span className="mg-tipo">{ROTULO_TIPO[t.tipo] ?? t.tipo}</span>
                 <span>{t.atividade}</span>
-                <span>{tempoDesde(t.desde_ms, agora)}</span>
+                {t.desde_ms !== null && <span>{tempoDesde(t.desde_ms, agora)}</span>}
               </li>
             ))}
           </ul>

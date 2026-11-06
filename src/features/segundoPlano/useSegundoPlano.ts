@@ -1,11 +1,12 @@
-import { useSyncExternalStore } from "react";
+import { useCallback, useSyncExternalStore } from "react";
 import { engineApi } from "../terminal/terminalService";
 
 export interface ItemDeFundo {
   tipo: "sessao" | "subagente" | "fluxo" | string;
   titulo: string;
   atividade: string;
-  desde_ms: number;
+  /** `null`: a fonte não sabe quando começou. */
+  desde_ms: number | null;
   projeto_id: string;
   /** Conversa do OMNI a abrir ou parar. */
   sessao: string | null;
@@ -67,8 +68,9 @@ function assinar(chave: string, projetoId: string | undefined, ouvinte: () => vo
 /** O que roda em segundo plano (no projeto, se informado), consultado a cada 4 s. */
 export function useSegundoPlano(projetoId?: string | null): LeituraDoSegundoPlano {
   const chave = projetoId ?? "";
-  return useSyncExternalStore(
-    (ouvinte) => assinar(chave, projetoId ?? undefined, ouvinte),
-    () => armazens.get(chave)?.leitura ?? VAZIA,
-  );
+  // Estável por projeto: uma função nova a cada render faria o React reassinar, apagar o armazém
+  // e consultar de novo sem esperar os 4 s.
+  const inscrever = useCallback((ouvinte: () => void) => assinar(chave, chave || undefined, ouvinte), [chave]);
+  const ler = useCallback(() => armazens.get(chave)?.leitura ?? VAZIA, [chave]);
+  return useSyncExternalStore(inscrever, ler);
 }

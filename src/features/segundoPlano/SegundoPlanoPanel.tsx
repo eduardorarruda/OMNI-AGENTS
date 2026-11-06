@@ -61,7 +61,7 @@ export function SegundoPlanoPanel({ projetoId, agora, onAbrirConversa, onAbrirFl
                 <span className="shrink-0 text-[10px] uppercase tracking-wider text-text-muted">{ROTULOS[item.tipo] ?? item.tipo}</span>
               </div>
               <p className="truncate text-text-muted" title={item.atividade}>{item.atividade}</p>
-              <p className="text-text-muted">{tempoDesde(item.desde_ms, relogio)}</p>
+              {item.desde_ms !== null && <p className="text-text-muted">{tempoDesde(item.desde_ms, relogio)}</p>}
               {subagente && <p className="mt-1 text-[11px] text-text-muted">Parar para a sessão inteira, não só este subagente.</p>}
               <div className="mt-1 flex gap-2">
                 <button type="button" className="underline" onClick={() => abrir(item)}>Abrir</button>

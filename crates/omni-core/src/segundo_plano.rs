@@ -17,7 +17,8 @@ pub struct ItemDeFundo {
     pub tipo: String,
     pub titulo: String,
     pub atividade: String,
-    pub desde_ms: u64,
+    /// `None` quando a fonte não sabe quando começou: a tela fica sem tempo em vez de mostrar um errado.
+    pub desde_ms: Option<u64>,
     pub projeto_id: String,
     /// Conversa do OMNI a abrir/parar (`sessao` e `subagente`).
     pub sessao: Option<String>,
@@ -49,7 +50,9 @@ fn ler_subagente(caminho: &Path, agora_ms: u64) -> Option<SubagenteAtivo> {
         .and_then(|v| v["description"].as_str().map(str::to_string)).filter(|d| !d.trim().is_empty());
     let nome = descricao.or_else(|| primeira.as_ref().and_then(texto_do_usuario)).map_or_else(|| id.clone(), |t| cortar(&t, NOME_MAX));
     let desde_ms = primeira.as_ref().and_then(|l| crate::conversations::timestamp(&l["timestamp"])).unwrap_or(atualizado_ms);
-    Some(SubagenteAtivo { id, nome, ultima_acao: ultima_acao(caminho).unwrap_or_default(), desde_ms, atualizado_ms })
+    // O comando cru pode ter chave ou senha, e a lista chega ao celular: passa por `sem_segredos`.
+    let ultima_acao = crate::exportar::sem_segredos(&ultima_acao(caminho).unwrap_or_default());
+    Some(SubagenteAtivo { id, nome: crate::exportar::sem_segredos(&nome), ultima_acao, desde_ms, atualizado_ms })
 }
 
 fn primeira_linha(caminho: &Path) -> Option<Value> {
@@ -173,8 +176,17 @@ mod tests {
     }
 
     #[test]
+    fn comando_com_segredo_nao_chega_a_atividade() {
+        let dir = tempfile::tempdir().unwrap();
+        escrever(dir.path(), "a1", &[linha_usuario("2026-11-06T18:00:00.000Z", "x"),
+            linha_ferramenta("2026-11-06T18:00:05.000Z", "Bash", serde_json::json!({"command":"curl -H sk-ant-abc123DEF456ghi789JKL012 https://x"}))], 1_000);
+        let a = &subagentes_ativos(dir.path(), AGORA)[0];
+        assert!(!a.ultima_acao.contains("sk-ant-abc123DEF456ghi789JKL012"), "{:?}", a.ultima_acao);
+    }
+
+    #[test]
     fn filtro_por_projeto() {
-        let item = |p: &str| ItemDeFundo { tipo: "subagente".into(), titulo: "t".into(), atividade: "a".into(), desde_ms: 1,
+        let item = |p: &str| ItemDeFundo { tipo: "subagente".into(), titulo: "t".into(), atividade: "a".into(), desde_ms: Some(1),
             projeto_id: p.into(), sessao: None, execucao: None };
         let lista = vec![item("a"), item("b")];
         assert_eq!(filtrar_por_projeto(lista.clone(), Some("a")).len(), 1);
