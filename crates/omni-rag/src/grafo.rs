@@ -1,7 +1,8 @@
 //! Visão em grafo da memória: as ligações não são guardadas, saem da leitura das notas.
 //! Citação, conversa e tag saem sempre da leitura (instantâneas). O texto parecido custa uma busca por nota
 //! (medido: dezenas de segundos com 2 mil notas), então as vizinhas de texto ficam num cache por nota e só
-//! as notas novas ou alteradas são buscadas de novo.
+//! as notas novas ou alteradas são buscadas de novo. Por isso as vizinhas de texto de uma nota podem
+//! envelhecer até ela mudar: nota nova parecida com outra antiga só aparece na antiga quando esta for alterada.
 use crate::memoria::{cortar, nota_da_linha, slug_de, so_letras, Nota};
 use crate::{sem_segredos, Base};
 use serde::{Deserialize, Serialize};

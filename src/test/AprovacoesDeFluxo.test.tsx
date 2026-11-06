@@ -49,6 +49,16 @@ it("celular mostra a etapa de tarefa de fora parada, sem nó Aprovação", async
   expect(request).toHaveBeenCalledWith("/fluxos/execucoes/ex1/nos/c/aprovar", expect.objectContaining({ body: JSON.stringify({ sim: false }) }));
 });
 
+it("uma execução que falha ao ler não esconde as outras", async () => {
+  request.mockImplementation(async (path: string) => {
+    if (path === "/fluxos/execucoes") return [{ id: "sumiu", status: "aguardando" }, { id: "ex1", status: "aguardando" }];
+    if (path === "/fluxos/execucoes/ex1") return execucao;
+    throw new Error("Execução não encontrada");
+  });
+  render(<AprovacoesDeFluxo />);
+  expect(await screen.findByText("Publicar a versão?")).toBeInTheDocument();
+});
+
 it("engine sem as rotas de fluxo não mostra nada", async () => {
   request.mockRejectedValue(new Error("Falha HTTP 404"));
   const { container } = render(<AprovacoesDeFluxo />);

@@ -91,7 +91,7 @@ const SECOES: Secao[] = [
         <li>No prompt de uma etapa: <code>{"{{entrada}}"}</code> é a tarefa, <code>{"{{anterior}}"}</code> é o que veio da etapa anterior (num loop, o relatório do QA) e <code>{"{{no:plano}}"}</code> é a saída da etapa <i>plano</i>.</li>
         <li>Defina um limite no loop (2–4 voltas costuma bastar) e uma saída <i>esgotou</i>: sem limite, ele só para no botão Parar.</li>
         <li>Agentes de veredito terminam com <code>{"{\"veredito\": \"aprovado\"}"}</code>: é isso que a Condição lê.</li>
-        <li>Os agentes editam arquivos e rodam comandos sem pedir confirmação, dentro do worktree e com as ferramentas do modelo. Por isso o PR passa pela sua aprovação.</li>
+        <li>Os agentes editam arquivos e rodam comandos sem pedir confirmação, dentro do worktree e com as ferramentas do modelo. Por isso, na execução que você inicia, o PR passa pela sua aprovação. A que a IA inicia passa sozinha pelas aprovações, menos quando veio de uma tarefa externa.</li>
       </ul>
     </>,
   },

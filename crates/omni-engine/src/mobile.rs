@@ -642,7 +642,7 @@ pub async fn local(state: Arc<EngineState>, method: &str, path: &str, body: Opti
         },
         None => axum::body::Body::from(body.unwrap_or_default()),
     };
-    let mut request = axum::http::Request::builder().method(method).uri(path);
+    let mut request = axum::http::Request::builder().method(method).uri(path).extension(ViaLocal);
     if !headers.iter().any(|(nome, _)| nome.eq_ignore_ascii_case("content-type")) {
         request = request.header("content-type","application/json");
     }
@@ -925,11 +925,14 @@ fn summaries(state: &EngineState) -> Vec<Value> {
 async fn fluxos_listar() -> Json<Value> { Json(json!(super::fluxos::listar())) }
 
 #[derive(Deserialize)] pub(crate) struct IniciarFluxo { fluxo: omni_core::fluxos::Fluxo, projeto_id: String, entrada: String, #[serde(flatten)] pub(crate) quem: super::fluxos::Origem }
-async fn fluxos_iniciar(State(state): State<Arc<EngineState>>, Json(body): Json<IniciarFluxo>) -> Result<(StatusCode,Json<Value>), ApiError> {
+/// Marca o pedido que veio pelo protocolo local. Fica fora do alcance do corpo e dos cabeçalhos da rede.
+#[derive(Clone)] struct ViaLocal;
+async fn fluxos_iniciar(State(state): State<Arc<EngineState>>, via_local: Option<axum::Extension<ViaLocal>>, Json(body): Json<IniciarFluxo>) -> Result<(StatusCode,Json<Value>), ApiError> {
     tokio::task::spawn_blocking(move || {
         let projeto = known_projects(&state).into_iter().find(|p| p.id == body.projeto_id && !p.path.is_empty())
             .ok_or_else(||error(StatusCode::NOT_FOUND,"Projeto não encontrado neste PC"))?;
-        let execucao = super::fluxos::iniciar_com_origem(&state, body.fluxo, projeto.path, projeto.id, body.entrada, body.quem)
+        let quem = if via_local.is_some() { body.quem } else { super::fluxos::Origem::da_tela() };
+        let execucao = super::fluxos::iniciar_com_origem(&state, body.fluxo, projeto.path, projeto.id, body.entrada, quem)
             .map_err(|e| error(StatusCode::BAD_REQUEST,&e.to_string()))?;
         Ok((StatusCode::CREATED,Json(json!(execucao))))
     }).await.map_err(|_|error(StatusCode::INTERNAL_SERVER_ERROR,"Falha ao iniciar o fluxo"))?
@@ -3006,6 +3009,29 @@ mod tests {
             let EngineResponse::Api { status, .. } = local(state.clone(),"POST",rota,corpo(TEXTO_LONGO_MAX + 1),None,vec![]).await else { panic!("não é Api") };
             assert_eq!(status,413,"{rota} aceitou acima do teto");
         }
+    }
+    /// Quem chega pela rede não diz de onde veio: com `origem: mcp`, passaria sozinho pelas Aprovações.
+    #[tokio::test] async fn rota_remota_ignora_a_origem_e_a_local_aceita() {
+        let (dir,state) = fixture();
+        let projeto = dir.path().join("proj");
+        std::fs::create_dir_all(&projeto).unwrap();
+        atomic_write_json(&dir.path().join("conversations.json"),&json!({"version":1,"conversations":[{
+            "id":"c","project_id":"p","cwd":projeto.to_string_lossy(),"title":"Teste","created_at_ms":1,"segments":[]
+        }]})).unwrap();
+        let corpo = json!({"projeto_id":"p","entrada":"x","origem":"mcp","veio_de_fora":true,"pasta":projeto.to_string_lossy(),"fluxo":{"id":"a","nome":"A","na_pasta_do_projeto":true,
+            "nos":[{"id":"e","tipo":"entrada"},{"id":"ap","tipo":"aprovacao"},{"id":"f","tipo":"fim"}],
+            "conexoes":[{"de":"e","para":"ap"},{"de":"ap","para":"f","saida":"sim"}]}}).to_string();
+
+        let resposta = router(state.clone()).oneshot(req("POST","/fluxos/execucoes","http://127.0.0.1:47322",&corpo)).await.unwrap();
+        assert_eq!(resposta.status(),StatusCode::CREATED);
+        let remota: Value = serde_json::from_slice(&axum::body::to_bytes(resposta.into_body(),1 << 20).await.unwrap()).unwrap();
+        assert_eq!((&remota["origem"],&remota["veio_de_fora"]),(&json!("manual"),&json!(false)));
+
+        let EngineResponse::Api { status, body } = local(state.clone(),"POST","/fluxos/execucoes",Some(corpo),None,vec![]).await else { panic!("não é Api") };
+        assert_eq!(status,201,"{body}");
+        let vinda: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!((&vinda["origem"],&vinda["veio_de_fora"]),(&json!("mcp"),&json!(true)));
+        for execucao in [&remota,&vinda] { crate::fluxos::cancelar(&state,execucao["id"].as_str().unwrap()).unwrap(); }
     }
     /// Tarefas: grava a lista inteira e lê de volta; lista malformada não chega ao disco.
     #[tokio::test] async fn tarefas_vao_e_voltam_inteiras() {

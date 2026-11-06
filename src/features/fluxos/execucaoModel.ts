@@ -2,6 +2,9 @@ import type { Execucao } from "./fluxosService";
 
 export interface NoAtivo { id: string; rotulo: string; status: "rodando" | "aguardando"; atividade: string; inicioMs: number }
 
+/** Aprovar só vale com a execução de pé: pausada, parada ou cancelada, o engine recusa a resposta. */
+export const aceitaResposta = (status: Execucao["status"]) => status === "rodando" || status === "aguardando";
+
 /** O que perguntar sobre um nó parado. Fora a Aprovação do fluxo, só para a etapa de tarefa vinda de fora, antes de rodar. */
 export function perguntaDoNo(no: { id: string; tipo: string; titulo: string; config: Record<string, unknown> }): string {
   if (no.tipo === "aprovacao") return String(no.config.pergunta || no.titulo || "Aprovar para seguir?");

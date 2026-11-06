@@ -191,7 +191,8 @@ fn resolver_pastas(fluxo: &Fluxo, projeto: &str) -> Result<Vec<String>> {
 
 fn novo_id() -> String { format!("exec-{}-{:04x}", now_ms(), rand::random::<u16>()) }
 
-/// Quem pediu a execução, como vem no corpo de `POST /fluxos/execucoes`. Sem os campos, é a tela.
+/// Quem pediu a execução, como vem no corpo de `POST /fluxos/execucoes`. Sem os campos, é a tela. Só o
+/// protocolo local é ouvido: pela rede a rota ignora tudo isto, ou `mcp` pularia as Aprovações.
 #[derive(Deserialize, Clone, Debug)]
 pub struct Origem {
     #[serde(default = "origem_manual")]
@@ -201,6 +202,11 @@ pub struct Origem {
     /// Pasta da conversa que pediu, pelo MCP. Marca a execução se houver outra marcada ali.
     #[serde(default)]
     pub pasta: Option<String>,
+}
+
+impl Origem {
+    /// Pedido da tela, ou de quem não pode dizer a própria origem.
+    pub fn da_tela() -> Self { Self { origem: origem_manual(), veio_de_fora: false, pasta: None } }
 }
 
 fn origem_manual() -> String { "manual".into() }
@@ -216,9 +222,10 @@ fn marcar_ambiente(c: &mut Command, marcada: bool) {
 
 fn marcada(v: &Viva) -> bool { v.lock().is_ok_and(|e| e.veio_de_fora) }
 
-/// Começa uma execução pedida na tela.
+/// Começa uma execução pedida na tela. Só os testes chamam: a rota passa por `iniciar_com_origem`.
+#[cfg(test)]
 pub fn iniciar(state: &Arc<EngineState>, fluxo: Fluxo, projeto: String, projeto_id: String, entrada: String) -> Result<Execucao> {
-    iniciar_com_origem(state, fluxo, projeto, projeto_id, entrada, Origem { origem: origem_manual(), veio_de_fora: false, pasta: None })
+    iniciar_com_origem(state, fluxo, projeto, projeto_id, entrada, Origem::da_tela())
 }
 
 /// Começa uma execução: prepara o worktree e solta a thread.

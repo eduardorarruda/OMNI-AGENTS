@@ -178,7 +178,7 @@ fn esperar_recusa_id_com_caminho() {
 
 #[test]
 fn pausa_comum_o_mcp_retoma() {
-    let (local, pedidos) = ambiente(vec![json!({"id": "x", "status": "pausado", "parou_por_custo": false})]);
+    let (local, pedidos) = ambiente(vec![json!({"id": "x", "status": "pausado"})]);
     chamar(&local, "controlar_execucao", json!({"id": "x", "acao": "retomar"})).expect("retoma");
     assert!(pedidos.lock().expect("pedidos").iter().any(|pedido| pedido == "POST /fluxos/execucoes/x/retomar"));
 }

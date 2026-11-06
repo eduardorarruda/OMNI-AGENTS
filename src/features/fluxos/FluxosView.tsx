@@ -21,7 +21,7 @@ import "../../mobile/mobile.css";
 import { ArestaDoFluxo, type ArestaOmni } from "./ArestaDoFluxo";
 import { ICONE, NoDoFluxoView, type NoOmni } from "./NoDoFluxo";
 import { NovoFluxo } from "./NovoFluxo";
-import { nosAtivos, perguntaDoNo } from "./execucaoModel";
+import { aceitaResposta, nosAtivos, perguntaDoNo } from "./execucaoModel";
 import { aoPedirExecucao, consumirPedidoDeExecucao } from "./pedidoDeExecucao";
 import { LinhaDoTempo } from "./LinhaDoTempo";
 import { SeletorDeSubfluxo, TrilhaDeSubfluxo } from "./TrilhaDeSubfluxo";
@@ -396,7 +396,7 @@ function Fluxos({ projectId, projectPath, onAbrirSessao, onClose }: Props) {
             <>
               <span className={`fx-status st-${execucao.status}`}>{STATUS_EXEC[execucao.status]}</span>
               <div className="min-w-0 flex-1">
-                {execucao.pilha?.length ? <TrilhaDeSubfluxo execucao={execucao} onAbrir={abrirExecucao} /> : <div className="fx-barra-titulo">{execucao.fluxo.nome}</div>}
+                {(execucao.pilha?.length ?? 0) > 1 ? <TrilhaDeSubfluxo execucao={execucao} onAbrir={abrirExecucao} /> : <div className="fx-barra-titulo">{execucao.fluxo.nome}</div>}
                 <div className="fx-barra-sub" title={execucao.entrada}>{execucao.entrada}</div>
               </div>
               {execucao.pr_url && <a className="fx-link" href={execucao.pr_url} target="_blank" rel="noreferrer">Ver PR</a>}
@@ -735,7 +735,7 @@ function ResumoDaExecucao({ execucao, onSelecionar }: { execucao: Execucao; onSe
             <button key={n.id} type="button" className="fx-agora" onClick={() => onSelecionar(n.id)}>
               <span className="fx-rotulo">{n.status === "aguardando" ? "Esperando você" : "Agora"}</span>
               <b>{n.rotulo}</b>
-              <span className="fx-agora-atividade">{n.status === "aguardando" ? "Clique para aprovar ou recusar." : n.atividade || "Começando…"}</span>
+              <span className="fx-agora-atividade">{n.status !== "aguardando" ? n.atividade || "Começando…" : aceitaResposta(execucao.status) ? "Clique para aprovar ou recusar." : "Retome a execução para responder."}</span>
             </button>
           ))}
         </div>
@@ -787,7 +787,7 @@ function PainelDaExecucao({ execucao, no, onErro, onAbrirSessao, onVoltar }: { e
       {(estado?.modelo || estado?.esforco || no.agente) && (
         <p className="fx-dica">{[no.agente, estado?.cli, estado?.modelo, estado?.esforco && `esforço ${(ROTULO_ESFORCO[estado.esforco] ?? estado.esforco).toLowerCase()}`].filter(Boolean).join(" · ")}</p>
       )}
-      {estado?.status === "aguardando" && (
+      {estado?.status === "aguardando" && aceitaResposta(execucao.status) && (
         <div className="fx-aprovar">
           <p>{perguntaDoNo(no)}</p>
           <div className="flex gap-2">

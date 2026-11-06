@@ -40,7 +40,7 @@ export interface Execucao {
   criado_ms: number; atualizado_ms: number; nos: Record<string, EstadoDoNo>; pr_url: string | null; custo_usd: number;
   /** Só em execução filha: quem a chamou. */
   pai?: { execucao: string; no: string } | null;
-  /** Nomes da cadeia, da raiz até esta. Vazia na raiz. */
+  /** Nomes da cadeia, da raiz até esta. Na raiz só tem o nome dela; em execução antiga, vem vazia. */
   pilha?: string[];
 }
 export interface ResumoDaExecucao {

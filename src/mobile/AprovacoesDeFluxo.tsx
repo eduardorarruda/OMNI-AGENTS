@@ -44,9 +44,10 @@ export function AprovacoesDeFluxo({ aoMudar }: { aoMudar?: (quantas: number) => 
         const lista = await request<(AvisoDeFluxo & { status: string })[]>("/fluxos/execucoes");
         avisarFluxos(novosAvisosDeFluxo(lista, avisosVistos.current, primeiraLeitura.current));
         primeiraLeitura.current = false;
-        const detalhes = await Promise.all(lista.filter((e) => e.status === "aguardando")
+        // allSettled: uma execução removida entre a lista e o detalhe não esconde as outras aprovações.
+        const detalhes = await Promise.allSettled(lista.filter((e) => e.status === "aguardando")
           .map((e) => request<Execucao>(`/fluxos/execucoes/${encodeURIComponent(e.id)}`)));
-        if (vivo) setPendentes(pendentesDe(detalhes));
+        if (vivo) setPendentes(pendentesDe(detalhes.flatMap((d) => (d.status === "fulfilled" ? [d.value] : []))));
       } catch { /* engine antigo ou fora do ar: a lista de conversas já avisa */ }
     }
     void ler();

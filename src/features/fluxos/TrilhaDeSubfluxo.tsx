@@ -3,13 +3,16 @@ import { Select } from "../../components/ui";
 import { obterExecucao, type Execucao, type FluxoSalvo } from "./fluxosService";
 
 /** Ids dos ancestrais, do pai para cima. `listar` não traz a cadeia e `pilha` só tem nomes, então sobe
- *  por `obter`. Ancestral que sumiu corta a subida: o que já achou continua valendo. */
-async function ancestraisDe(execucao: Execucao): Promise<string[]> {
+ *  por `obter`. Só entra quem respondeu: ancestral que sumiu corta a subida e não vira botão. Cadeia
+ *  funda são muitas leituras, por isso `seguir` para a subida quando a trilha sai da tela. */
+async function ancestraisDe(paiId: string, seguir: () => boolean): Promise<string[]> {
   const ids: string[] = [];
-  let pai = execucao.pai;
-  while (pai) {
-    ids.push(pai.execucao);
-    pai = await obterExecucao(pai.execucao).then((x) => x.pai, () => null);
+  let id: string | undefined = paiId;
+  while (id && seguir()) {
+    const atual: Execucao | null = await obterExecucao(id).catch(() => null);
+    if (!atual) break;
+    ids.push(id);
+    id = atual.pai?.execucao;
   }
   return ids;
 }
@@ -21,14 +24,12 @@ export function TrilhaDeSubfluxo({ execucao, onAbrir }: { execucao: Execucao; on
   useEffect(() => {
     let vivo = true;
     setAncestrais([]);
-    if (paiId) void ancestraisDe({ ...execucao, pai: { execucao: paiId, no: "" } }).then((ids) => { if (vivo) setAncestrais(ids); });
+    if (paiId) void ancestraisDe(paiId, () => vivo).then((ids) => { if (vivo) setAncestrais(ids); });
     return () => { vivo = false; };
-    // `execucao` muda a cada leitura; a cadeia só muda com o pai.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [execucao.id, paiId]);
 
   const pilha = execucao.pilha ?? [];
-  if (pilha.length === 0) return null;
+  if (pilha.length <= 1) return null;
   const ultimo = pilha.length - 1;
   return (
     <nav className="fx-trilha" aria-label="Cadeia de subfluxos">
