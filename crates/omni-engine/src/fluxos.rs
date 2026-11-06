@@ -48,6 +48,9 @@ pub struct EstadoDoNo {
     pub modelo: Option<String>,
     #[serde(default)]
     pub esforco: Option<String>,
+    /// Quantas vezes o nó começou a rodar (a segunda em diante é uma volta nova no log).
+    #[serde(default)]
+    pub corridas: u32,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -92,6 +95,9 @@ pub struct Execucao {
     pub aviso_seq: u32,
     #[serde(default)]
     pub aviso: Option<String>,
+    /// Número do último evento da linha do tempo (`eventos.jsonl`); o próximo é este + 1.
+    #[serde(default)]
+    pub evento_seq: u64,
 }
 
 type Viva = Arc<Mutex<Execucao>>;
@@ -184,11 +190,23 @@ pub fn iniciar(state: &Arc<EngineState>, fluxo: Fluxo, projeto: String, projeto_
     let nos = fluxo.nos.iter().map(|n| (n.id.clone(), EstadoDoNo { status: "pendente".into(), ..Default::default() })).collect();
     let e = Execucao { id: id.clone(), fluxo, projeto, projeto_id, entrada, pasta, branch, base, status: "rodando".into(), erro: None,
         criado_ms: agora, atualizado_ms: agora, nos, fila: vec![Passo { no: inicio, de: None }], pr_url: None, custo_usd: 0.0,
-        pastas_extras, custo_aceito: 0.0, parou_por_custo: false, aviso_seq: 0, aviso: None };
+        pastas_extras, custo_aceito: 0.0, parou_por_custo: false, aviso_seq: 0, aviso: None, evento_seq: 0 };
     gravar(state, &e);
     execucoes().lock().map_err(|_| anyhow!("execucoes"))?.insert(id.clone(), Arc::new(Mutex::new(e.clone())));
     soltar(state.clone(), id);
     Ok(e)
+}
+
+/// Muda o que o nó está fazendo; só vira linha na linha do tempo quando o texto muda de verdade.
+fn por_atividade(state: &EngineState, e: &mut Execucao, no: &str, texto: String) {
+    let Some(n) = e.nos.get_mut(no) else { return };
+    if n.atividade == texto { return; }
+    n.atividade.clone_from(&texto);
+    eventos::registrar(state, e, Some(no), "atividade", &texto);
+}
+
+fn definir_atividade(state: &EngineState, v: &Viva, no: &str, texto: &str) {
+    mexer(state, v, |e| por_atividade(state, e, no, texto.to_owned()));
 }
 
 fn soltar(state: Arc<EngineState>, id: String) { std::thread::spawn(move || executar(&state, &id)); }
@@ -265,6 +283,8 @@ fn executar(state: &Arc<EngineState>, id: &str) {
         // intervalo perderia a etapa que ainda não tinha voltado para a fila.
         mexer(state, &v, |e| for (passo, erro) in &erros {
             let pausado = erro.to_string() == PAUSADO;
+            let texto = if pausado { "Etapa pausada".to_owned() } else { erro.to_string() };
+            eventos::registrar(state, e, Some(&passo.no), if pausado { "aviso" } else { "falha" }, &texto);
             if let Some(n) = e.nos.get_mut(&passo.no) {
                 n.status = if pausado { "pausado".into() } else { "falhou".into() };
                 if !pausado { n.erro = Some(erro.to_string()); }
@@ -286,14 +306,19 @@ const PAUSADO: &str = "__pausado__";
 fn saida_de(e: &Execucao, no: &Option<String>) -> String { no.as_ref().and_then(|n| e.nos.get(n)).map(|n| n.saida.clone()).unwrap_or_default() }
 
 fn processar(state: &Arc<EngineState>, v: &Viva, passo: &Passo) -> Result<()> {
-    let (no, ctx, pasta, projeto) = {
+    let (no, ctx, pasta, projeto, run_id) = {
         let e = v.lock().map_err(|_| anyhow!("execucao"))?;
         let no = e.fluxo.nos.iter().find(|n| n.id == passo.no).cloned().ok_or_else(|| anyhow!("nó sumiu"))?;
         let ctx = Contexto { entrada: e.entrada.clone(), anterior: saida_de(&e, &passo.de),
             saidas: e.nos.iter().map(|(k, n)| (k.clone(), n.saida.clone())).collect() };
-        (no, ctx, e.pasta.clone(), e.projeto.clone())
+        (no, ctx, e.pasta.clone(), e.projeto.clone(), e.id.clone())
     };
-    mexer(state, v, |e| if let Some(n) = e.nos.get_mut(&no.id) { n.status = "rodando".into(); n.inicio_ms = now_ms(); n.erro = None; });
+    let corrida = mexer(state, v, |e| {
+        let corrida = e.nos.get_mut(&no.id).map_or(0, |n| { n.status = "rodando".into(); n.inicio_ms = now_ms(); n.erro = None; n.corridas += 1; n.corridas });
+        eventos::registrar(state, e, Some(&no.id), "inicio", &fluxos::rotulo(&no));
+        corrida
+    });
+    if corrida > 1 { eventos::separar_log(state, &run_id, &no.id, corrida); }
 
     let caminho: String = match no.tipo {
         TipoDeNo::Entrada => { definir_saida(state, v, &no.id, ctx.entrada.clone()); String::new() }
@@ -319,7 +344,11 @@ fn processar(state: &Arc<EngineState>, v: &Viva, passo: &Passo) -> Result<()> {
         }
         TipoDeNo::Aprovacao => {
             // Para aqui e espera: `aprovar` põe os próximos na fila e retoma.
-            mexer(state, v, |e| { e.status = "aguardando".into(); if let Some(n) = e.nos.get_mut(&no.id) { n.status = "aguardando".into(); n.saida = ctx.anterior.clone(); } });
+            mexer(state, v, |e| {
+                e.status = "aguardando".into();
+                if let Some(n) = e.nos.get_mut(&no.id) { n.status = "aguardando".into(); n.saida = ctx.anterior.clone(); }
+                eventos::registrar(state, e, Some(&no.id), "aprovacao", "Aguardando aprovação");
+            });
             return Ok(());
         }
         TipoDeNo::Sala => { let ata = rodar_sala(state, v, &no, &ctx, &pasta, &projeto)?; definir_saida(state, v, &no.id, ata); String::new() }
@@ -350,7 +379,10 @@ fn processar(state: &Arc<EngineState>, v: &Viva, passo: &Passo) -> Result<()> {
 }
 
 fn definir_saida(state: &EngineState, v: &Viva, no: &str, saida: String) {
-    mexer(state, v, |e| if let Some(n) = e.nos.get_mut(no) { n.saida = saida; n.status = "concluido".into(); n.fim_ms = now_ms(); });
+    mexer(state, v, |e| {
+        if let Some(n) = e.nos.get_mut(no) { n.saida = saida; n.status = "concluido".into(); n.fim_ms = now_ms(); }
+        eventos::registrar(state, e, Some(no), "fim", "Concluído");
+    });
 }
 
 /// Os próximos de `no`. Na saída `nao` de uma Condição, o revisor pode pedir só alguns ramos
@@ -552,7 +584,7 @@ fn rodar_agente(state: &Arc<EngineState>, v: &Viva, no: &str, agente: &str, prom
                 let Some(proxima) = escolher_conta(&perfis, &modelo.cli, &modelo.conta, &fora, true, |p| automatico::esgotada(state, p)) else {
                     return Err(anyhow!("Limite de uso em {} e nenhuma outra conta de {} com uso disponível. {erro}", p.name, modelo.cli));
                 };
-                mexer(state, v, |e| if let Some(n) = e.nos.get_mut(no) { n.atividade = format!("Limite em {}: trocando para {}…", p.name, proxima.name); });
+                definir_atividade(state, v, no, &format!("Limite em {}: trocando para {}…", p.name, proxima.name));
             }
             outro => return outro,
         }
@@ -585,8 +617,8 @@ fn rodar_na_conta(state: &EngineState, v: &Viva, no: &str, modelo: &omni_core::a
     mexer(state, v, |e| if let Some(n) = e.nos.get_mut(no) {
         n.cli = Some(modelo.cli.clone()); n.conta = perfil.map(|p| p.id.clone());
         n.modelo = (!modelo.modelo.is_empty()).then(|| modelo.modelo.clone()); n.esforco = (!modelo.esforco.is_empty()).then(|| modelo.esforco.clone());
-        n.atividade = format!("Abrindo {}…", modelo.cli);
     });
+    definir_atividade(state, v, no, &format!("Abrindo {}…", modelo.cli));
     {
         let mut stdin = filho.stdin.take().ok_or_else(|| anyhow!("sem stdin"))?;
         let texto = if retomar.is_some() { "Continue de onde parou.".to_owned() }
@@ -604,7 +636,7 @@ fn rodar_na_conta(state: &EngineState, v: &Viva, no: &str, modelo: &omni_core::a
         let Ok(ev) = serde_json::from_str::<Value>(&linha) else { continue };
         let sid = ev["session_id"].as_str().or_else(|| (ev["type"] == "thread.started").then(|| ev["thread_id"].as_str()).flatten());
         if let Some(sid) = sid { let sid = sid.to_owned(); mexer(state, v, |e| if let Some(n) = e.nos.get_mut(no) { if n.session_id.as_deref() != Some(&sid) { n.session_id = Some(sid); } }); }
-        if let Some(a) = atividade_do_evento(&ev) { mexer(state, v, |e| if let Some(n) = e.nos.get_mut(no) { n.atividade = a; }); }
+        if let Some(a) = atividade_do_evento(&ev) { definir_atividade(state, v, no, &a); }
         match ev["type"].as_str() {
             Some("result") => {
                 final_texto = ev["result"].as_str().unwrap_or_default().to_owned();
@@ -643,7 +675,7 @@ fn rodar_comando(state: &EngineState, v: &Viva, no: &str, comando: &str, pasta: 
     let mut filho = c.spawn().with_context(|| format!("não consegui rodar: {comando}"))?;
     let run_id = v.lock().map_err(|_| anyhow!("execucao"))?.id.clone();
     processos().lock().expect("processos").insert(format!("{run_id}/{no}"), filho.id());
-    mexer(state, v, |e| if let Some(n) = e.nos.get_mut(no) { n.atividade = format!("$ {comando}"); });
+    definir_atividade(state, v, no, &format!("$ {comando}"));
 
     let log = pasta_execucoes(state).join(&run_id);
     let _ = fs::create_dir_all(&log);
@@ -667,7 +699,7 @@ fn rodar_comando(state: &EngineState, v: &Viva, no: &str, comando: &str, pasta: 
         // ponytail: a atividade vai para o JSON da execução em disco — no máximo 2x por segundo.
         if !linha.trim().is_empty() && ultima_tela.elapsed() >= std::time::Duration::from_millis(500) {
             ultima_tela = std::time::Instant::now();
-            mexer(state, v, |e| if let Some(n) = e.nos.get_mut(no) { n.atividade = linha.chars().take(200).collect(); });
+            definir_atividade(state, v, no, &linha.chars().take(200).collect::<String>());
         }
     }
     for l in leitores { let _ = l.join(); }
@@ -782,7 +814,11 @@ pub fn aprovar(state: &Arc<EngineState>, id: &str, no: &str, sim: bool) -> Resul
     let v = viva(id)?;
     let ok = mexer(state, &v, |e| {
         let aguardando = e.status == "aguardando" && e.nos.get(no).is_some_and(|n| n.status == "aguardando");
-        if aguardando { if let Some(n) = e.nos.get_mut(no) { n.status = "concluido".into(); n.fim_ms = now_ms(); } e.status = "rodando".into(); }
+        if aguardando {
+            if let Some(n) = e.nos.get_mut(no) { n.status = "concluido".into(); n.fim_ms = now_ms(); }
+            e.status = "rodando".into();
+            eventos::registrar(state, e, Some(no), "aprovacao", if sim { "Aprovado" } else { "Recusado" });
+        }
         aguardando
     });
     if !ok { return Err(anyhow!("Este nó não está esperando aprovação")); }
@@ -802,6 +838,7 @@ pub fn historico(state: &EngineState, id: &str, no: &str) -> Result<Vec<Value>> 
         let Ok(ev) = serde_json::from_str::<Value>(linha) else { continue };
         match ev["type"].as_str() {
             Some("assistant") | Some("user") => itens.extend(omni_core::feed::items(&ev, "claude").into_iter().map(|i| json!(i))),
+            Some("volta") => itens.push(json!({"kind": "notice", "role": "assistant", "text": format!("Volta {}", ev["n"]), "separador": true})),
             Some("comando") => itens.push(json!({"kind": "notice", "role": "assistant", "text": ev["text"]})),
             Some("saida") => itens.push(json!({"kind": "tool", "role": "assistant", "tool": "›", "text": ev["text"]})),
             Some("result") => itens.push(json!({"kind": "notice", "role": "assistant", "text": format!("Terminou em {} turnos · US$ {:.2}", ev["num_turns"], ev["total_cost_usd"].as_f64().unwrap_or(0.0))})),
@@ -837,6 +874,9 @@ pub fn abrir_conversa(state: &Arc<EngineState>, id: &str, no: &str) -> Result<Te
             env: perfil.as_ref().map(omni_core::env_for).unwrap_or_default(), provider: Some(cli),
             profile_id: perfil.map(|p| p.id), conversation_id: None, external_session_id: Some(sid) })
 }
+
+#[path = "fluxos_eventos.rs"]
+pub mod eventos;
 
 #[cfg(test)]
 #[path = "fluxos_testes.rs"]

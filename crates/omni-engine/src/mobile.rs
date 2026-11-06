@@ -575,6 +575,7 @@ fn rotas() -> Router<Arc<EngineState>> {
         .route("/fluxos/execucoes",get(fluxos_listar).post(fluxos_iniciar).layer(DefaultBodyLimit::max(TEXTO_LONGO_MAX)))
         .route("/fluxos/execucoes/{id}",get(fluxos_obter))
         .route("/fluxos/execucoes/{id}/{acao}",post(fluxos_acao))
+        .route("/fluxos/execucoes/{id}/eventos",get(fluxos_eventos))
         .route("/fluxos/execucoes/{id}/nos/{no}/historico",get(fluxos_historico))
         .route("/fluxos/execucoes/{id}/nos/{no}/aprovar",post(fluxos_aprovar))
         .route("/fluxos/execucoes/{id}/nos/{no}/conversa",post(fluxos_conversa))
@@ -951,6 +952,13 @@ async fn fluxos_acao(State(state): State<Arc<EngineState>>, RoutePath((id, acao)
 async fn fluxos_historico(State(state): State<Arc<EngineState>>, RoutePath((id, no)): RoutePath<(String, String)>) -> Result<Json<Value>, ApiError> {
     tokio::task::spawn_blocking(move || super::fluxos::historico(&state,&id,&no).map(|h| Json(json!(h))).map_err(|e| error(StatusCode::BAD_REQUEST,&e.to_string())))
         .await.map_err(|_|error(StatusCode::INTERNAL_SERVER_ERROR,"Falha ao ler o histórico"))?
+}
+
+#[derive(Deserialize)] struct DesdeEvento { #[serde(default)] desde: u64 }
+/// Linha do tempo da execução, por cursor: `?desde=N` devolve só os eventos com `seq` maior que N.
+async fn fluxos_eventos(State(state): State<Arc<EngineState>>, RoutePath(id): RoutePath<String>, Query(q): Query<DesdeEvento>) -> Result<Json<Value>, ApiError> {
+    tokio::task::spawn_blocking(move || super::fluxos::eventos::ler_desde(&state,&id,q.desde).map(|e| Json(json!(e))).map_err(|e| error(StatusCode::BAD_REQUEST,&e.to_string())))
+        .await.map_err(|_|error(StatusCode::INTERNAL_SERVER_ERROR,"Falha ao ler a linha do tempo"))?
 }
 
 #[derive(Deserialize)] struct AprovarFluxo { sim: bool }
@@ -2788,6 +2796,10 @@ async fn asset(request: Request) -> Response {
 mod tests {
     use super::*;
     use tower::ServiceExt;
+
+    /// Rota estática ao lado de `{acao}`: se o roteador não aceitasse, o engine cairia ao subir.
+    #[test]
+    fn rota_de_eventos_convive_com_as_acoes_da_execucao() { let _ = rotas(); }
 
     #[cfg(not(windows))]
     #[test]

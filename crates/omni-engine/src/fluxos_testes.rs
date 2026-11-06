@@ -419,3 +419,106 @@ fn escrita_de_verdade_fora_da_lista_e_negada() {
     assert!(dir.path().join("liberada/ok.txt").exists() && dir.path().join("NOTA.md").exists(), "o que está na lista grava");
     assert!(!dir.path().join("fora/nao.txt").exists(), "fora da lista não grava");
 }
+
+// ---- Linha do tempo da execução (eventos.jsonl) ----
+
+fn fluxo_de_um_comando() -> Value {
+    json!({"id": "l", "nome": "L", "na_pasta_do_projeto": true, "nos": [
+        {"id": "e", "tipo": "entrada"}, comando("c", &conta("c")), {"id": "f", "tipo": "fim"}],
+        "conexoes": [{"de": "e", "para": "c"}, {"de": "c", "para": "f", "saida": "sim"}]})
+}
+
+fn so_eventos(amb: &Ambiente, id: &str, desde: u64) -> Vec<eventos::Evento> { eventos::ler_desde(&amb.state, id, desde).unwrap() }
+
+#[test]
+fn eventos_saem_em_ordem_e_com_cursor() {
+    let amb = ambiente();
+    let id = amb.iniciar(fluxo_de_um_comando());
+    ate_parar(&id);
+    let todos = so_eventos(&amb, &id, 0);
+    assert!(todos.windows(2).all(|p| p[1].seq == p[0].seq + 1), "{todos:?}");
+    assert_eq!(todos[0].seq, 1);
+    let pares: Vec<(Option<&str>, &str)> = todos.iter().filter(|e| matches!(e.tipo.as_str(), "inicio" | "fim")).map(|e| (e.no.as_deref(), e.tipo.as_str())).collect();
+    assert_eq!(pares, vec![(Some("e"), "inicio"), (Some("e"), "fim"), (Some("c"), "inicio"), (Some("c"), "fim"), (Some("f"), "inicio"), (Some("f"), "fim")]);
+    assert_eq!(obter(&id).unwrap().evento_seq, todos.last().unwrap().seq);
+}
+
+#[test]
+fn ler_desde_devolve_so_o_novo() {
+    let amb = ambiente();
+    let id = amb.iniciar(fluxo_de_um_comando());
+    ate_parar(&id);
+    let todos = so_eventos(&amb, &id, 0);
+    let corte = todos[2].seq;
+    let resto = so_eventos(&amb, &id, corte);
+    assert_eq!(resto, todos[3..].to_vec());
+    assert!(so_eventos(&amb, &id, todos.last().unwrap().seq).is_empty());
+}
+
+#[test]
+fn ler_desde_para_em_500() {
+    let amb = ambiente();
+    let id = amb.iniciar(fluxo_de_um_comando());
+    let mut e = ate_parar(&id);
+    e.id = "grande".into();
+    e.evento_seq = 0;
+    for i in 0..600 { eventos::registrar(&amb.state, &mut e, Some("c"), "aviso", &format!("n{i}")); }
+    let primeira = so_eventos(&amb, "grande", 0);
+    assert_eq!((primeira.len(), primeira[0].seq, primeira[499].seq), (500, 1, 500));
+    assert_eq!(so_eventos(&amb, "grande", 500).len(), 100);
+}
+
+#[test]
+fn id_invalido_recusa() {
+    let amb = ambiente();
+    assert!(eventos::ler_desde(&amb.state, "../fora", 0).is_err());
+    assert!(eventos::ler_desde(&amb.state, "", 0).is_err());
+    assert!(historico(&amb.state, "../fora", "c").is_err());
+}
+
+#[test]
+fn execucao_antiga_sem_eventos_devolve_vazio() {
+    let amb = ambiente();
+    assert!(so_eventos(&amb, "exec-antiga", 0).is_empty());
+    // E um arquivo de execução gravado antes do campo existir continua abrindo.
+    let antigo: Execucao = serde_json::from_value({
+        let mut j = serde_json::to_value(obter(&amb.iniciar(fluxo_de_um_comando())).unwrap()).unwrap();
+        j.as_object_mut().unwrap().remove("evento_seq");
+        j
+    }).unwrap();
+    assert_eq!(antigo.evento_seq, 0);
+}
+
+#[test]
+fn atividade_repetida_nao_vira_evento() {
+    let amb = ambiente();
+    let id = amb.iniciar(json!({"id": "a", "nome": "A", "na_pasta_do_projeto": true, "nos": [
+        {"id": "e", "tipo": "entrada"}, {"id": "ap", "tipo": "aprovacao"}, {"id": "f", "tipo": "fim"}],
+        "conexoes": [{"de": "e", "para": "ap"}, {"de": "ap", "para": "f", "saida": "sim"}]}));
+    assert_eq!(ate_parar(&id).status, "aguardando");
+    let v = viva(&id).unwrap();
+    let antes = so_eventos(&amb, &id, 0).len();
+    for texto in ["Lendo main.rs", "Lendo main.rs", "Lendo main.rs", "Editando main.rs", "Editando main.rs"] {
+        definir_atividade(&amb.state, &v, "ap", texto);
+    }
+    let novos: Vec<_> = so_eventos(&amb, &id, 0).into_iter().skip(antes).collect();
+    assert_eq!(novos.iter().map(|e| (e.tipo.as_str(), e.texto.as_str())).collect::<Vec<_>>(), vec![("atividade", "Lendo main.rs"), ("atividade", "Editando main.rs")]);
+    assert_eq!(obter(&id).unwrap().nos["ap"].atividade, "Editando main.rs");
+}
+
+#[test]
+fn volta_nova_separa_o_log() {
+    let amb = ambiente();
+    let id = amb.iniciar(json!({"id": "v", "nome": "V", "na_pasta_do_projeto": true, "nos": [
+        {"id": "e", "tipo": "entrada"}, comando("c", &conta_e_exige("c", "libera")), {"id": "f", "tipo": "fim"}],
+        "conexoes": [{"de": "e", "para": "c"}, {"de": "c", "para": "f", "saida": "sim"}]}));
+    assert_eq!(ate_parar(&id).status, "falhou");
+    fs::write(amb.projeto.join("libera"), "").unwrap();
+    retomar(&amb.state, &id).unwrap();
+    assert_eq!(ate_parar(&id).status, "concluido");
+    let itens = historico(&amb.state, &id, "c").unwrap();
+    let separadores: Vec<String> = itens.iter().filter(|i| i["separador"] == true).map(|i| i["text"].as_str().unwrap_or_default().to_owned()).collect();
+    assert_eq!(separadores, vec!["Volta 2".to_owned()], "{itens:?}");
+    let pos = itens.iter().position(|i| i["separador"] == true).unwrap();
+    assert!(pos > 0 && pos < itens.len() - 1, "o separador fica entre as duas voltas");
+}
