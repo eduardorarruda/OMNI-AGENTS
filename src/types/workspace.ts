@@ -7,6 +7,7 @@ export type PaneKind =
   | "git-diff"
   | "git-graph"
   | "kanban"
+  | "grafo"
   | "fluxos"
   | "logs"
   | "docker-logs";

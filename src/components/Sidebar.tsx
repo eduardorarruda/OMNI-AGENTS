@@ -11,6 +11,7 @@ import {
   ImageIcon,
   GitBranchIcon,
   KanbanIcon,
+  ShapesIcon,
   ReloadIcon,
   ServerIcon,
   SlidersIcon as Sliders,
@@ -38,6 +39,7 @@ import { GitPanel } from "./GitPanel";
 import { DockerPanel } from "./DockerPanel";
 import { ServidoresPanel } from "./ServidoresPanel";
 import { KanbanPanel } from "./KanbanPanel";
+import { GrafoPanel } from "../features/grafo/GrafoPanel";
 import { SkillsList } from "./SkillsList";
 import { AvatarDoProjeto, SimboloDoProjeto } from "./EscolherIcone";
 import { useProjetoDaPasta } from "../features/projects/projetosContext";
@@ -49,7 +51,7 @@ import type { HistoryEntry } from "../features/history/historyService";
 
 /** Abas da lateral, uma por ícone na fileira do topo. "geral" junta atenção, workspaces, projetos,
  *  conversas e terminais; as outras são uma ferramenta do projeto cada. */
-type Aba = "geral" | "files" | "git" | "docker" | "servidores" | "skills" | "kanban";
+type Aba = "geral" | "files" | "git" | "docker" | "servidores" | "skills" | "kanban" | "grafo";
 const ABAS: Record<Aba, { rotulo: string; icone: React.ComponentType<{ className?: string; "aria-hidden"?: boolean }>; precisaProjeto: boolean }> = {
   geral: { rotulo: "Conversas", icone: ChatIcon, precisaProjeto: false },
   files: { rotulo: "Arquivos", icone: FolderIcon, precisaProjeto: true },
@@ -58,6 +60,7 @@ const ABAS: Record<Aba, { rotulo: string; icone: React.ComponentType<{ className
   servidores: { rotulo: "Servidores locais", icone: ServerIcon, precisaProjeto: false },
   skills: { rotulo: "Skills", icone: BookIcon, precisaProjeto: true },
   kanban: { rotulo: "Kanban", icone: KanbanIcon, precisaProjeto: true },
+  grafo: { rotulo: "Grafo", icone: ShapesIcon, precisaProjeto: false },
 };
 const CHAVE_ABAS = "omni-lateral-abas";
 /** Ordem salva das abas (arrastando os ícones); aba nova de uma versão futura entra no fim. */
@@ -140,6 +143,7 @@ interface SidebarProps {
   onOpenGitGraph: () => void;
   kanban: KanbanState;
   onOpenKanban: () => void;
+  onOpenGrafo?: () => void;
 }
 
 export function Sidebar({
@@ -189,6 +193,7 @@ export function Sidebar({
   onOpenGitGraph,
   kanban,
   onOpenKanban,
+  onOpenGrafo,
 }: SidebarProps) {
   const navRef = useStagger<HTMLDivElement>("[data-nav-item]");
   const naoVistas = new Set(attention.map((item) => item.conversationKey));
@@ -516,6 +521,8 @@ Arraste para mudar a ordem`}
                   <SkillsList projectPath={activeProjectPath} onOpenFile={onOpenFile} />
                 ) : id === "git" ? (
                   <GitPanel projectPath={activeProjectPath} onOpenDiff={onOpenGitDiff} onOpenGraph={onOpenGitGraph} />
+                ) : id === "grafo" ? (
+                  <GrafoPanel onAbrirGrande={onOpenGrafo} />
                 ) : (
                   <KanbanPanel projectId={activeProjectId} kanban={kanban} onOpenBoard={onOpenKanban} />
                 )}

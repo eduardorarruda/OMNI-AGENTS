@@ -1,6 +1,6 @@
 //! Tela Conhecimento: a base mora no crate `omni-rag`; aqui só ficam a importação em segundo plano
 //! e o registro do MCP no Claude.
-use omni_rag::{caminho_padrao, ganchos, Base, Fonte, Resultado};
+use omni_rag::{caminho_padrao, ganchos, grafo::{grafo_com_cache, Grafo}, Base, Fonte, Resultado};
 use serde::Serialize;
 use serde_json::Value;
 use std::{
@@ -45,6 +45,12 @@ pub async fn rag_adicionar(caminhos: Vec<String>) -> Result<(), String> {
 #[tauri::command]
 pub async fn rag_remover(id: i64) -> Result<(), String> {
     bloqueante(move || abrir()?.remover(id)).await
+}
+
+/// Notas e ligações da memória. É comando e não rota: o engine não depende do `omni-rag`.
+#[tauri::command]
+pub async fn memoria_grafo(projeto: Option<String>) -> Result<Grafo, String> {
+    bloqueante(move || Ok(grafo_com_cache(&abrir()?, projeto.as_deref()))).await
 }
 
 #[tauri::command]
