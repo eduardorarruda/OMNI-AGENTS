@@ -991,11 +991,12 @@ export const ConversationDetail = memo(function ConversationDetail({ conversatio
   async function interromper() {
     setError(null);
     try {
-      const parou = await request<{ limpou?: boolean; parou?: boolean }>(`/conversas/${encodeURIComponent(conversation.id)}/parar`, { method: "POST" });
+      const parou = await request<{ limpou?: boolean; parou?: boolean; voltou_para_fila?: boolean }>(`/conversas/${encodeURIComponent(conversation.id)}/parar`, { method: "POST" });
       // Em `falhaEnvio`, não em `error`: a leitura periódica limpa o `error` em segundos.
       if (parou?.parou === false) setFalhaEnvio("O agente não parou: ele segue trabalhando no terminal. Tente Parar de novo ou encerre pelo terminal.");
-      // A CLI devolveu o prompt ao campo dela e o engine o apagou lá: ele volta para este campo.
-      if (parou?.limpou && ultimoTexto.current) {
+      // A CLI devolveu o prompt ao campo dela e o engine o apagou lá: ele volta para este campo. Se era
+      // uma entrega da fila, ela voltou para a fila, e `ultimoTexto` é outra mensagem.
+      if (parou?.limpou && !parou.voltou_para_fila && ultimoTexto.current) {
         const texto = ultimoTexto.current;
         setText((atual) => atual.trim() ? atual : texto);
         descartarEnviado(null);

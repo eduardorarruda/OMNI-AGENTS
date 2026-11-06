@@ -42,7 +42,11 @@ pub(super) fn carregar(dir: &Path) -> Filas {
             .and_then(|bytes| serde_json::from_slice::<FilaDaConversa>(&bytes).map_err(|e| e.to_string()));
         match lida {
             Ok(mut fila) => { fila.devolver(); filas.por_conversa.insert(fila.conversa.clone(),fila); }
-            Err(motivo) => eprintln!("fila ilegível em {}: {motivo}",arquivo.display()),
+            // Fica ao lado: a próxima mudança da conversa gravaria por cima do que ainda dá para salvar.
+            Err(motivo) => {
+                eprintln!("fila ilegível em {}: {motivo}",arquivo.display());
+                if let Err(erro) = std::fs::rename(&arquivo,arquivo.with_extension("json.ruim")) { eprintln!("fila ilegível não separada: {erro}"); }
+            }
         }
     }
     filas
@@ -65,6 +69,20 @@ fn mexer<R>(state: &EngineState, conversa: &str, muda: impl FnOnce(&mut FilaDaCo
         filas.por_conversa.insert(conversa.to_owned(),nova);
     }
     Ok(resposta)
+}
+
+/// Para o que já aconteceu e não dá para recusar: vale em memória mesmo sem gravar, senão a conversa
+/// fica presa até religar. O disco volta a bater na próxima mudança.
+fn registrar<R>(state: &EngineState, conversa: &str, muda: impl FnOnce(&mut FilaDaConversa) -> R) -> R {
+    let mut filas = state.mobile.filas.lock().expect("filas poisoned");
+    let atual = filas.por_conversa.get(conversa).cloned().unwrap_or_else(|| FilaDaConversa::nova(conversa));
+    let mut nova = atual.clone();
+    let resposta = muda(&mut nova);
+    if nova != atual {
+        if let Err(motivo) = gravar(state,&nova) { eprintln!("fila de {conversa} não gravada: {motivo}"); }
+        filas.por_conversa.insert(conversa.to_owned(),nova);
+    }
+    resposta
 }
 
 fn turnos_de(sessao: &LiveSession) -> u64 { sessao.interaction.lock().expect("screen poisoned").turnos_iniciados }
@@ -114,7 +132,10 @@ pub(super) fn guardar_pedido(state: &Arc<EngineState>, conversa: &str, chave: &s
 fn entregar(state: &Arc<EngineState>, conversa: &str) -> std::io::Result<()> {
     let Ok((_,Some(sessao))) = current(state,conversa) else { return Ok(()) };
     let capacidade = interaction::capabilities(&sessao);
-    if !capacidade.prompt { return Ok(()); }
+    let turno_visto = sessao.interaction.lock().expect("screen poisoned").turno_visto_em_ms;
+    if !capacidade.prompt || now_ms().saturating_sub(turno_visto) < crate::ANSWERED_IDLE_MS { return Ok(()); }
+    // Fecha o turno que acabou: com ele aberto, o da próxima mensagem não subiria `turnos_iniciados`.
+    crate::settle(&sessao);
     let turnos = turnos_de(&sessao);
     let mut acoes = state.mobile.actions.lock().expect("actions poisoned");
     if prompt_em_andamento(&acoes,conversa) { return Ok(()); }
@@ -130,10 +151,20 @@ fn entregar(state: &Arc<EngineState>, conversa: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-pub(super) fn entregar_proximas(state: &Arc<EngineState>) {
-    let pendentes: Vec<String> = state.mobile.filas.lock().expect("filas poisoned").por_conversa.values()
+/// Só em memória: sessão morta não pode custar uma leitura do índice a cada volta do laço.
+fn tem_sessao_viva(state: &EngineState, conversa: &str) -> bool {
+    state.sessions.lock().expect("sessions poisoned").values().any(|entrada| matches!(entrada,
+        SessionEntry::Live(sessao) if sessao.meta.lock().is_ok_and(|meta| meta.conversation_id.as_deref() == Some(conversa))))
+}
+
+fn entregaveis(state: &EngineState) -> Vec<String> {
+    let prontas: Vec<String> = state.mobile.filas.lock().expect("filas poisoned").por_conversa.values()
         .filter(|fila| fila.pode_entregar()).map(|fila| fila.conversa.clone()).collect();
-    for conversa in pendentes {
+    prontas.into_iter().filter(|conversa| tem_sessao_viva(state,conversa)).collect()
+}
+
+pub(super) fn entregar_proximas(state: &Arc<EngineState>) {
+    for conversa in entregaveis(state) {
         if let Err(motivo) = entregar(state,&conversa) { eprintln!("fila de {conversa} não entregue: {motivo}"); }
     }
 }
@@ -159,18 +190,19 @@ fn desfecho(state: &Arc<EngineState>, action: &Action, resultado: Result<()>) ->
     let entrega = action.key.starts_with(PREFIXO_DA_ENTREGA);
     match resultado {
         Ok(()) if entrega => {
-            if let Err(motivo) = mexer(state,conversa,FilaDaConversa::entregue) { eprintln!("fila de {conversa} não gravada: {motivo}"); }
+            registrar(state,conversa,|fila| fila.entregue_em(now_ms()));
             ("sent",None)
         }
         Ok(()) => {
             // Mensagem direta também abre turno: a seguinte não pode colar em cima dela.
             let turnos = current(state,conversa).ok().and_then(|(_,sessao)| sessao).map_or(0,|sessao| turnos_de(&sessao));
             state.mobile.filas.lock().expect("filas poisoned").aguardos.insert(conversa.clone(),AguardoDoTurno { desde_ms: now_ms(), turnos });
+            registrar(state,conversa,FilaDaConversa::envio_direto);
             ("sent",None)
         }
         Err(erro) if entrega => {
             state.mobile.filas.lock().expect("filas poisoned").aguardos.remove(conversa);
-            if let Err(motivo) = mexer(state,conversa,FilaDaConversa::devolver) { eprintln!("fila de {conversa} não gravada: {motivo}"); }
+            registrar(state,conversa,FilaDaConversa::devolver);
             ("guardada",Some(erro.to_string()).filter(|_| !erro.is::<TelaNaoLivre>()))
         }
         // O agente começou a trabalhar entre a chegada e a colagem.
@@ -189,9 +221,19 @@ pub(super) fn concluir_acao(state: &Arc<EngineState>, action: &Action, resultado
     }
 }
 
-/// Depois de Parar nada entra sozinho. Falha ao gravar não desfaz o Parar: o agente já parou.
-pub(super) fn pausar(state: &EngineState, conversa: &str) {
-    if let Err(motivo) = mexer(state,conversa,FilaDaConversa::pausar) { eprintln!("fila de {conversa} não pausada: {motivo}"); }
+/// Depois de Parar nada entra sozinho. Vem antes do Esc: conferir o campo leva 1,5 s, e nesse tempo o
+/// agente já está livre para o laço de entrega.
+pub(super) fn pausar(state: &EngineState, conversa: &str) { registrar(state,conversa,FilaDaConversa::pausar); }
+
+/// O Parar apagou do campo o que a CLI devolveu. Se foi a última entrega da fila, ela volta para lá.
+pub(super) fn recolher_ultima(state: &EngineState, conversa: &str) -> bool {
+    registrar(state,conversa,|fila| fila.recolher_ultima(now_ms()))
+}
+
+/// Entrega que já estava na fila de ações quando o Parar chegou não cola depois do Esc.
+pub(super) fn entrega_pausada(state: &EngineState, action: &Action) -> bool {
+    action.key.starts_with(PREFIXO_DA_ENTREGA)
+        && state.mobile.filas.lock().expect("filas poisoned").por_conversa.get(&action.conversation_id).is_some_and(|fila| fila.pausada)
 }
 
 /// O que a tela mostra: `GET /fila` e a timeline devolvem isto.

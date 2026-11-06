@@ -24,6 +24,9 @@ pub const ENTREGUES_GUARDADOS: usize = 64;
 pub const ITENS_MAX: usize = 128;
 /// Depois de uma entrega, quanto esperar o turno aparecer. `/comando` local não abre turno nenhum.
 pub const ESPERA_DO_TURNO_MS: u64 = 10_000;
+/// A CLI só devolve ao campo o que ainda não leu, logo depois da entrega. Depois disso, texto no campo
+/// é de quem digitou no PC, e o Parar não pode trazer de volta uma mensagem já respondida.
+pub const JANELA_DE_RECOLHER_MS: u64 = 30_000;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FilaDaConversa {
@@ -34,7 +37,12 @@ pub struct FilaDaConversa {
     /// Saiu da fila e está sendo colada. Volta para a frente se a entrega falhar.
     #[serde(default)] pub entregando: Option<ItemDaFila>,
     #[serde(default)] pub entregues: Vec<String>,
+    /// A última que entrou pela fila, inteira: o Parar pode ter de trazê-la de volta.
+    #[serde(default)] pub ultima_entregue: Option<UltimaEntregue>,
 }
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UltimaEntregue { pub item: ItemDaFila, pub em_ms: u64 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tirada { Tirada, JaEntregue, Ausente }
@@ -69,7 +77,7 @@ impl FilaDaConversa {
         Tirada::Tirada
     }
     /// Pausa só o que existe: Parar sem nada guardado não deixa marca.
-    pub fn pausar(&mut self) { self.pausada = !self.itens.is_empty(); }
+    pub fn pausar(&mut self) { self.pausada = !self.vazia(); }
     pub fn pode_entregar(&self) -> bool { !self.pausada && self.entregando.is_none() && !self.itens.is_empty() }
     /// A próxima da vez, já marcada como em entrega: a partir daqui o X responde "já foi".
     pub fn proxima(&mut self) -> Option<ItemDaFila> {
@@ -78,11 +86,25 @@ impl FilaDaConversa {
         self.entregando = Some(item.clone());
         Some(item)
     }
-    pub fn entregue(&mut self) {
+    pub fn entregue_em(&mut self, agora_ms: u64) {
         let Some(item) = self.entregando.take() else { return };
-        self.entregues.push(item.id);
+        self.entregues.push(item.id.clone());
         let sobra = self.entregues.len().saturating_sub(ENTREGUES_GUARDADOS);
         self.entregues.drain(..sobra);
+        self.ultima_entregue = Some(UltimaEntregue { item, em_ms: agora_ms });
+        if self.itens.is_empty() { self.pausada = false; }
+    }
+    /// Mensagem que não veio da fila entrou depois: o que a CLI devolver agora é dela.
+    pub fn envio_direto(&mut self) { self.ultima_entregue = None; }
+    /// A CLI devolveu ao campo a última entregue e o Parar apagou: ela volta para a frente, pausada.
+    pub fn recolher_ultima(&mut self, agora_ms: u64) -> bool {
+        let recente = self.ultima_entregue.as_ref().is_some_and(|ultima| agora_ms.saturating_sub(ultima.em_ms) < JANELA_DE_RECOLHER_MS);
+        if !recente { return false; }
+        let Some(ultima) = self.ultima_entregue.take() else { return false };
+        self.entregues.retain(|id| *id != ultima.item.id);
+        self.itens.insert(0, ultima.item);
+        self.pausada = true;
+        true
     }
     pub fn devolver(&mut self) {
         if let Some(item) = self.entregando.take() { self.itens.insert(0, item); }
@@ -129,7 +151,7 @@ mod tests {
         let mut fila = fila(&["a", "b"]);
         assert_eq!(fila.proxima().unwrap().id, "a");
         assert!(fila.proxima().is_none(), "com uma em entrega, a outra espera");
-        fila.entregue();
+        fila.entregue_em(1);
         assert_eq!(fila.proxima().unwrap().id, "b");
     }
 
@@ -143,7 +165,7 @@ mod tests {
 
     #[test] fn tirar_distingue_tirada_entregue_e_ausente() {
         let mut fila = fila(&["a", "b", "c"]);
-        fila.proxima(); fila.entregue();
+        fila.proxima(); fila.entregue_em(1);
         fila.proxima();
         assert_eq!(fila.tirar("c"), Tirada::Tirada);
         assert_eq!(fila.tirar("c"), Tirada::Ausente);
@@ -176,11 +198,50 @@ mod tests {
         assert!(!fila.pausada);
     }
 
+    #[test] fn parar_com_a_unica_em_entrega_tambem_pausa() {
+        let mut fila = fila(&["a"]);
+        fila.proxima();
+        fila.pausar();
+        assert!(fila.pausada);
+        fila.devolver();
+        assert!(fila.pausada, "voltou para a fila e segue parada");
+        assert!(fila.proxima().is_none());
+    }
+
+    #[test] fn pausa_nao_sobra_depois_que_a_ultima_entrou() {
+        let mut fila = fila(&["a"]);
+        fila.proxima();
+        fila.pausar();
+        fila.entregue_em(1);
+        assert!(!fila.pausada);
+    }
+
+    #[test] fn recolher_traz_a_ultima_para_a_frente_pausada_e_o_x_volta_a_valer() {
+        let mut fila = fila(&["a", "b"]);
+        fila.proxima(); fila.entregue_em(1_000);
+        assert!(fila.recolher_ultima(1_500));
+        assert_eq!(fila.itens.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(), ["a", "b"]);
+        assert!(fila.pausada);
+        assert!(!fila.recolher_ultima(1_500), "não recolhe duas vezes");
+        assert_eq!(fila.tirar("a"), Tirada::Tirada);
+    }
+
+    #[test] fn recolher_ignora_entrega_antiga_e_entrega_superada_por_envio_direto() {
+        let mut antiga = fila(&["a"]);
+        antiga.proxima(); antiga.entregue_em(1_000);
+        assert!(!antiga.recolher_ultima(1_000 + JANELA_DE_RECOLHER_MS));
+        let mut superada = fila(&["a"]);
+        superada.proxima(); superada.entregue_em(1_000);
+        superada.envio_direto();
+        assert!(!superada.recolher_ultima(1_500));
+        assert!(superada.itens.is_empty());
+    }
+
     #[test] fn lembra_so_as_ultimas_entregues() {
         let mut fila = FilaDaConversa::nova("c");
         for n in 0..ENTREGUES_GUARDADOS + 5 {
             fila.guardar(item(&n.to_string()));
-            fila.proxima(); fila.entregue();
+            fila.proxima(); fila.entregue_em(1);
         }
         assert_eq!(fila.entregues.len(), ENTREGUES_GUARDADOS);
         assert_eq!(fila.tirar("0"), Tirada::Ausente);

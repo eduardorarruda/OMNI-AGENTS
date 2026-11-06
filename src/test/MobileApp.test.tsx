@@ -732,9 +732,10 @@ describe("fila do OMNI", () => {
       itens: [] as ItemFalso[], acoes: [] as { id: string; state: string; error: string | null }[],
       pausada: false, aviso: null as string | null, posts: 0, guardarNoEnvio: false,
       deletes: [] as string[], respostaDoDelete: null as Response | null,
+      respostaDoParar: { limpou: true, parou: true } as Record<string, boolean>,
     };
     vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
-      if (init?.method === "POST" && url.endsWith("/parar")) return new Response(JSON.stringify({ limpou: true, parou: true }));
+      if (init?.method === "POST" && url.endsWith("/parar")) return new Response(JSON.stringify(vivo.respostaDoParar));
       if (init?.method === "DELETE") {
         vivo.deletes.push(url);
         if (vivo.respostaDoDelete) return vivo.respostaDoDelete;
@@ -936,6 +937,24 @@ describe("fila do OMNI", () => {
 
     expect(screen.getByLabelText("Sua resposta")).toHaveValue("");
     expect(within(screen.getByLabelText("Mensagens na fila")).getByText("segue guardada")).toBeInTheDocument();
+  });
+
+  it("Parar que devolve a mensagem à fila não põe outro texto no campo", async () => {
+    const vivo = servidorVivo();
+    await abrir();
+    await enviar("mandada antes");
+    vivo.transcript = [{ id: "c:0", role: "user", text: "mandada antes", provider: "claude" }];
+    await waitFor(() => expect(document.querySelectorAll(".bubble-pending")).toHaveLength(0), { timeout: 5_000 });
+    ocupar(vivo);
+    vivo.respostaDoParar = { limpou: true, parou: true, voltou_para_fila: true };
+    await screen.findByRole("button", { name: /Parar/ }, { timeout: 5_000 });
+
+    vivo.itens = [{ id: "i1", texto: "veio da fila", anexos: [], em_ms: 1 }];
+    vivo.pausada = true;
+    await act(async () => { await userEvent.click(screen.getByRole("button", { name: /Parar/ })); });
+
+    expect(within(await screen.findByLabelText("Mensagens na fila")).getByText("veio da fila")).toBeInTheDocument();
+    expect(screen.getByLabelText("Sua resposta")).toHaveValue("");
   });
 
   it("fila pausada e sessão encerrada dizem o que está acontecendo", async () => {

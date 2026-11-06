@@ -1431,16 +1431,18 @@ fn interromper(state: &Arc<EngineState>, sessao: &LiveSession, sessao_id: &str, 
 /// O "parar" da conversa. `limpou`: o prompt que a CLI devolveu ao campo foi apagado (com texto lá,
 /// o próximo prompt dava "não reconhecida") e a página o devolve ao campo dela. `parou`: a tela não
 /// mostra mais nada em andamento; `false` é o agente seguindo, e o processo não é morto daqui porque
-/// entre os filhos da CLI não dá para separar o trabalho dos servidores MCP.
+/// entre os filhos da CLI não dá para separar o trabalho dos servidores MCP. `voltou_para_fila`: o que
+/// foi apagado era a última entrega da fila, que voltou para lá; a página não mexe no campo.
 async fn parar(State(state): State<Arc<EngineState>>, RoutePath(id): RoutePath<String>) -> Result<Json<Value>, ApiError> {
     tokio::task::spawn_blocking(move || {
         let (_, sessao) = current(&state,&id)?;
         let sessao = sessao.ok_or_else(||error(StatusCode::CONFLICT,"Sessão não está aberta no PC"))?;
         let (sessao_id, provider) = sessao.meta.lock().map(|meta| (meta.id.clone(), meta.provider.clone().unwrap_or_default()))
             .map_err(|_|error(StatusCode::INTERNAL_SERVER_ERROR,"Sessão indisponível"))?;
-        let (limpou, parou) = interromper(&state,&sessao,&sessao_id,&provider)?;
         fila::pausar(&state,&id);
-        Ok(Json(json!({"ok":true,"limpou":limpou,"parou":parou})))
+        let (limpou, parou) = interromper(&state,&sessao,&sessao_id,&provider)?;
+        let voltou_para_fila = limpou && fila::recolher_ultima(&state,&id);
+        Ok(Json(json!({"ok":true,"limpou":limpou,"parou":parou,"voltou_para_fila":voltou_para_fila})))
     }).await.map_err(|_|error(StatusCode::INTERNAL_SERVER_ERROR,"Falha ao parar"))?
 }
 /// Renomear a conversa. Vale para o celular e para a web de computador; o desktop chega aqui pelo
@@ -1805,6 +1807,7 @@ fn execute(state:&Arc<EngineState>, action:&Action) -> Result<()> {
         }
         ActionKind::Ajustes(ajustes) => reabrir_com(state,&action.conversation_id,ajustes),
         ActionKind::Retomar(plano) => retomar(state,action,plano),
+        ActionKind::Prompt(_) if fila::entrega_pausada(state,action) => Err(fila::TelaNaoLivre("Fila pausada").into()),
         _ => execute_checked(state,action,interaction::provider_running),
     }
 }
