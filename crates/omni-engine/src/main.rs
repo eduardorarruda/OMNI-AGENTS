@@ -3,6 +3,7 @@ mod conta_gh;
 mod contas_tokens;
 mod fluxos;
 mod interaction;
+mod kanban;
 mod mobile;
 mod previa;
 mod voz;

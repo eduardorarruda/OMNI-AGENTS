@@ -27,6 +27,8 @@ export interface KanbanTask {
   resultNote: string | null;
   createdAt: string;
   updatedAt: string;
+  /** Preenchido nas tarefas que vieram de uma origem externa. `sumiu`: a origem não devolve mais a tarefa. */
+  externa?: { origem: string; id: string; sumiu: boolean };
 }
 
 export interface KanbanState {
@@ -52,4 +54,6 @@ export type KanbanAction =
   | { type: "TASK_STARTED"; id: string }
   | { type: "TASK_FINISHED"; id: string; outcome: "done" | "failed"; resultNote: string }
   | { type: "RECORD_FAILURE" }
-  | { type: "CLEAR_PAUSE" };
+  | { type: "CLEAR_PAUSE" }
+  /** Troca o estado inteiro pelo que o engine guarda (carga inicial ou desfazer uma gravação que falhou). */
+  | { type: "REPLACE_STATE"; state: KanbanState };

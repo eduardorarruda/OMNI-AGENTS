@@ -118,5 +118,7 @@ export function kanbanReducer(state: KanbanState, action: KanbanAction): KanbanS
     }
     case "CLEAR_PAUSE":
       return { ...state, pausedUntil: null, failureTimestamps: [] };
+    case "REPLACE_STATE":
+      return action.state;
   }
 }
