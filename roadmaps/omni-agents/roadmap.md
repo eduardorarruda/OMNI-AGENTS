@@ -446,4 +446,6 @@ Design aprovado (`docs/superpowers/specs/2026-11-06-omni-oito-itens-design.md`).
 - [x] Fase 7: X para tirar mensagem da fila (fila do OMNI por padrão; fila da CLI só onde a tecla for medida).
 - [x] Revisão final do branch: aba "O que roda" não apaga mais o workspace (e aba desconhecida sai sozinha); migração do Kanban guarda cartão grande inteiro e avisa quantos ficaram de fora; pegar cartão externo marca antes; `/segundo-plano` não lê o índice em repouso; atividade de fluxo sem segredo.
 
+- [x] Build local em 2026-11-06 (1326703, versão 0.7.12): `.deb`, `.rpm` e AppImage em `target/release/bundle/`. No CachyOS o AppImage só sai com `NO_STRIP=1` (sem isso, "failed to run linuxdeploy"). O `tauri build` termina com erro de assinatura por falta de `TAURI_SIGNING_PRIVATE_KEY`, depois de gerar os pacotes; assinar é com a release. Não foi aberto nem instalado. Pendente: conferir `historico` em `crates/omni-engine/src/fluxos.rs` (comando e saída sem máscara, não verificado se chega ao celular), `GET /kanban` acima de 4 MB chega vazio, `retomar_filhas` recursiva, cobertura de 80% não medida.
+
 Próximo passo: conferir ao vivo o que os testes não alcançam (CLI real, tela real no acervo, marca chegando ao MCP no Codex, macOS e Windows). Decisão de produto em aberto: botão Descartar na triagem. Novidades escritas como 0.7.13; a versão só sobe na release.
