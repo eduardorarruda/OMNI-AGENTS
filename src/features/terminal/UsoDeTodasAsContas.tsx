@@ -9,6 +9,7 @@ import type { Usage, UsageWindow } from "./AccountUsage";
 import { listProfiles, type Profile } from "./terminalService";
 import { timeAgo } from "./AgentUsageStatus";
 import { AGENTES_COM_USO, NOME_DO_AGENTE } from "../../mobile/api";
+import { DetalheDaConta, GATILHO_DO_DETALHE } from "./DetalheDaConta";
 
 /** Medidor de uma janela: rótulo, quando renova e o %, com a barra embaixo na cor da faixa (verde/amarelo/vermelho). */
 export function Medidor({ rotulo, janela }: { rotulo: string; janela: UsageWindow | null }) {
@@ -52,6 +53,7 @@ export function UsoDeTodasAsContas({ engineOnline, contaAtiva }: { engineOnline:
   const [usos, setUsos] = useState<Record<string, Usage>>({});
   const [erros, setErros] = useState<Record<string, string>>({});
   const [atualizando, setAtualizando] = useState<Set<string>>(new Set());
+  const [detalhe, setDetalhe] = useState<string | null>(null);
   const [posicao, setPosicao] = useState<{ right: number; top: number } | null>(null);
   const botao = useRef<HTMLButtonElement>(null);
   const painel = useRef<HTMLDivElement>(null);
@@ -130,6 +132,7 @@ export function UsoDeTodasAsContas({ engineOnline, contaAtiva }: { engineOnline:
     }
   }
 
+  const detalheDaConta = contas.find((conta) => conta.id === detalhe) ?? null;
   const ias = ordenar(contas);
   // Posição de cada grupo e cartão na cascata de entrada.
   let ordem = 0;
@@ -185,7 +188,9 @@ export function UsoDeTodasAsContas({ engineOnline, contaAtiva }: { engineOnline:
                             <span className="uso-avatar" aria-hidden>{conta.name.slice(0, 1).toUpperCase()}</span>
                             <span className="min-w-0 flex-1">
                               <span className="flex min-w-0 items-center gap-1.5">
-                                <span className="truncate text-[12px] font-bold text-text-primary">{conta.name}</span>
+                                <button type="button" {...{ [GATILHO_DO_DETALHE]: "" }} aria-label={`Ver detalhe da conta ${conta.name}`}
+                                  title="Ver o detalhe da conta" onClick={() => setDetalhe((atual) => (atual === conta.id ? null : conta.id))}
+                                  className="truncate text-left text-[12px] font-bold text-text-primary hover:text-accent">{conta.name}</button>
                                 {emUso && <span className="uso-selo">em uso</span>}
                               </span>
                               {conta.email && <span className="block truncate text-[10px] text-text-muted">{conta.email}</span>}
@@ -217,6 +222,10 @@ export function UsoDeTodasAsContas({ engineOnline, contaAtiva }: { engineOnline:
           </div>
         </div>,
         document.body,
+      )}
+      {aberto && detalheDaConta && (
+        <DetalheDaConta uso={usos[detalheDaConta.id] ?? null} tokens={null} onFechar={() => setDetalhe(null)}
+          conta={{ nome: detalheDaConta.name, email: detalheDaConta.email, provider: detalheDaConta.provider }} />
       )}
     </>
   );

@@ -10,6 +10,7 @@ export { resetShort, usageTone };
 import { useSession } from "./sessionProviders";
 import { listProfiles, type Profile } from "./terminalService";
 import { AGENTES_COM_USO, NOME_DO_AGENTE } from "../../mobile/api";
+import { DetalheDaConta, GATILHO_DO_DETALHE } from "./DetalheDaConta";
 
 export function timeAgo(ms: number, now: number) {
   const seconds = Math.max(0, Math.round((now - ms) / 1000));
@@ -76,6 +77,7 @@ export function AgentUsageStatus({ engineOnline, activeSessionId }: AgentUsageSt
   const [busy, setBusy] = useState(false);
   const [now, setNow] = useState(Date.now());
   const [attemptedAt, setAttemptedAt] = useState<number | null>(null);
+  const [detalheAberto, setDetalheAberto] = useState(false);
 
   useEffect(() => {
     if (!engineOnline) return;
@@ -207,9 +209,18 @@ export function AgentUsageStatus({ engineOnline, activeSessionId }: AgentUsageSt
       <span className="hidden md:inline rodape-uso-agente">{rotulo}</span>
       <span className="rodape-uso-div" aria-hidden />
       {conta && (
-        <span className="max-w-32 truncate font-normal text-text-primary" title={`Conta: ${conta.name}${conta.email ? ` (${conta.email})` : ""}`} aria-label={`Conta ${conta.name}`}>
+        <button
+          type="button"
+          {...{ [GATILHO_DO_DETALHE]: "" }}
+          aria-label={`Ver detalhe da conta ${conta.name}`}
+          aria-expanded={detalheAberto}
+          aria-haspopup="dialog"
+          title={`Conta: ${conta.name}${conta.email ? ` (${conta.email})` : ""} — clique para ver o detalhe`}
+          onClick={() => setDetalheAberto(aberto => !aberto)}
+          className="max-w-32 truncate font-normal text-text-primary hover:text-accent"
+        >
           {conta.name}
-        </span>
+        </button>
       )}
       {modelo && (
         <span className="hidden lg:inline max-w-40 truncate font-normal text-text-secondary">
@@ -233,6 +244,10 @@ export function AgentUsageStatus({ engineOnline, activeSessionId }: AgentUsageSt
       >
         <ReloadIcon aria-hidden="true" className={`w-3.5 h-3.5${busy ? " animate-spin" : ""}`} />
       </button>}
+      {detalheAberto && conta && (
+        <DetalheDaConta uso={usage} tokens={null} onFechar={() => setDetalheAberto(false)}
+          conta={{ nome: conta.name, email: conta.email, provider: conta.provider }} />
+      )}
     </span>
   );
 }
