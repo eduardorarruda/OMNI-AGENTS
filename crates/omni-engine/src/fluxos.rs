@@ -118,6 +118,9 @@ pub struct Execucao {
     /// Nomes dos fluxos da raiz até esta execução: a trilha `X › Y › Z`.
     #[serde(default)]
     pub pilha: Vec<String>,
+    /// Só a execução filha tem: a execução que começou a cadeia.
+    #[serde(default)]
+    pub raiz: Option<String>,
 }
 
 type Viva = Arc<Mutex<Execucao>>;
@@ -247,7 +250,7 @@ pub fn iniciar_com_origem(state: &Arc<EngineState>, fluxo: Fluxo, projeto: Strin
     let veio_de_fora = quem.veio_de_fora || quem.pasta.as_deref().is_some_and(de_fora::pasta_marcada);
     let e = Execucao { id: id.clone(), fluxo, projeto, projeto_id, entrada, pasta, branch, base, status: "rodando".into(), erro: None,
         criado_ms: agora, atualizado_ms: agora, nos, fila: vec![Passo { no: inicio, de: None }], pr_url: None, custo_usd: 0.0,
-        pastas_extras, origem: quem.origem, veio_de_fora, aviso_seq: 0, aviso: None, evento_seq: 0, pai: None, pilha };
+        pastas_extras, origem: quem.origem, veio_de_fora, aviso_seq: 0, aviso: None, evento_seq: 0, pai: None, pilha, raiz: None };
     gravar(state, &e);
     execucoes().lock().map_err(|_| anyhow!("execucoes"))?.insert(id.clone(), Arc::new(Mutex::new(e.clone())));
     soltar(state.clone(), id);
@@ -904,12 +907,17 @@ pub fn retomar(state: &Arc<EngineState>, id: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn cancelar(state: &EngineState, id: &str) -> Result<()> {
-    let v = viva(id)?;
-    mexer(state, &v, |e| { e.status = "cancelado".into(); e.fila.clear(); for n in e.nos.values_mut().filter(|n| n.status == "rodando" || n.status == "aguardando") { n.status = "pausado".into(); }
+/// Cancela só esta execução. A cadeia é com `subfluxo::cancelar_filhas`.
+fn cancelar_uma(state: &EngineState, v: &Viva, id: &str) {
+    mexer(state, v, |e| { e.status = "cancelado".into(); e.fila.clear(); for n in e.nos.values_mut().filter(|n| n.status == "rodando" || n.status == "aguardando") { n.status = "pausado".into(); }
         eventos::registrar(state, e, None, "aviso", "Execução cancelada");
     });
     matar_processo(id);
+}
+
+pub fn cancelar(state: &EngineState, id: &str) -> Result<()> {
+    let v = viva(id)?;
+    cancelar_uma(state, &v, id);
     subfluxo::cancelar_filhas(state, id);
     Ok(())
 }

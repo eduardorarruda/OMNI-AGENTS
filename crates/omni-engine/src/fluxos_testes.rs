@@ -1110,6 +1110,105 @@ fn rodar_de_dentro_de_execucao_marcada_nasce_marcado() {
     cancelar(&amb.state, &e.id).unwrap();
 }
 
+// ---- Parar uma cadeia funda: isto é tempo de resposta, não teto de profundidade ----
+
+/// Uma execução parada no mapa, sem thread: dá para montar cadeia funda sem esperar ela crescer.
+fn elo(amb: &Ambiente, id: &str, pai: Option<&str>, raiz: Option<&str>, status: &str) -> Viva {
+    let e: Execucao = serde_json::from_value(json!({"id": id, "projeto": amb.projeto, "projeto_id": "p", "entrada": "x", "pasta": amb.projeto, "status": status, "criado_ms": 0, "atualizado_ms": 0,
+        "fluxo": serde_json::from_value::<Value>(chama("x", "X", "x")).unwrap(), "nos": {"s": {"status": "rodando"}}, "fila": [], "raiz": raiz,
+        "pai": pai.map(|p| json!({"execucao": p, "no": "s"}))})).unwrap();
+    let v: Viva = Arc::new(Mutex::new(e));
+    execucoes().lock().unwrap().insert(id.to_owned(), v.clone());
+    v
+}
+
+fn montar_cadeia(amb: &Ambiente, prefixo: &str, tamanho: usize) -> Vec<String> {
+    let ids: Vec<String> = (0..tamanho).map(|n| format!("{prefixo}-{n}")).collect();
+    for (n, id) in ids.iter().enumerate() {
+        let pai = n.checked_sub(1).map(|anterior| ids[anterior].as_str());
+        elo(amb, id, pai, pai.map(|_| ids[0].as_str()), "rodando");
+    }
+    ids
+}
+
+const CADEIA_FUNDA: usize = 5_000;
+const TEMPO_DE_PARAR: Duration = Duration::from_secs(20);
+
+#[test]
+fn cancelar_cadeia_funda_volta_rapido_e_alcanca_o_fundo() {
+    let amb = ambiente();
+    let ids = montar_cadeia(&amb, "funda-c", CADEIA_FUNDA);
+    let inicio = std::time::Instant::now();
+    cancelar(&amb.state, &ids[0]).unwrap();
+    assert!(inicio.elapsed() < TEMPO_DE_PARAR, "demorou {:?}", inicio.elapsed());
+    assert!(ids.iter().all(|id| obter(id).unwrap().status == "cancelado"));
+}
+
+#[test]
+fn pausar_cadeia_funda_volta_rapido_e_alcanca_o_fundo() {
+    let amb = ambiente();
+    let ids = montar_cadeia(&amb, "funda-p", CADEIA_FUNDA);
+    let inicio = std::time::Instant::now();
+    pausar(&amb.state, &ids[0]).unwrap();
+    assert!(inicio.elapsed() < TEMPO_DE_PARAR, "demorou {:?}", inicio.elapsed());
+    assert!(ids.iter().all(|id| obter(id).unwrap().status == "pausado"));
+}
+
+#[test]
+fn cancelar_cadeia_nao_mexe_em_filha_concluida() {
+    let amb = ambiente();
+    elo(&amb, "fim-pai", None, None, "rodando");
+    elo(&amb, "fim-feita", Some("fim-pai"), Some("fim-pai"), "concluido");
+    elo(&amb, "fim-viva", Some("fim-pai"), Some("fim-pai"), "aguardando");
+    cancelar(&amb.state, "fim-pai").unwrap();
+    assert_eq!((obter("fim-feita").unwrap().status.as_str(), obter("fim-viva").unwrap().status.as_str()), ("concluido", "cancelado"));
+}
+
+#[test]
+fn raiz_parada_nao_deixa_abrir_filha_nova() {
+    for status in ["cancelado", "pausado"] {
+        let amb = ambiente();
+        amb.salvar(so_comando("y", "Y", "echo ok"));
+        let (raiz, meio) = (format!("raiz-{status}"), format!("meio-{status}"));
+        elo(&amb, &raiz, None, None, status);
+        let v = elo(&amb, &meio, Some(&raiz), Some(&raiz), "rodando");
+        let no: fluxos::No = serde_json::from_value(no_subfluxo("s", "y")).unwrap();
+        let ctx = Contexto { entrada: "x".into(), anterior: String::new(), saidas: HashMap::new() };
+        let erro = subfluxo::rodar_subfluxo(&amb.state, &v, &no, &ctx).unwrap_err();
+        assert_eq!(erro.to_string(), PAUSADO, "{status}");
+        assert!(filhas_de(&meio).is_empty(), "{status}: abriu filha com a raiz parada");
+    }
+}
+
+fn execucoes_do_projeto(amb: &Ambiente) -> Vec<Execucao> {
+    let vivas: Vec<Viva> = execucoes().lock().unwrap().values().cloned().collect();
+    vivas.iter().filter_map(|v| v.lock().ok().filter(|e| Path::new(&e.projeto) == amb.projeto).map(|e| e.clone())).collect()
+}
+
+/// Ciclo de verdade, com as threads esperando em cada nível.
+#[test]
+fn parar_ciclo_de_subfluxo_fundo_nao_deixa_filha_nova() {
+    const PROFUNDIDADE: usize = 300;
+    let amb = ambiente();
+    amb.salvar(chama("x", "X", "x"));
+    let id = amb.iniciar(chama("x", "X", "x"));
+    for _ in 0..3_000 {
+        if execucoes_do_projeto(&amb).len() >= PROFUNDIDADE { break; }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(execucoes_do_projeto(&amb).len() >= PROFUNDIDADE, "a cadeia não cresceu");
+
+    let inicio = std::time::Instant::now();
+    cancelar(&amb.state, &id).unwrap();
+    assert!(inicio.elapsed() < TEMPO_DE_PARAR, "demorou {:?}", inicio.elapsed());
+
+    let depois = execucoes_do_projeto(&amb).len();
+    std::thread::sleep(Duration::from_secs(2));
+    let todas = execucoes_do_projeto(&amb);
+    assert_eq!(todas.len(), depois, "abriu filha depois de cancelar");
+    assert!(todas.iter().all(|e| e.status == "cancelado"), "{:?}", todas.iter().filter(|e| e.status != "cancelado").map(|e| (&e.id, &e.status)).collect::<Vec<_>>());
+}
+
 #[test]
 fn listar_marca_a_filha_com_o_pai() {
     let amb = ambiente();
