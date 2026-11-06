@@ -1,0 +1,240 @@
+#![cfg_attr(windows, allow(dead_code))]
+//! Leitura das portas em escuta fora do Windows: `ss` (Linux, com `/proc/net/tcp` de reserva) e
+//! `lsof` (macOS). Os `parse_*` são puros e testados com saída gravada.
+
+use serde::Deserialize;
+
+#[derive(Debug, PartialEq, Clone, Copy, Deserialize)]
+pub struct Escuta { pub p: u16, pub pid: u32 }
+
+fn porta_do_endereco(endereco: &str) -> Option<u16> { endereco.rsplit(':').next()?.parse().ok() }
+
+/// `ss -ltnpH`: o endereço local é a 4ª coluna e o dono vem em `users:(("nome",pid=N,fd=M),...)`.
+/// Socket sem `users:` (de outro usuário) é ignorado.
+pub fn parse_ss(saida: &str) -> Vec<Escuta> {
+    let mut lista = Vec::new();
+    for linha in saida.lines() {
+        let Some(porta) = linha.split_whitespace().nth(3).and_then(porta_do_endereco) else { continue };
+        let Some((_, donos)) = linha.split_once("users:(") else { continue };
+        for dono in donos.split("pid=").skip(1) {
+            let digitos: String = dono.chars().take_while(char::is_ascii_digit).collect();
+            let Ok(pid) = digitos.parse() else { continue };
+            let escuta = Escuta { p: porta, pid };
+            if !lista.contains(&escuta) { lista.push(escuta); }
+        }
+    }
+    lista
+}
+
+/// `lsof -nP -iTCP -sTCP:LISTEN`: PID na 2ª coluna, endereço logo antes de `(LISTEN)`.
+pub fn parse_lsof(saida: &str) -> Vec<Escuta> {
+    let mut lista = Vec::new();
+    for linha in saida.lines() {
+        let campos: Vec<&str> = linha.split_whitespace().collect();
+        let Some(pid) = campos.get(1).and_then(|c| c.parse().ok()) else { continue };
+        if campos.last() != Some(&"(LISTEN)") || campos.len() < 3 { continue }
+        let Some(p) = porta_do_endereco(campos[campos.len() - 2]) else { continue };
+        let escuta = Escuta { p, pid };
+        if !lista.contains(&escuta) { lista.push(escuta); }
+    }
+    lista
+}
+
+/// `/proc/net/tcp` (e `tcp6`): linhas em LISTEN (`0A`) viram `(porta, inode)`.
+pub fn parse_proc_net_tcp(saida: &str) -> Vec<(u16, u64)> {
+    saida.lines().filter_map(|linha| {
+        let campos: Vec<&str> = linha.split_whitespace().collect();
+        if campos.get(3) != Some(&"0A") { return None; }
+        let porta = u16::from_str_radix(campos.get(1)?.rsplit(':').next()?, 16).ok()?;
+        Some((porta, campos.get(9)?.parse().ok()?))
+    }).collect()
+}
+
+/// Nome, linha de comando e pasta de trabalho de um processo.
+#[cfg(unix)]
+pub struct DadosDoProcesso { pub nome: String, pub cmd: String, pub pasta: Option<String> }
+
+#[cfg(unix)]
+fn rodar(programa: &str, args: &[&str]) -> Result<String, String> {
+    let saida = std::process::Command::new(programa).args(args).output().map_err(|erro| format!("{programa}: {erro}"))?;
+    if !saida.status.success() && saida.stdout.is_empty() {
+        return Err(format!("{programa}: {}", String::from_utf8_lossy(&saida.stderr).trim()));
+    }
+    Ok(String::from_utf8_lossy(&saida.stdout).into_owned())
+}
+
+/// Portas em escuta com o dono. macOS usa `lsof`; Linux usa `ss` e, se ele faltar, `/proc/net/tcp`.
+#[cfg(unix)]
+pub fn escutas() -> Result<Vec<Escuta>, String> {
+    if cfg!(target_os = "macos") {
+        return rodar("lsof", &["-nP", "-iTCP", "-sTCP:LISTEN"]).map(|s| parse_lsof(&s));
+    }
+    match std::process::Command::new("ss").args(["-ltnpH"]).output() {
+        Ok(saida) if saida.status.success() => Ok(parse_ss(&String::from_utf8_lossy(&saida.stdout))),
+        _ => escutas_do_proc(),
+    }
+}
+
+/// Sem `ss`: cruza as portas de `/proc/net/tcp{,6}` com os sockets abertos de cada processo (`/proc/<pid>/fd`).
+#[cfg(unix)]
+fn escutas_do_proc() -> Result<Vec<Escuta>, String> {
+    let mut portas = Vec::new();
+    for arquivo in ["/proc/net/tcp", "/proc/net/tcp6"] {
+        if let Ok(texto) = std::fs::read_to_string(arquivo) { portas.extend(parse_proc_net_tcp(&texto)); }
+    }
+    let pastas = std::fs::read_dir("/proc").map_err(|erro| erro.to_string())?;
+    let mut lista = Vec::new();
+    for pasta in pastas.flatten() {
+        let Some(pid) = pasta.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else { continue };
+        let Ok(fds) = std::fs::read_dir(pasta.path().join("fd")) else { continue };
+        for fd in fds.flatten() {
+            let Ok(alvo) = std::fs::read_link(fd.path()) else { continue };
+            let Some(inode) = alvo.to_str().and_then(|a| a.strip_prefix("socket:[")).and_then(|a| a.strip_suffix(']')) else { continue };
+            let Some((porta, _)) = portas.iter().find(|(_, i)| inode.parse() == Ok(*i)) else { continue };
+            let escuta = Escuta { p: *porta, pid };
+            if !lista.contains(&escuta) { lista.push(escuta); }
+        }
+    }
+    Ok(lista)
+}
+
+/// `/proc/<pid>/{comm,cmdline,cwd}` no Linux; `ps` e `lsof -d cwd` no macOS (que não tem `/proc`).
+#[cfg(unix)]
+pub fn dados_do_processo(pid: u32) -> Option<DadosDoProcesso> {
+    let proc = std::path::PathBuf::from(format!("/proc/{pid}"));
+    if proc.join("comm").exists() {
+        let nome = std::fs::read_to_string(proc.join("comm")).ok()?.trim().to_owned();
+        let bruto = std::fs::read(proc.join("cmdline")).unwrap_or_default();
+        let cmd = String::from_utf8_lossy(&bruto).split('\0').filter(|a| !a.is_empty()).collect::<Vec<_>>().join(" ");
+        let pasta = std::fs::read_link(proc.join("cwd")).ok().map(|p| p.display().to_string());
+        return Some(DadosDoProcesso { nome, cmd, pasta });
+    }
+    let p = pid.to_string();
+    let executavel = rodar("ps", &["-ww", "-o", "comm=", "-p", &p]).ok()?;
+    let nome = executavel.trim().rsplit('/').next()?.to_owned();
+    let cmd = rodar("ps", &["-ww", "-o", "args=", "-p", &p]).ok()?.trim().to_owned();
+    let pasta = rodar("lsof", &["-a", "-d", "cwd", "-Fn", "-p", &p]).ok().and_then(|s| parse_lsof_cwd(&s));
+    Some(DadosDoProcesso { nome, cmd, pasta })
+}
+
+/// `lsof -Fn`: a linha do caminho começa com `n`.
+#[allow(dead_code)]
+pub fn parse_lsof_cwd(saida: &str) -> Option<String> {
+    saida.lines().find_map(|l| l.strip_prefix('n')).map(str::to_owned)
+}
+
+/// Pares `(pid, ppid)` de todos os processos (`ps` existe no Linux e no macOS).
+#[cfg(unix)]
+fn pares_de_processos() -> Result<Vec<(u32, u32)>, String> {
+    Ok(parse_ps_pares(&rodar("ps", &["-axo", "pid=,ppid="])?))
+}
+
+#[allow(dead_code)]
+pub fn parse_ps_pares(saida: &str) -> Vec<(u32, u32)> {
+    saida.lines().filter_map(|l| {
+        let mut c = l.split_whitespace();
+        Some((c.next()?.parse().ok()?, c.next()?.parse().ok()?))
+    }).collect()
+}
+
+#[cfg(unix)]
+fn vivo(pid: u32) -> bool {
+    std::process::Command::new("kill").args(["-0", &pid.to_string()]).output().is_ok_and(|s| s.status.success())
+}
+
+#[cfg(unix)]
+fn sinal(nome: &str, pids: &[u32]) {
+    if pids.is_empty() { return; }
+    let mut cmd = std::process::Command::new("kill");
+    cmd.arg(nome);
+    cmd.args(pids.iter().map(u32::to_string));
+    let _ = cmd.output();
+}
+
+/// Derruba `raiz` e tudo que desceu dela: TERM em cada um, espera até `espera` o que ainda vive
+/// sair, e KILL no que sobrou. Nunca mexe no próprio processo.
+#[cfg(unix)]
+pub fn derrubar_arvore(raiz: u32, espera: std::time::Duration) -> Result<(), String> {
+    let eu = std::process::id();
+    let mut alvos = omni_core::processos::descendentes(raiz, &pares_de_processos()?);
+    alvos.push(raiz);
+    alvos.retain(|pid| *pid != eu);
+    sinal("-TERM", &alvos);
+    let limite = std::time::Instant::now() + espera;
+    while std::time::Instant::now() < limite && alvos.iter().any(|p| vivo(*p)) {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let sobrou: Vec<u32> = alvos.into_iter().filter(|p| vivo(*p)).collect();
+    sinal("-KILL", &sobrou);
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ss_le_porta_e_pid() {
+        let linha = r#"LISTEN 0 511 *:5173 *:* users:(("node",pid=4321,fd=23))"#;
+        assert_eq!(parse_ss(linha), vec![Escuta { p: 5173, pid: 4321 }]);
+    }
+
+    #[test]
+    fn ss_le_ipv6_e_varios_donos() {
+        let saida = "LISTEN 0 4096 [::1]:3000 [::]:* users:((\"next-server (v1\",pid=77,fd=19))\n\
+LISTEN 0 128 127.0.0.1:8000 0.0.0.0:* users:((\"python3\",pid=5,fd=3),(\"python3\",pid=6,fd=3))\n";
+        assert_eq!(parse_ss(saida), vec![
+            Escuta { p: 3000, pid: 77 }, Escuta { p: 8000, pid: 5 }, Escuta { p: 8000, pid: 6 },
+        ]);
+    }
+
+    #[test]
+    fn ss_ignora_linha_sem_dono() {
+        let saida = "LISTEN 0 128 0.0.0.0:22 0.0.0.0:*\nLISTEN 0 511 *:5173 *:* users:((\"node\",pid=4321,fd=23))\n";
+        assert_eq!(parse_ss(saida), vec![Escuta { p: 5173, pid: 4321 }]);
+    }
+
+    #[test]
+    fn lsof_le_porta_e_pid_e_pula_cabecalho() {
+        let saida = "COMMAND   PID USER   FD   TYPE DEVICE SIZE/OFF NODE NAME\n\
+node    12345    e   23u  IPv6 0x1234      0t0  TCP *:5173 (LISTEN)\n\
+node    12345    e   24u  IPv4 0x1235      0t0  TCP 127.0.0.1:5174 (LISTEN)\n\
+rapportd  600    e    8u  IPv4 0x1236      0t0  TCP *:49152 (LISTEN)\n";
+        assert_eq!(parse_lsof(saida), vec![
+            Escuta { p: 5173, pid: 12345 }, Escuta { p: 5174, pid: 12345 }, Escuta { p: 49152, pid: 600 },
+        ]);
+    }
+
+    #[test]
+    fn proc_net_tcp_pega_so_listen() {
+        let saida = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n\
+   0: 00000000:1435 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 98765 1 0000 100 0 0 10 0\n\
+   1: 0100007F:E2A8 0100007F:1435 01 00000000:00000000 00:00000000 00000000  1000        0 11111 1 0000 100 0 0 10 0\n";
+        assert_eq!(parse_proc_net_tcp(saida), vec![(5173, 98765)]);
+    }
+
+    #[test]
+    fn lsof_cwd_le_a_linha_do_caminho() {
+        assert_eq!(parse_lsof_cwd("p123\nfcwd\nn/Users/e/p\n"), Some("/Users/e/p".to_owned()));
+    }
+
+    #[test]
+    fn ps_le_pares() {
+        assert_eq!(parse_ps_pares("    1     0\n  200   1\nlixo\n"), vec![(1, 0), (200, 1)]);
+    }
+
+    /// Só age em processo que o próprio teste criou: um `sh` com um neto `sleep`.
+    #[cfg(unix)]
+    #[test]
+    fn derrubar_arvore_leva_filho_e_neto() {
+        use std::process::{Command, Stdio};
+        let mut filho = Command::new("sh").args(["-c", "sleep 300 & wait"]).stdout(Stdio::null()).spawn().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let neto = omni_core::processos::descendentes(filho.id(), &pares_de_processos().unwrap());
+        assert_eq!(neto.len(), 1, "o sleep deveria descender do sh");
+        derrubar_arvore(filho.id(), std::time::Duration::from_secs(2)).unwrap();
+        filho.wait().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(!vivo(neto[0]), "o neto sobreviveu");
+    }
+}

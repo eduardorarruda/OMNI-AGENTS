@@ -6,6 +6,7 @@ mod engine_client;
 mod git_client;
 mod docker_client;
 mod servidores;
+mod servidores_leitura;
 mod ssh;
 mod target_files;
 mod conhecimento;
