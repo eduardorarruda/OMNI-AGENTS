@@ -3,6 +3,7 @@ import { Button } from "../../components/ui";
 import { KANBAN_STATUS_LABEL, KANBAN_STATUSES, type KanbanAction, type KanbanState, type KanbanStatus, type KanbanTask } from "../../types/kanban";
 import { listAgentClis, type AgentCliId, type AgentCliStatus } from "../terminal/terminalService";
 import { KANBAN_CARD_DRAG_TYPE, readDraggedCard } from "./kanbanDrag";
+import { useAvisoDoKanban } from "./kanbanAviso";
 
 interface KanbanBoardProps {
   projectId: string;
@@ -14,6 +15,7 @@ export function KanbanBoard({ projectId, kanban, dispatch }: KanbanBoardProps) {
   const [agents, setAgents] = useState<AgentCliStatus[]>([]);
   const [creating, setCreating] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const aviso = useAvisoDoKanban();
 
   useEffect(() => {
     void listAgentClis().then(setAgents);
@@ -32,6 +34,11 @@ export function KanbanBoard({ projectId, kanban, dispatch }: KanbanBoardProps) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
+      {aviso && (
+        <div role="alert" className="shrink-0 border-b-2 border-border-subtle bg-bg-elevated px-4 py-2 text-xs text-text-primary">
+          {aviso}
+        </div>
+      )}
       <div className="flex shrink-0 flex-wrap items-center gap-3 border-b-2 border-border-subtle bg-bg-elevated px-4 py-2.5">
         <Button
           size="sm"
