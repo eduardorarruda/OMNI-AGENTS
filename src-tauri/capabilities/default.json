@@ -17,7 +17,11 @@
     "fs:allow-rename",
     "fs:allow-copy-file",
     "fs:allow-write-file",
-    { "identifier": "fs:scope", "allow": ["**"] },
+    { "identifier": "fs:scope", "allow": ["**"], "deny": [
+      { "path": "$HOME/.ssh/**" },
+      { "path": "$HOME/.gnupg/**" },
+      { "path": "$HOME/.tauri/**" }
+    ] },
     "notification:default",
     "core:window:allow-request-user-attention",
     "core:window:allow-set-icon",
