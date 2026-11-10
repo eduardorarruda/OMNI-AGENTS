@@ -51,6 +51,7 @@ import { primeSshDrives } from "./features/projects/targetState";
 import type { SettingsSection } from "./hooks/useNotifications";
 import { useSettings } from "./hooks/useSettings";
 import { matchesShortcut } from "./lib/shortcuts";
+import { AprovacaoDeAparelho } from "./features/mobile/AprovacaoDeAparelho";
 
 type View = "workspace" | "settings" | "history" | "fluxos" | "panorama" | "conhecimento";
 
@@ -276,6 +277,8 @@ export function App() {
     <ContaDoWorkspaceContext.Provider value={contaDoWorkspace}>
     <div className="flex h-screen flex-col overflow-hidden">
       <AppBackground settings={settings} />
+      {/* Aparelho novo pelo link seguro só entra com o Permitir daqui, em qualquer tela. */}
+      <AprovacaoDeAparelho />
       <TitleBar
         trilha={
           view === "settings" ? ["Configurações"]
