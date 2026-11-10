@@ -14,10 +14,17 @@ interface WorkspaceTabBarProps {
   pane: PaneNode;
   dispatch: React.Dispatch<WorkspaceAction>;
   onCloseTab: (tab: PaneNode["tabs"][number]) => void;
+  /** Encerra o agente da aba (o X só esconde a aba). Vem do menu do botão direito, com confirmação. */
+  onEncerrarAgente?: (tab: PaneNode["tabs"][number]) => void;
   dirtyTabIds?: Set<string>;
 }
 
-export function WorkspaceTabBar({ pane, dispatch, onCloseTab, dirtyTabIds }: WorkspaceTabBarProps) {
+type MenuDaAba = { tab: PaneNode["tabs"][number]; top: number; left: number } | null;
+
+export const CONFIRMAR_ENCERRAR = "Encerrar este agente? O processo para; a conversa continua no histórico do projeto.";
+
+export function WorkspaceTabBar({ pane, dispatch, onCloseTab, onEncerrarAgente, dirtyTabIds }: WorkspaceTabBarProps) {
+  const [menu, setMenu] = useState<MenuDaAba>(null);
   return (
     <div
       className="flex-1 min-w-0 flex overflow-x-auto"
@@ -40,6 +47,10 @@ export function WorkspaceTabBar({ pane, dispatch, onCloseTab, dirtyTabIds }: Wor
             event.preventDefault();
             onCloseTab(item);
           }}
+          onContextMenu={(event) => {
+            event.preventDefault();
+            setMenu({ tab: item, top: event.clientY, left: event.clientX });
+          }}
           className={[
             "group flex shrink-0 items-stretch border-r-2 border-border-subtle max-w-64 select-none touch-none cursor-grab active:cursor-grabbing",
             // Aba ativa: fundo do conteúdo e um filete do acento no topo, como aba "aberta".
@@ -50,7 +61,7 @@ export function WorkspaceTabBar({ pane, dispatch, onCloseTab, dirtyTabIds }: Wor
           <button
             type="button"
             aria-label={`Fechar tab ${item.title}`}
-            title="Fechar tab"
+            title={item.kind === "agent" ? "Fechar aba — o agente segue rodando e a conversa fica na lateral" : "Fechar tab"}
             onClick={() => onCloseTab(item)}
             className={`grid w-7 place-items-center text-text-muted hover:bg-danger/10 hover:text-danger focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent ${
               item.id === pane.activeTabId ? "" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
@@ -63,7 +74,57 @@ export function WorkspaceTabBar({ pane, dispatch, onCloseTab, dirtyTabIds }: Wor
       <NewTabMenu
         onCreate={(kind, title) => dispatch({ type: "CREATE_TAB", paneId: pane.id, kind, title })}
       />
+      {menu && (
+        <MenuDeContextoDaAba menu={menu} onFechar={() => setMenu(null)}
+          onFecharAba={() => onCloseTab(menu.tab)}
+          onEncerrar={menu.tab.kind === "agent" && menu.tab.resourceId && onEncerrarAgente
+            ? () => { if (window.confirm(CONFIRMAR_ENCERRAR)) onEncerrarAgente(menu.tab); } : undefined} />
+      )}
     </div>
+  );
+}
+
+/** Botão direito na aba. Separa "fechar a aba" de "encerrar o agente", que antes eram o mesmo X. */
+function MenuDeContextoDaAba({ menu, onFechar, onFecharAba, onEncerrar }: {
+  menu: NonNullable<MenuDaAba>;
+  onFechar: () => void;
+  onFecharAba: () => void;
+  onEncerrar?: () => void;
+}) {
+  const menuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    function onPointerDown(event: PointerEvent) {
+      if (!menuRef.current?.contains(event.target as Node)) onFechar();
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") onFechar();
+    }
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [onFechar]);
+  const agente = menu.tab.kind === "agent";
+  const item = "block w-full px-2.5 py-1.5 text-left text-xs hover:bg-overlay/[0.07] focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent";
+  return createPortal(
+    <div ref={menuRef} role="menu" aria-label={`Ações da aba ${menu.tab.title}`}
+      style={{ position: "fixed", top: menu.top, left: menu.left, minWidth: 220 }} className="popover z-50 p-1">
+      <button type="button" role="menuitem" className={`${item} text-text-secondary hover:text-text-primary`}
+        onClick={() => { onFechar(); onFecharAba(); }}>
+        Fechar aba
+        {agente && <span className="block text-[10px] text-text-muted">O agente segue rodando; a conversa fica na lateral</span>}
+      </button>
+      {onEncerrar && (
+        <button type="button" role="menuitem" className={`${item} text-danger`}
+          onClick={() => { onFechar(); onEncerrar(); }}>
+          Encerrar agente…
+          <span className="block text-[10px] text-text-muted">Para o processo da CLI e fecha a aba</span>
+        </button>
+      )}
+    </div>,
+    document.body
   );
 }
 

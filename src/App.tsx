@@ -205,7 +205,9 @@ export function App() {
 
   /** Reabre uma conversa do Histórico num terminal do projeto dela — adicionando o projeto ao
    *  workspace ativo se ele ainda não estiver aberto em nenhum. */
-  async function resumeHistory(entry: HistoryEntry, profileId: string = entry.profile_id) {
+  async function resumeHistory(entry: HistoryEntry, conta: string = entry.profile_id) {
+    // Conversa vinda só do índice pode não saber a conta: vazio vira "a padrão da CLI".
+    const profileId = conta || undefined;
     const cwd = entry.cwd;
     if (!cwd) throw new Error("Essa conversa não registrou a pasta onde rodou.");
     const cli = (await listAgentClis()).find((item) => item.id === entry.provider);
@@ -224,7 +226,7 @@ export function App() {
 
     await ensureEngine();
     // Outra conta: o transcript vai para lá antes, senão o `--resume` não acha a conversa.
-    await levarParaConta(entry, profileId);
+    await levarParaConta(entry, profileId ?? "");
     await ensureAgentTrust(cli.id, cwd, profileId);
     // Sem conversa ligada, a aba Conversa não tem o que mostrar: reusa a do OMNI com esta sessão
     // ou registra uma nova (conversa aberta fora do OMNI).

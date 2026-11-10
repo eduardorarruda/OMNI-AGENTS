@@ -7,6 +7,7 @@ import { baseName } from "../files/filesService";
 import { useProjetoDaPasta } from "../projects/projetosContext";
 import { filterHistory, listHistory, pastaDoProjeto, samePath, type HistoryEntry } from "./historyService";
 import { Input } from "../../components/ui/Input";
+import { listConversations, type Conversation } from "../terminal/terminalService";
 
 const QUANTAS = 6;
 
@@ -24,6 +25,37 @@ export function escolherRecentes(entradas: HistoryEntry[], abertas: ReadonlySet<
 export function conversasDoProjeto(entradas: HistoryEntry[], abertas: ReadonlySet<string>, projeto: string, projetos: readonly string[]): HistoryEntry[] {
   const doProjeto = entradas.filter((entrada) => entrada.cwd && samePath(pastaDoProjeto(entrada.cwd, projetos), projeto));
   return escolherRecentes(doProjeto, abertas, doProjeto.length);
+}
+
+const PROVIDERS_DO_HISTORICO = new Set<string>(["claude", "codex", "cursor"]);
+
+/** Une o histórico das CLIs com o índice de conversas do OMNI. O scan só acha conversa com prompt
+ *  digitado num `.jsonl` legível; a que o OMNI registrou e ainda não tem transcript (ou cujo
+ *  transcript o scan descarta) sumia da lista. Mesma conversa nos dois aparece uma vez: a do
+ *  histórico, que tem o primeiro prompt e a data real. Conversa sem nenhuma sessão nativa não tem o
+ *  que retomar e fica de fora — enquanto o agente dela está vivo, ela aparece em CHATS. */
+export function juntarComIndice(entradas: HistoryEntry[], conversas: readonly Conversation[]): HistoryEntry[] {
+  const conhecidas = new Set(entradas.map((entrada) => entrada.session_id));
+  const doIndice = conversas.flatMap((conversa): HistoryEntry[] => {
+    const comSessao = conversa.segments.filter((segmento) => segmento.external_session_id && PROVIDERS_DO_HISTORICO.has(segmento.provider));
+    if (comSessao.some((segmento) => conhecidas.has(segmento.external_session_id!))) return [];
+    const ultimo = comSessao.reduce<(typeof comSessao)[number] | null>(
+      (maisNovo, segmento) => (!maisNovo || segmento.started_at_ms >= maisNovo.started_at_ms ? segmento : maisNovo), null);
+    if (!ultimo) return [];
+    return [{
+      provider: ultimo.provider as HistoryEntry["provider"],
+      profile_id: ultimo.profile_id ?? "",
+      profile_name: "",
+      session_id: ultimo.external_session_id!,
+      title: conversa.title?.trim() || null,
+      first_prompt: null,
+      cwd: conversa.cwd || null,
+      started_at_ms: conversa.created_at_ms,
+      updated_at_ms: ultimo.ended_at_ms ?? ultimo.started_at_ms,
+      path: ultimo.transcript_path ?? "",
+    }];
+  });
+  return [...entradas, ...doIndice];
 }
 
 export function RecentesConversas({ abertas, agora, onRetomar, onVerTodas, projeto = null, projetos = [] }: {
@@ -46,8 +78,12 @@ export function RecentesConversas({ abertas, agora, onRetomar, onVerTodas, proje
   // Relê quando abre/fecha uma conversa (a que fechou volta para cá). O scan tem cache por arquivo.
   useEffect(() => {
     let vivo = true;
+    const indice = listConversations().catch(() => [] as Conversation[]);
     Promise.all([listHistory("claude"), listHistory("codex"), listHistory("cursor")].map((p) => p.catch(() => [] as HistoryEntry[])))
-      .then((listas) => { if (vivo) setEntradas(listas.flat()); });
+      .then(async (listas) => {
+        const conversas = await indice;
+        if (vivo) setEntradas(juntarComIndice(listas.flat(), conversas));
+      });
     return () => { vivo = false; };
   }, [chave]);
 
@@ -104,7 +140,7 @@ function LinhaRecente({ entrada, agora, retomando, desabilitada, onClick }: {
   return (
     <button type="button" data-nav-item disabled={desabilitada} onClick={onClick}
       aria-label={`Retomar ${titulo} (${nomeDoProjeto})`}
-      title={`${titulo}\n${entrada.cwd ?? ""} · ${entrada.profile_name}\nClique para retomar`}
+      title={`${titulo}\n${entrada.cwd ?? ""}${entrada.profile_name ? ` · ${entrada.profile_name}` : ""}\nClique para retomar`}
       className={`lateral-item lateral-recente group mx-1 flex w-[calc(100%-0.5rem)] items-center gap-2.5 px-2 py-2 text-left ring-1 ring-inset ring-border-subtle/40 transition-colors hover:ring-border-subtle disabled:cursor-wait focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent${retomando ? " is-retomando" : ""}`}>
       <span className="lateral-avatar relative grid h-8 w-8 shrink-0 place-items-center border border-border-subtle">
         <AgentIcon provider={entrada.provider} size={16} />
@@ -119,7 +155,7 @@ function LinhaRecente({ entrada, agora, retomando, desabilitada, onClick }: {
         </span>
         <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[10px] leading-4 text-text-muted">
           <span className="truncate">{retomando ? "abrindo…" : nomeDoProjeto}</span>
-          <span aria-hidden>·</span><span className="truncate">{entrada.profile_name}</span>
+          {entrada.profile_name && <><span aria-hidden>·</span><span className="truncate">{entrada.profile_name}</span></>}
         </span>
       </span>
     </button>

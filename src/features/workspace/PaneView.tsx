@@ -88,14 +88,23 @@ export function PaneView({
     dispatch({ type: "SPLIT_PANE", paneId: pane.id, direction });
   }
 
+  // Aba é uma coisa, conversa é outra: fechar a aba de agente só tira a aba da tela. O agente segue
+  // no engine e a conversa fica na lateral, de onde reabre na mesma sessão. Terminal puro não tem
+  // conversa para voltar: fechar encerra o shell, como sempre.
   function closeTab(item: PaneNode["tabs"][number]) {
-    const close = item.resourceId && (item.kind === "agent" || item.kind === "terminal")
+    const close = item.resourceId && item.kind === "terminal"
       ? closeTerminal(item.resourceId).catch(() => undefined) : Promise.resolve();
     void close.then(() => dispatch({ type: "CLOSE_TAB", paneId: pane.id, tabId: item.id }));
   }
 
+  /** O que o X fazia antes: encerra o agente e fecha a aba. Só por pedido explícito. */
+  function encerrarAgente(item: PaneNode["tabs"][number]) {
+    const close = item.resourceId ? closeTerminal(item.resourceId).catch(() => undefined) : Promise.resolve();
+    void close.then(() => dispatch({ type: "CLOSE_TAB", paneId: pane.id, tabId: item.id }));
+  }
+
   function closePane() {
-    const sessions = pane.tabs.flatMap((item) => item.resourceId && (item.kind === "agent" || item.kind === "terminal") ? [closeTerminal(item.resourceId)] : []);
+    const sessions = pane.tabs.flatMap((item) => item.resourceId && item.kind === "terminal" ? [closeTerminal(item.resourceId)] : []);
     void Promise.allSettled(sessions).then(() => dispatch({ type: "CLOSE_PANE", paneId: pane.id }));
   }
 
@@ -141,7 +150,7 @@ export function PaneView({
           event.dataTransfer.setData(PANE_DRAG_TYPE, JSON.stringify({ paneId: pane.id }));
         }}
       >
-        <WorkspaceTabBar pane={pane} dispatch={dispatch} onCloseTab={closeTab} dirtyTabIds={dirtyTabIds} />
+        <WorkspaceTabBar pane={pane} dispatch={dispatch} onCloseTab={closeTab} onEncerrarAgente={encerrarAgente} dirtyTabIds={dirtyTabIds} />
 
         <div className="pane-acoes" aria-label="Ações do painel">
           <PaneAction label="Dividir lado a lado" glyph={<GlifoColunas />} onClick={() => split("horizontal")} />

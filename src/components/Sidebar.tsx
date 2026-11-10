@@ -49,6 +49,8 @@ import { SegundoPlanoPanel } from "../features/segundoPlano/SegundoPlanoPanel";
 import { useSegundoPlano } from "../features/segundoPlano/useSegundoPlano";
 import { pedirExecucao } from "../features/fluxos/pedidoDeExecucao";
 import { RecentesConversas } from "../features/history/RecentesConversas";
+import { collectResourceIds } from "../features/workspace/workspaceReducer";
+import { CONFIRMAR_ENCERRAR } from "../features/workspace/WorkspaceTabBar";
 import type { HistoryEntry } from "../features/history/historyService";
 /* O mesmo arquivo que o Tauri usa como ícone do app (tauri.conf.json →
    bundle.icon). Importado em vez de copiado para src/assets: uma cópia
@@ -470,6 +472,8 @@ ${onRenameProject ? "Clique duplo ou F2 para renomear · " : ""}Arraste para mud
 
                 {(["CHATS", "TERMINALS"] as const).map((section) => {
                   // CHATS = conversas com um agente de IA; TERMINALS = shells (npm run dev, git…).
+                  // Fechar a aba não encerra o agente: o que segue vivo sem aba ganha a marca "em segundo plano".
+                  const comAba = new Set(projects.flatMap((project) => collectResourceIds(project.layout)));
                   const lista = terminalSessions.filter((session) => Boolean(session.provider) === (section === "CHATS"))
                     // Conversas: a mexida por último primeiro. Terminais ficam na ordem em que foram abertos.
                     .sort((a, b) => section === "CHATS" ? (b.last_activity_at_ms ?? 0) - (a.last_activity_at_ms ?? 0) : 0);
@@ -494,6 +498,7 @@ ${onRenameProject ? "Clique duplo ou F2 para renomear · " : ""}Arraste para mud
                             conta={session.profile_id ? contas[session.profile_id] : undefined}
                             agora={agora}
                             onAttach={onAttachTerminal}
+                            semAba={!comAba.has(session.id)}
                           />
                           {/* Ações só no hover/foco, por cima do fim da linha: fora dele o espaço é do nome. */}
                           <div className="lateral-acoes absolute inset-y-0 right-0 hidden items-stretch border-l border-border-subtle bg-bg-elevated pl-0.5 shadow-[-12px_0_12px_-4px_rgb(var(--c-bg-elevated))] group-focus-within:flex group-hover:flex">
@@ -519,9 +524,12 @@ ${onRenameProject ? "Clique duplo ou F2 para renomear · " : ""}Arraste para mud
                           </button>
                           <button
                             type="button"
-                            aria-label={`Fechar agente ${session.name}`}
-                            title="Encerrar e remover agente"
-                            onClick={() => onCloseTerminal(session.id)}
+                            aria-label={session.provider ? `Encerrar agente ${session.name}` : `Fechar agente ${session.name}`}
+                            title={session.provider ? "Encerrar agente: para a CLI; a conversa fica no histórico" : "Encerrar e remover terminal"}
+                            onClick={() => {
+                              if (session.provider && !window.confirm(CONFIRMAR_ENCERRAR)) return;
+                              onCloseTerminal(session.id);
+                            }}
                             className="grid w-6 shrink-0 place-items-center text-text-muted opacity-60 hover:text-danger hover:opacity-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
                           >
                             <CloseIcon className="h-3.5 w-3.5" aria-hidden="true" />
@@ -628,6 +636,7 @@ function SessionLabel({
   conta,
   agora,
   onAttach,
+  semAba = false,
 }: {
   session: TerminalSession;
   /** É a aba em foco. */
@@ -638,6 +647,8 @@ function SessionLabel({
   conta?: string;
   agora: number;
   onAttach: (sessionId: string, title: string) => void;
+  /** Agente vivo sem aba aberta (a aba foi fechada): o clique reabre a aba na mesma sessão. */
+  semAba?: boolean;
 }) {
   const status = statusDaConversa(session, naoVista);
   const [editando, setEditando] = useState(false);
@@ -694,6 +705,8 @@ function SessionLabel({
         <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[10px] leading-4 text-text-muted">
           <span className={`shrink-0 ${status === "neutro" ? "" : "font-semibold"} ${corDaSituacao(status, session.state)}`}>{situacao}</span>
           {conta && <><span aria-hidden>·</span><span className="truncate">{conta}</span></>}
+          {semAba && agente && session.state !== "stopped" && session.state !== "orphan" && session.state !== "crashed"
+            && <><span aria-hidden>·</span><span className="shrink-0" title="A aba foi fechada, o agente segue rodando. Clique para reabrir.">em segundo plano</span></>}
         </span>
       </span>
       <EtiquetaDoStatus status={status} className="hidden" />

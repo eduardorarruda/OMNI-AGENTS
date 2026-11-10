@@ -1,10 +1,11 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
-import { conversasDoProjeto, escolherRecentes, RecentesConversas } from "../features/history/RecentesConversas";
+import { conversasDoProjeto, escolherRecentes, juntarComIndice, RecentesConversas } from "../features/history/RecentesConversas";
 import { ProjetosContext } from "../features/projects/projetosContext";
 import { createProject } from "../features/workspace/workspaceReducer";
 import type { HistoryEntry } from "../features/history/historyService";
+import type { Conversation } from "../features/terminal/terminalService";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
@@ -56,5 +57,57 @@ describe("Recentes na lateral", () => {
     fireEvent.change(within(regiao).getByRole("searchbox", { name: "Buscar nas conversas recentes" }), { target: { value: "site" } });
     expect(within(regiao).queryByRole("button", { name: "Retomar Conversa a (OMNI)" })).toBeNull();
     expect(within(regiao).getByRole("button", { name: "Retomar Conversa b (site)" })).toBeInTheDocument();
+  });
+});
+
+const doIndice = (id: string, externo: string | null, extra: Partial<Conversation> = {}): Conversation => ({
+  id, project_id: "p1", cwd: "/p/central", title: `Índice ${id}`, title_source: "auto", created_at_ms: 5,
+  segments: [{ provider: "claude", profile_id: "conta", external_session_id: externo, transcript_path: null, terminal_session_id: null, started_at_ms: 7, ended_at_ms: null }],
+  ...extra,
+});
+
+/** "A conversa não fica ali em Conversas do projeto": o índice do OMNI entra na lista junto do histórico das CLIs. */
+describe("Conversas do projeto com o índice do OMNI", () => {
+  it("conversa só no índice aparece; a que está nos dois não se repete", () => {
+    const lista = juntarComIndice([entrada("x", 9, { cwd: "/p/central" })], [doIndice("c1", "x"), doIndice("c2", "y")]);
+    expect(lista.map((item) => item.session_id).sort()).toEqual(["x", "y"]);
+    const y = lista.find((item) => item.session_id === "y")!;
+    expect(y).toMatchObject({ provider: "claude", profile_id: "conta", cwd: "/p/central", title: "Índice c2", updated_at_ms: 7 });
+  });
+
+  it("vale o segmento mais novo e ignora conversa sem sessão nativa nenhuma", () => {
+    const duasContas = doIndice("c1", "velha", {
+      segments: [
+        { provider: "claude", profile_id: "a", external_session_id: "velha", transcript_path: null, terminal_session_id: null, started_at_ms: 1, ended_at_ms: 2 },
+        { provider: "codex", profile_id: "b", external_session_id: "nova", transcript_path: null, terminal_session_id: null, started_at_ms: 3, ended_at_ms: null },
+      ],
+    });
+    const lista = juntarComIndice([], [duasContas, doIndice("vazia", null)]);
+    expect(lista).toHaveLength(1);
+    expect(lista[0]).toMatchObject({ session_id: "nova", provider: "codex", profile_id: "b" });
+  });
+
+  it("qualquer segmento já no histórico basta para não duplicar", () => {
+    const conversa = doIndice("c1", "a", {
+      segments: [
+        { provider: "claude", profile_id: "a", external_session_id: "a", transcript_path: null, terminal_session_id: null, started_at_ms: 1, ended_at_ms: 2 },
+        { provider: "claude", profile_id: "a", external_session_id: "b", transcript_path: null, terminal_session_id: null, started_at_ms: 3, ended_at_ms: null },
+      ],
+    });
+    expect(juntarComIndice([entrada("a", 1, { cwd: "/p/central" })], [conversa]).map((item) => item.session_id)).toEqual(["a"]);
+  });
+
+  it("a lista lateral do projeto mostra a conversa que só existe no índice", async () => {
+    vi.mocked(invoke).mockImplementation(async (comando: string) => {
+      if (comando === "list_conversations") return [doIndice("c9", "so-no-indice", { title: "Sem transcript ainda" })];
+      return [];
+    });
+    render(
+      <ProjetosContext.Provider value={[{ ...createProject("/p/central", "p1"), name: "Central" }]}>
+        <RecentesConversas abertas={[]} agora={Date.now()} onRetomar={vi.fn(async () => undefined)} onVerTodas={vi.fn()}
+          projeto="/p/central" projetos={["/p/central"]} />
+      </ProjetosContext.Provider>,
+    );
+    expect(await screen.findByRole("button", { name: "Retomar Sem transcript ainda (Central)" })).toBeInTheDocument();
   });
 });
