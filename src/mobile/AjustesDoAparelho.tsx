@@ -1,6 +1,7 @@
 import { useState, type ComponentType, type ReactNode } from "react";
 import { AlertIcon, CheckIcon, NotificationIcon, LinkIcon, LockIcon, MonitorIcon, PlayIcon, StopIcon } from "../components/ui/PixelIcon";
 import { esquecerToken } from "./api";
+import { InstalarApp } from "./InstalarApp";
 import { notificar, pedirPermissao, permissao, suporte, usePrefsDeAviso, type PrefsDeAviso } from "./notificacoes";
 
 type Icone = ComponentType<{ className?: string; "aria-hidden"?: boolean }>;
@@ -70,6 +71,8 @@ export function AjustesDoAparelho({ pagina = "celular", children }: {
         </div>
       </section>
 
+      <InstalarApp pagina={pagina} />
+
       <section className="m-ajustes-grupo glass" aria-labelledby="ajustes-avisos">
         <header className="m-ajustes-cabeca">
           <h3 id="ajustes-avisos" className="m-ajustes-titulo"><NotificationIcon aria-hidden className="h-3.5 w-3.5" />Notificações</h3>
@@ -78,8 +81,8 @@ export function AjustesDoAparelho({ pagina = "celular", children }: {
         {tipo === "inseguro" && (
           <p className="m-ajustes-aviso" role="note">
             <LockIcon aria-hidden className="h-3.5 w-3.5 shrink-0" />
-            O navegador só libera avisos em HTTPS. No PC, em Configurações → Acesso remoto, use o modo
-            <strong> Seguro com HTTPS</strong> e abra o link novo aqui.
+            O navegador só libera avisos em HTTPS. No PC, em Configurações → Acesso remoto, use o
+            <strong> link seguro</strong> (ou o modo Seguro com HTTPS) e abra o link novo aqui.
           </p>
         )}
         {tipo === "sem-suporte" && <p className="m-ajustes-aviso" role="note"><AlertIcon aria-hidden className="h-3.5 w-3.5 shrink-0" />Este navegador não mostra notificações. No iPhone, adicione o OMNI à tela inicial primeiro.</p>}

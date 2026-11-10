@@ -136,7 +136,7 @@ export function LinkSeguro({ totpConfirmado, corQr, onConfigurarAuthy }: {
         <ol className="list-decimal space-y-1 pl-4 text-xs text-text-secondary">
           <li>Aponte a câmera do celular para o código.</li>
           <li>Digite o código de 6 dígitos do Authy quando pedir (só na primeira vez).</li>
-          <li>Para virar app: toque em <strong>Instalar no celular</strong> lá dentro.</li>
+          <li>Para virar app: lá dentro, em <strong>Ajustes</strong>, toque em <strong>Instalar no celular</strong>.</li>
         </ol>
         <div className="flex flex-wrap items-center gap-2">
           <code className="remoto-link min-w-0 flex-1 break-all">{estado!.url}</code>
