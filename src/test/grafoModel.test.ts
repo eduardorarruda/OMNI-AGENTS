@@ -31,3 +31,34 @@ describe("modelo do grafo", () => {
     expect(vizinhas(grafo, "inexistente").size).toBe(0);
   });
 });
+
+describe("grau, busca e contagem", () => {
+  it("grau conta as ligações nos dois sentidos", async () => {
+    const { grausDasNotas } = await import("../features/grafo/grafoModel");
+    const graus = grausDasNotas(grafo);
+    expect(graus.get("a")).toBe(2);
+    expect(graus.get("b")).toBe(2);
+    expect(graus.get("c")).toBe(2);
+    expect(grausDasNotas({ notas: [nota("solta")], ligacoes: [] }).get("solta")).toBe(0);
+  });
+
+  it("busca ignora acento e caixa e põe quem começa com o termo primeiro", async () => {
+    const { buscarNotas } = await import("../features/grafo/grafoModel");
+    const g: Grafo = {
+      notas: [
+        { ...nota("x"), titulo: "Ajuste da esteira de deploy" },
+        { ...nota("y"), titulo: "Deploy na produção" },
+        { ...nota("z"), titulo: "Receita" },
+      ],
+      ligacoes: [],
+    };
+    expect(buscarNotas(g, "DEPLÓY")).toEqual(["y", "x"]);
+    expect(buscarNotas(g, "  ")).toEqual([]);
+    expect(buscarNotas(g, "nada disso")).toEqual([]);
+  });
+
+  it("conta as ligações de cada tipo", async () => {
+    const { contarPorTipo } = await import("../features/grafo/grafoModel");
+    expect(contarPorTipo(grafo)).toEqual({ wikilink: 1, conversa: 0, tag: 1, texto: 1 });
+  });
+});
