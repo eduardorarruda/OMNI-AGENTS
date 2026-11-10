@@ -24,6 +24,7 @@ import { Fragment, useEffect, useLayoutEffect, useRef, useState, useMemo } from 
 import gsap from "gsap";
 import { ProjectPicker } from "../features/projects/ProjectPicker";
 import { EditableLabel } from "./ui/EditableLabel";
+import { MenuDoProjeto, type MenuDoProjetoAberto } from "./MenuDoProjeto";
 import { listProfiles, renameSession } from "../features/terminal/terminalService";
 import { deslizarAba, moverIndicador, useStagger } from "../lib/motion";
 import { AgentIcon } from "./ui/AgentIcon";
@@ -107,6 +108,8 @@ interface SidebarProps {
   /** Símbolo do workspace/projeto (favicon). Opcionais: sem eles o avatar fica fixo. */
   onSetWorkspaceIcon?: (workspaceId: string, icone: string | null | undefined) => void;
   onSetProjectIcon?: (projectId: string, icone: string | null | undefined) => void;
+  /** Troca só o nome exibido do projeto; a pasta continua a mesma. */
+  onRenameProject?: (projectId: string, name: string) => void;
   attention: AttentionItem[];
   onFocusSession: (item: AttentionItem) => void;
   onDismissAttention: (item: AttentionItem) => void;
@@ -164,6 +167,7 @@ export function Sidebar({
   onRenameWorkspace,
   onSetWorkspaceIcon,
   onSetProjectIcon,
+  onRenameProject,
   attention,
   onFocusSession,
   onDismissAttention,
@@ -206,6 +210,9 @@ export function Sidebar({
   const [pickerAberto, setPickerAberto] = useState(false);
   // Botão "Trocar ícone" da linha do projeto: cada clique abre o seletor do avatar dele.
   const [pedidosDeIcone, setPedidosDeIcone] = useState<Record<string, number>>({});
+  // Renomear projeto: F2, duplo clique ou o menu do botão direito abrem o campo no lugar do nome.
+  const [projetoEmEdicao, setProjetoEmEdicao] = useState<string | null>(null);
+  const [menuDoProjeto, setMenuDoProjeto] = useState<MenuDoProjetoAberto | null>(null);
   // Nome de cada conta, para a segunda linha da conversa dizer em qual ela roda.
   const [contas, setContas] = useState<Record<string, string>>({});
   useEffect(() => {
@@ -388,14 +395,26 @@ export function Sidebar({
                           <span className="grid shrink-0 place-items-center pl-2"><AvatarDoProjeto project={project} onEscolher={onSetProjectIcon}
                             vizinhos={projects} pedido={pedidosDeIcone[project.id]} /></span>
                         )}
+                        {onRenameProject && projetoEmEdicao === project.id ? (
+                          <EditableLabel editing value={project.name} label={`Renomear projeto ${project.name}`}
+                            onEditingChange={(editando) => { if (!editando) setProjetoEmEdicao(null); }}
+                            onCommit={(nome) => onRenameProject(project.id, nome)}
+                            inputClassName="min-w-0 flex-1 border border-accent bg-bg-elevated px-2 py-2 text-xs text-text-primary outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent" />
+                        ) : (
                         <button
                           type="button"
                           data-nav-item
                           aria-current={project.id === activeProjectId ? "page" : undefined}
                           onClick={() => onSelectProject(project.id)}
+                          onDoubleClick={onRenameProject ? (evento) => { evento.stopPropagation(); setProjetoEmEdicao(project.id); } : undefined}
+                          onKeyDown={onRenameProject ? (evento) => { if (evento.key === "F2") { evento.preventDefault(); setProjetoEmEdicao(project.id); } } : undefined}
+                          onContextMenu={(evento) => {
+                            evento.preventDefault();
+                            setMenuDoProjeto({ projectId: project.id, nome: project.name, x: evento.clientX, y: evento.clientY });
+                          }}
                           className="flex min-w-0 flex-1 items-center gap-2.5 px-2 py-2 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
                           title={`${project.path}
-Arraste para mudar a ordem`}
+${onRenameProject ? "Clique duplo ou F2 para renomear · " : ""}Arraste para mudar a ordem`}
                         >
                           {!onSetProjectIcon && (
                             <span className="lateral-avatar grid h-8 w-8 shrink-0 place-items-center border border-border-subtle">
@@ -414,6 +433,7 @@ Arraste para mudar a ordem`}
                             </span>
                           </span>
                         </button>
+                        )}
                         {onSetProjectIcon && (
                           <button
                             type="button"
@@ -437,6 +457,14 @@ Arraste para mudar a ordem`}
                         </button>
                       </div>
                     ))
+                  )}
+                  {menuDoProjeto && (
+                    <MenuDoProjeto menu={menuDoProjeto} onFechar={() => setMenuDoProjeto(null)}
+                      onRenomear={onRenameProject ? () => setProjetoEmEdicao(menuDoProjeto.projectId) : undefined}
+                      onTrocarIcone={onSetProjectIcon
+                        ? () => setPedidosDeIcone((atual) => ({ ...atual, [menuDoProjeto.projectId]: (atual[menuDoProjeto.projectId] ?? 0) + 1 }))
+                        : undefined}
+                      onFecharProjeto={() => onCloseProject(menuDoProjeto.projectId)} />
                   )}
                 </div>
 

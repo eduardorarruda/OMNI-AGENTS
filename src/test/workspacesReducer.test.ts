@@ -15,6 +15,15 @@ function collection(): WorkspaceCollection {
 }
 
 describe("workspacesReducer", () => {
+  it("renomear projeto chega ao workspace ativo e sobrevive a salvar e reabrir", () => {
+    let state = workspacesReducer(collection(), { type: "ADD_PROJECT", path: "/home/u/Core-4-ERP" });
+    const projeto = state.workspaces[0].projects[0];
+    state = workspacesReducer(state, { type: "RENAME_PROJECT", projectId: projeto.id, name: "Core4erp produção" });
+    expect(state.workspaces[0].projects[0]).toMatchObject({ id: projeto.id, name: "Core4erp produção", path: "/home/u/Core-4-ERP" });
+    localStorage.setItem(WORKSPACES_STORAGE_KEY, JSON.stringify(state));
+    expect(loadWorkspaces().workspaces[0].projects[0].name).toBe("Core4erp produção");
+  });
+
   it("cria um segundo workspace, ativa ele e isola ações do primeiro", () => {
     let state = collection();
     const first = state.workspaces[0];

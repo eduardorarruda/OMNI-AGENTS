@@ -364,3 +364,24 @@ describe("workspaceReducer", () => {
     expect(paneIds(state.projects[0].layout)).toHaveLength(2);
   });
 });
+
+describe("RENAME_PROJECT", () => {
+  const comProjeto = () => workspaceReducer(emptyWorkspace(), { type: "ADD_PROJECT", path: "/home/u/Core-4-ERP" });
+
+  it("troca só o nome exibido, aparado; pasta e id ficam", () => {
+    const antes = comProjeto();
+    const projeto = antes.projects[0];
+    const depois = workspaceReducer(antes, { type: "RENAME_PROJECT", projectId: projeto.id, name: "  Core4erp produção  " });
+    expect(depois.projects[0]).toMatchObject({ id: projeto.id, path: "/home/u/Core-4-ERP", name: "Core4erp produção" });
+    expect(depois.activeProjectId).toBe(projeto.id);
+    expect(depois.projects[0].layout).toBe(projeto.layout);
+  });
+
+  it("nome vazio ou igual não muda nada", () => {
+    const antes = comProjeto();
+    const id = antes.projects[0].id;
+    expect(workspaceReducer(antes, { type: "RENAME_PROJECT", projectId: id, name: "   " })).toBe(antes);
+    expect(workspaceReducer(antes, { type: "RENAME_PROJECT", projectId: id, name: antes.projects[0].name })).toBe(antes);
+    expect(workspaceReducer(antes, { type: "RENAME_PROJECT", projectId: "nao-existe", name: "X" })).toBe(antes);
+  });
+});

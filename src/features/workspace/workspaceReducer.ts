@@ -240,6 +240,16 @@ export function workspaceReducer(state: WorkspaceState, action: WorkspaceAction)
         }),
         updatedAt: new Date().toISOString(),
       };
+    case "RENAME_PROJECT": {
+      const name = action.name.trim();
+      const alvo = state.projects.find((project) => project.id === action.projectId);
+      if (!alvo || !name || name === alvo.name) return state;
+      return {
+        ...state,
+        projects: state.projects.map((project) => (project.id === action.projectId ? { ...project, name } : project)),
+        updatedAt: new Date().toISOString(),
+      };
+    }
     case "MOVE_PROJECT": {
       const projects = moverAntes(state.projects, action.projectId, action.beforeId);
       return projects === state.projects ? state : { ...state, projects, updatedAt: new Date().toISOString() };

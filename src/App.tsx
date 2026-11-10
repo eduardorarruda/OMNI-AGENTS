@@ -318,6 +318,7 @@ export function App() {
         onRenameWorkspace={(workspaceId, name) => dispatch({ type: "RENAME_WORKSPACE", workspaceId, name })}
         onSetWorkspaceIcon={(workspaceId, icone) => dispatch({ type: "SET_WORKSPACE_ICON", workspaceId, icone })}
         onSetProjectIcon={(projectId, icone) => dispatch({ type: "SET_PROJECT_ICON", projectId, icone })}
+        onRenameProject={(projectId, name) => dispatch({ type: "RENAME_PROJECT", projectId, name })}
         attention={attention}
         onFocusSession={focusSession}
         onDismissAttention={(item) => dismissAttention(item.sessionId)}

@@ -3,7 +3,7 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Sidebar } from "../components/Sidebar";
 import type { AttentionItem } from "../features/terminal/useAttention";
-import type { WorkspaceState } from "../types/workspace";
+import type { Project, WorkspaceState } from "../types/workspace";
 import type { TerminalSession } from "../features/terminal/terminalService";
 
 vi.mock("../components/FileTree", () => ({ FileTree: () => null }));
@@ -232,5 +232,55 @@ describe("Sidebar", () => {
     renderSidebar({ onSetWorkspaceIcon: vi.fn() });
     await userEvent.click(screen.getByRole("button", { name: "Escolher ícone do workspace Cliente X" }));
     expect(await screen.findByRole("dialog", { name: "Ícone de Cliente X" })).toBeInTheDocument();
+  });
+  describe("renomear projeto (só o nome exibido)", () => {
+    const projeto: Project = {
+      id: "p1", name: "Core-4-ERP", path: "/home/u/Core-4-ERP", gitRoot: null, branch: null, composeFile: null, lastOpenedAt: "",
+      layout: { type: "pane", id: "pane-1", tabs: [], activeTabId: null }, activePaneId: "pane-1", maximizedPaneId: null,
+    } as Project;
+
+    it("duplo clique abre o campo; Enter salva com o id do projeto", async () => {
+      const onRenameProject = vi.fn();
+      renderSidebar({ projects: [projeto], activeProjectId: "p1", activeProjectPath: projeto.path, onRenameProject });
+      await userEvent.dblClick(screen.getByRole("button", { name: "Core-4-ERP" }));
+      const campo = screen.getByRole("textbox", { name: "Renomear projeto Core-4-ERP" });
+      await userEvent.clear(campo);
+      await userEvent.type(campo, "Core4erp produção{Enter}");
+      expect(onRenameProject).toHaveBeenCalledWith("p1", "Core4erp produção");
+      expect(screen.queryByRole("textbox", { name: /Renomear projeto/ })).toBeNull();
+    });
+
+    it("F2 abre o campo e Esc cancela sem salvar", async () => {
+      const onRenameProject = vi.fn();
+      renderSidebar({ projects: [projeto], activeProjectId: "p1", activeProjectPath: projeto.path, onRenameProject });
+      screen.getByRole("button", { name: "Core-4-ERP" }).focus();
+      await userEvent.keyboard("{F2}");
+      const campo = screen.getByRole("textbox", { name: "Renomear projeto Core-4-ERP" });
+      await userEvent.type(campo, "outro{Escape}");
+      expect(onRenameProject).not.toHaveBeenCalled();
+      expect(screen.queryByRole("textbox", { name: /Renomear projeto/ })).toBeNull();
+    });
+
+    it("menu do botão direito tem Renomear, que abre o campo", async () => {
+      const onRenameProject = vi.fn();
+      const onCloseProject = vi.fn();
+      renderSidebar({ projects: [projeto], activeProjectId: "p1", activeProjectPath: projeto.path, onRenameProject, onCloseProject });
+      await userEvent.pointer({ keys: "[MouseRight]", target: screen.getByRole("button", { name: "Core-4-ERP" }) });
+      const menu = screen.getByRole("menu", { name: "Ações do projeto Core-4-ERP" });
+      await userEvent.click(within(menu).getByRole("menuitem", { name: /Renomear/ }));
+      expect(screen.queryByRole("menu")).toBeNull();
+      expect(screen.getByRole("textbox", { name: "Renomear projeto Core-4-ERP" })).toHaveFocus();
+    });
+
+    it("menu também fecha o projeto e some no Esc", async () => {
+      const onCloseProject = vi.fn();
+      renderSidebar({ projects: [projeto], activeProjectId: "p1", activeProjectPath: projeto.path, onRenameProject: vi.fn(), onCloseProject });
+      await userEvent.pointer({ keys: "[MouseRight]", target: screen.getByRole("button", { name: "Core-4-ERP" }) });
+      await userEvent.keyboard("{Escape}");
+      expect(screen.queryByRole("menu")).toBeNull();
+      await userEvent.pointer({ keys: "[MouseRight]", target: screen.getByRole("button", { name: "Core-4-ERP" }) });
+      await userEvent.click(screen.getByRole("menuitem", { name: /Fechar projeto/ }));
+      expect(onCloseProject).toHaveBeenCalledWith("p1");
+    });
   });
 });

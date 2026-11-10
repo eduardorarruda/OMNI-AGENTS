@@ -94,6 +94,8 @@ export type WorkspaceAction =
   | { type: "MOVE_PROJECT"; projectId: string; beforeId: string | null }
   /** `icone` como em `Project.icone`; `undefined` volta para o automático. */
   | { type: "SET_PROJECT_ICON"; projectId: string; icone: string | null | undefined }
+  /** Só o nome exibido: `path` (a pasta) não muda. Aparado; vazio não muda nada. */
+  | { type: "RENAME_PROJECT"; projectId: string; name: string }
   | { type: "FOCUS_PANE"; paneId: string }
   | { type: "SELECT_TAB"; paneId: string; tabId: string }
   | { type: "CREATE_TAB"; paneId: string; kind?: PaneKind; title?: string; resourceId?: string }
