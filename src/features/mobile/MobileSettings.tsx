@@ -1,13 +1,13 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import type { ButtonHTMLAttributes } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import QRCode from "qrcode";
 import { Field, Input } from "../../components/ui";
 import { OmniLogo } from "../../components/ui/OmniLogo";
 import { CameraIcon, CheckIcon, CloseIcon, CopyIcon, LinkIcon, LockIcon, MonitorIcon, PlayIcon, ReloadIcon, ShieldIcon, StopIcon, TestTubeIcon } from "../../components/ui/PixelIcon";
 import { coresDaPaleta } from "../../lib/palettes";
 import { InstalarFerramenta } from "../terminal/InstalarFerramenta";
+import { Acao, QrPersonalizado } from "./remotoUi";
+import { LinkSeguro } from "./LinkSeguro";
 
 interface Settings {
   config: { enabled: boolean; bind: string; token: string; serve: boolean };
@@ -41,56 +41,10 @@ export function corDoQr(accent: string | undefined): string {
   return coresDaPaleta(accent, true).deep;
 }
 
-/** Caminho SVG de um quadrado de lado `l` com cantos de raio `r`. */
-const quadrado = (x: number, y: number, l: number, r: number) =>
-  `M${x + r} ${y}h${l - 2 * r}a${r} ${r} 0 0 1 ${r} ${r}v${l - 2 * r}a${r} ${r} 0 0 1-${r} ${r}h-${l - 2 * r}a${r} ${r} 0 0 1-${r}-${r}v-${l - 2 * r}a${r} ${r} 0 0 1 ${r}-${r}z`;
-
-/** QR desenhado em SVG com a cor do app: módulos em pontos, "olhos" de canto levemente arredondado (raio maior que esse
- *  e o leitor do OpenCV já não acha o QR), moldura em
- *  degradê com linha de leitura e a logo no centro. O miolo fica sem módulos de propósito: o QR sai com
- *  correção "H" (30%) para isso. Fundo branco porque a câmera precisa do contraste. */
-function QrPersonalizado({ texto, alt, tamanho, cor }: { texto: string; alt: string; tamanho: number; cor: string }) {
-  const desenho = useMemo(() => {
-    try {
-      const { size: n, data } = QRCode.create(texto, { errorCorrectionLevel: "H" }).modules;
-      const olho = (x: number, y: number) => (x < 7 && y < 7) || (x >= n - 7 && y < 7) || (x < 7 && y >= n - 7);
-      const miolo = Math.ceil(n * 0.22) | 1, m0 = (n - miolo) / 2;
-      const pontos: string[] = [];
-      for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
-        if (!data[y * n + x] || olho(x, y) || (x >= m0 && x < m0 + miolo && y >= m0 && y < m0 + miolo)) continue;
-        pontos.push(`M${x + 0.5} ${y + 0.08}a.42 .42 0 1 1 0 .84a.42 .42 0 1 1 0-.84`);
-      }
-      return { n, d: pontos.join(""), olhos: [[0, 0], [n - 7, 0], [0, n - 7]] };
-    } catch { return null; }
-  }, [texto]);
-  if (!desenho) return null;
-  const { n, d, olhos } = desenho;
-  return <div className="remoto-qr shrink-0">
-    <div className="remoto-qr-papel">
-      <svg role="img" aria-label={alt} width={tamanho} height={tamanho} viewBox={`-1 -1 ${n + 2} ${n + 2}`} className="block">
-        <path d={d} fill={cor} />
-        {olhos.map(([x, y]) => <g key={`${x}-${y}`} fill={cor}>
-          <path fillRule="evenodd" d={quadrado(x, y, 7, 0.6) + quadrado(x + 1, y + 1, 5, 0.3)} />
-          <rect x={x + 2} y={y + 2} width={3} height={3} rx={0.8} />
-        </g>)}
-      </svg>
-      <span aria-hidden className="remoto-qr-logo"><OmniLogo size={Math.round(tamanho * 0.15)} /></span>
-      <span aria-hidden className="remoto-qr-leitura" />
-    </div>
-  </div>;
-}
-
-/** Botão desta tela: ícone + texto, contorno com brilho; `forte` é a ação principal do passo. */
-function Acao({ icone: Icone, forte, children, ...rest }: ButtonHTMLAttributes<HTMLButtonElement> & { icone?: typeof LinkIcon; forte?: boolean }) {
-  return <button type="button" className={`remoto-acao${forte ? " is-forte" : ""}`} {...rest}>
-    {Icone && <Icone size={14} aria-hidden />}{children}
-  </button>;
-}
-
 /** Um passo da configuração, no mesmo painel `glass` das outras abas. O número vira ✓ verde quando o
  *  passo está feito — é o que dá a sensação de progresso. */
-function Passo({ n, titulo, feito, atual, children }: { n: number; titulo: string; feito?: boolean; atual?: boolean; children?: React.ReactNode }) {
-  return <li className={`remoto-passo${feito ? " is-feito" : ""}${atual ? " is-atual" : ""}`}>
+function Passo({ n, titulo, feito, atual, id, children }: { n: number; titulo: string; feito?: boolean; atual?: boolean; id?: string; children?: React.ReactNode }) {
+  return <li id={id} className={`remoto-passo${feito ? " is-feito" : ""}${atual ? " is-atual" : ""}`}>
     <span aria-hidden className="remoto-passo-num">{feito ? "✓" : n}</span>
     <div className="glass remoto-passo-corpo rounded-none p-5">
       <div className="flex items-center gap-3">
@@ -249,6 +203,12 @@ export function MobileSettings({ accent }: { accent?: string } = {}) {
       </div>
     </div>
 
+    <LinkSeguro totpConfirmado={Boolean(status?.totp_confirmed)} corQr={corQr} onConfigurarAuthy={() => {
+      document.getElementById("passo-authy")?.scrollIntoView?.({ behavior: "smooth", block: "center" });
+      if (!status?.totp_confirmed && !status?.totp_uri && !busy) void authy("reset");
+    }} />
+
+    <h3 className="pixel-text pt-2 text-xs text-text-muted">Ou pelo Tailscale (precisa do app nos dois aparelhos)</h3>
     <ol className="remoto-passos">
       <Passo n={1} titulo="Instale o Tailscale neste PC e no outro aparelho" feito={Boolean(status?.magic_dns)} atual={atual === 0}>
         {status?.magic_dns
@@ -370,7 +330,7 @@ export function MobileSettings({ accent }: { accent?: string } = {}) {
         </p> : <p className="text-xs text-text-muted">O código aparece aqui quando o acesso estiver ligado.</p>}
       </Passo>
 
-      <Passo n={4} titulo="Proteger com o Authy" feito={Boolean(status?.totp_confirmed)} atual={atual === 3}>
+      <Passo n={4} id="passo-authy" titulo="Proteger com o Authy" feito={Boolean(status?.totp_confirmed)} atual={atual === 3}>
         <p className="text-xs text-text-secondary">
           É o que libera o <strong>app da tela inicial do iPhone</strong>. Ele não enxerga o acesso que o QR
           acima guardou no Safari, então pede o código de 6 dígitos do Authy na primeira vez que abre.
