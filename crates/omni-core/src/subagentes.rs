@@ -44,7 +44,7 @@ pub struct Detalhe {
 /// terminou não está mais rodando.
 pub fn listar(transcript: &Path, viva: bool) -> Vec<Subagente> {
     let Ok(entradas) = std::fs::read_dir(pasta(transcript)) else { return Vec::new() };
-    let pai = std::fs::read_to_string(transcript).unwrap_or_default();
+    let pai = CaudaDoPai::new(transcript);
     let mut lista: Vec<_> = entradas.flatten().filter_map(|entrada| {
         let id = entrada.file_name().to_str()?.strip_prefix("agent-")?.strip_suffix(".jsonl")?.to_owned();
         Some(ler(&entrada.path(), id, viva, &pai)?.resumo)
@@ -56,19 +56,51 @@ pub fn listar(transcript: &Path, viva: bool) -> Vec<Subagente> {
 /// Detalhe do subagente `id`; `None` para id inválido ou que não existe.
 pub fn detalhe(transcript: &Path, id: &str, viva: bool) -> Option<Detalhe> {
     let caminho = arquivo(transcript, id)?;
-    let pai = std::fs::read_to_string(transcript).unwrap_or_default();
-    ler(&caminho, id.to_owned(), viva, &pai)
+    ler(&caminho, id.to_owned(), viva, &CaudaDoPai::new(transcript))
 }
 
-fn ler(caminho: &Path, id: String, viva: bool, pai: &str) -> Option<Detalhe> {
-    let meta: Value = std::fs::read(caminho.with_extension("meta.json")).ok()
-        .and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(Value::Null);
+/// Subagente que não terminou mas foi parado (`killed`/`stopped` no transcript da conversa).
+pub fn parado(transcript: &Path, id: &str) -> bool {
+    let Some(caminho) = arquivo(transcript, id) else { return false };
+    let meta = ler_meta(&caminho);
+    let tool_use_id = meta["toolUseId"].as_str().unwrap_or("");
+    !tool_use_id.is_empty() && CaudaDoPai::new(transcript).parou(tool_use_id)
+}
+
+/// O aviso `<task-notification>` de parada fica no fim do transcript da conversa: só a cauda é lida,
+/// e só na primeira vez que alguém pergunta (subagente que terminou nem pergunta).
+const CAUDA_DO_PAI: u64 = 256 * 1024;
+struct CaudaDoPai<'a> { transcript: &'a Path, texto: std::cell::OnceCell<String> }
+impl<'a> CaudaDoPai<'a> {
+    fn new(transcript: &'a Path) -> Self { Self { transcript, texto: std::cell::OnceCell::new() } }
+    fn parou(&self, tool_use_id: &str) -> bool {
+        parado_no_pai(self.texto.get_or_init(|| ler_cauda(self.transcript, CAUDA_DO_PAI)), tool_use_id)
+    }
+}
+
+fn ler_cauda(caminho: &Path, bytes: u64) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut arquivo) = std::fs::File::open(caminho) else { return String::new() };
+    let tamanho = arquivo.metadata().map_or(0, |m| m.len());
+    if arquivo.seek(SeekFrom::Start(tamanho.saturating_sub(bytes))).is_err() { return String::new(); }
+    let mut lido = Vec::new();
+    let _ = arquivo.read_to_end(&mut lido);
+    String::from_utf8_lossy(&lido).into_owned()
+}
+
+fn ler_meta(caminho: &Path) -> Value {
+    std::fs::read(caminho.with_extension("meta.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(Value::Null)
+}
+
+fn ler(caminho: &Path, id: String, viva: bool, pai: &CaudaDoPai) -> Option<Detalhe> {
+    let meta = ler_meta(caminho);
     let atualizado_ms = std::fs::metadata(caminho).ok()?.modified().ok()?
         .duration_since(std::time::UNIX_EPOCH).ok()?.as_millis() as u64;
     let leitura = percorrer(caminho);
     let terminou = leitura.terminou || meta["finished"] == true;
+    let tool_use_id = meta["toolUseId"].as_str().unwrap_or("");
     let estado = if terminou { "concluido" }
-        else if !viva || parado_no_pai(pai, meta["toolUseId"].as_str().unwrap_or("")) { "parado" }
+        else if !viva || (!tool_use_id.is_empty() && pai.parou(tool_use_id)) { "parado" }
         else { "rodando" };
     let mascarar = |t: String| crate::exportar::sem_segredos(&t);
     Some(Detalhe {
@@ -85,41 +117,86 @@ fn ler(caminho: &Path, id: String, viva: bool, pai: &str) -> Option<Detalhe> {
     })
 }
 
-#[derive(Default)]
-struct Leitura { terminou: bool, ultima_acao: Option<String>, prompt: Option<String>, desde_ms: Option<u64>, modelo: Option<String>, resultado: Option<String> }
+#[derive(Default, Clone)]
+struct Leitura { terminou: bool, entregou: bool, ultima_acao: Option<String>, prompt: Option<String>, desde_ms: Option<u64>, modelo: Option<String>, resultado: Option<String> }
 
-/// Uma passada pelo `.jsonl`: pedido (1ª fala do usuário), modelo, última ação e o fim.
+/// Até onde cada `.jsonl` de subagente já foi lido: o detalhe é relido a cada 3 s, e só o que a CLI
+/// acrescentou desde a última vez é processado.
+#[derive(Clone)]
+struct Lido { offset: u64, tamanho: u64, modificado: Option<std::time::SystemTime>, leitura: Leitura }
+const CACHE_MAX: usize = 256;
+fn lidos() -> &'static std::sync::Mutex<std::collections::HashMap<PathBuf, Lido>> {
+    static M: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, Lido>>> = std::sync::OnceLock::new();
+    M.get_or_init(Default::default)
+}
+
+/// Pedido (1ª fala do usuário), modelo, última ação e o fim, lendo só o que é novo no arquivo.
 fn percorrer(caminho: &Path) -> Leitura {
-    let mut l = Leitura::default();
-    let Ok(arquivo) = std::fs::File::open(caminho) else { return l };
-    let mut entregou = false;
-    for linha in BufReader::new(arquivo).lines().map_while(Result::ok) {
-        let Ok(valor) = serde_json::from_str::<Value>(&linha) else { continue };
-        let mensagem = &valor["message"];
-        if l.prompt.is_none() && valor["type"] == "user" {
-            l.prompt = texto_do_pedido(&mensagem["content"]);
-            l.desde_ms = crate::conversations::timestamp(&valor["timestamp"]);
-        }
-        if valor["type"] == "assistant" {
-            l.terminou = entregou || mensagem["stop_reason"] == "end_turn";
-            if let Some(m) = mensagem["model"].as_str().filter(|m| !m.starts_with('<')) { l.modelo = Some(m.to_owned()); }
-            for bloco in mensagem["content"].as_array().into_iter().flatten() {
-                if bloco["type"] == "tool_use" && bloco["name"] == "SubagentHandback" {
-                    entregou = true;
-                    l.terminou = true;
-                    l.resultado = bloco["input"]["message"].as_str().map(str::to_owned);
-                } else if bloco["type"] == "text" && !entregou {
-                    l.resultado = bloco["text"].as_str().filter(|t| !t.trim().is_empty()).map(str::to_owned).or(l.resultado.take());
-                }
-            }
-        }
-        for item in crate::feed::items_do_subagente(&valor) {
-            if item.kind == crate::feed::Kind::Tool {
-                l.ultima_acao = Some(format!("{} {}", item.tool.unwrap_or_default(), item.text).trim().to_owned());
+    use std::io::{Seek, SeekFrom};
+    let Ok(mut arquivo) = std::fs::File::open(caminho) else { return Leitura::default() };
+    let metadados = arquivo.metadata().ok();
+    let tamanho = metadados.as_ref().map_or(0, |m| m.len());
+    let modificado = metadados.and_then(|m| m.modified().ok());
+    let anterior = lidos().lock().ok().and_then(|m| m.get(caminho).cloned());
+    let mut lido = match anterior {
+        Some(l) if l.tamanho == tamanho && l.modificado == modificado => return l.leitura,
+        // Cresceu: continua de onde parou. Menor: foi trocado, recomeça.
+        Some(l) if tamanho >= l.offset => l,
+        _ => Lido { offset: 0, tamanho: 0, modificado: None, leitura: Leitura::default() },
+    };
+    if arquivo.seek(SeekFrom::Start(lido.offset)).is_err() { return lido.leitura; }
+    let mut leitor = BufReader::new(arquivo);
+    let mut linha = Vec::new();
+    let mut provisoria = None;
+    loop {
+        linha.clear();
+        let Ok(n) = leitor.read_until(b'\n', &mut linha) else { break };
+        if n == 0 { break; }
+        // Sem `\n` no fim: a linha pode estar no meio da escrita. Se já é JSON inteiro, vale para esta
+        // resposta, mas não entra no que fica guardado — a próxima leitura recomeça dela.
+        if linha.last() != Some(&b'\n') { provisoria = serde_json::from_slice::<Value>(&linha).ok(); break; }
+        lido.offset += n as u64;
+        if let Ok(valor) = serde_json::from_slice::<Value>(&linha) { acumular(&mut lido.leitura, &valor); }
+    }
+    lido.tamanho = tamanho;
+    lido.modificado = modificado;
+    let mut leitura = lido.leitura.clone();
+    if let Some(valor) = provisoria {
+        acumular(&mut leitura, &valor);
+        // Guardado sem a linha provisória: tamanho diferente força a releitura dela.
+        lido.tamanho = lido.offset;
+    }
+    if let Ok(mut mapa) = lidos().lock() {
+        if mapa.len() >= CACHE_MAX && !mapa.contains_key(caminho) { mapa.clear(); }
+        mapa.insert(caminho.to_path_buf(), lido);
+    }
+    leitura
+}
+
+fn acumular(l: &mut Leitura, valor: &Value) {
+    let mensagem = &valor["message"];
+    if l.prompt.is_none() && valor["type"] == "user" {
+        l.prompt = texto_do_pedido(&mensagem["content"]);
+        l.desde_ms = crate::conversations::timestamp(&valor["timestamp"]);
+    }
+    if valor["type"] == "assistant" {
+        l.terminou = l.entregou || mensagem["stop_reason"] == "end_turn";
+        if let Some(m) = mensagem["model"].as_str().filter(|m| !m.starts_with('<')) { l.modelo = Some(m.to_owned()); }
+        for bloco in mensagem["content"].as_array().into_iter().flatten() {
+            if bloco["type"] == "tool_use" && bloco["name"] == "SubagentHandback" {
+                l.entregou = true;
+                l.terminou = true;
+                l.resultado = bloco["input"]["message"].as_str().map(str::to_owned);
+            } else if bloco["type"] == "text" && !l.entregou {
+                l.resultado = bloco["text"].as_str().filter(|t| !t.trim().is_empty()).map(str::to_owned).or(l.resultado.take());
             }
         }
     }
-    l
+    for item in crate::feed::items_do_subagente(valor) {
+        if item.kind == crate::feed::Kind::Tool {
+            l.ultima_acao = Some(format!("{} {}", item.tool.unwrap_or_default(), item.text).trim().to_owned());
+        }
+    }
 }
 
 fn texto_do_pedido(conteudo: &Value) -> Option<String> {
@@ -210,5 +287,31 @@ mod tests {
         assert_eq!(listar(&transcript, true).iter().find(|s| s.id == "a2").unwrap().estado, "concluido");
         assert!(detalhe(&transcript, "../a1", true).is_none());
         assert!(detalhe(&transcript, "zz", true).is_none());
+    }
+
+    /// Relido a cada 3 s: só o que foi acrescentado é processado, e a linha ainda sem `\n` aparece
+    /// sem ser contada duas vezes.
+    #[test]
+    fn detalhe_le_so_o_que_foi_acrescentado() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let transcript = dir.path().join("sessao.jsonl");
+        let sub = pasta(&transcript);
+        std::fs::create_dir_all(&sub).unwrap();
+        let acao = |cmd: &str| json!({"type":"assistant","isSidechain":true,"message":{"role":"assistant","stop_reason":"tool_use",
+            "content":[{"type":"tool_use","id":"t","name":"Bash","input":{"command":cmd}}]}}).to_string();
+        let pedido = json!({"type":"user","isSidechain":true,"message":{"role":"user","content":"faça"}}).to_string();
+        std::fs::write(sub.join("agent-b1.jsonl"), format!("{pedido}\n{}", acao("um"))).unwrap();
+        assert_eq!(detalhe(&transcript, "b1", true).unwrap().resumo.ultima_acao.as_deref(), Some("Bash um"), "linha sem \\n já aparece");
+        let mut f = std::fs::OpenOptions::new().append(true).open(sub.join("agent-b1.jsonl")).unwrap();
+        write!(f, "\n{}\n", acao("dois")).unwrap();
+        let d = detalhe(&transcript, "b1", true).unwrap();
+        assert_eq!((d.resumo.ultima_acao.as_deref(), d.prompt.as_str()), (Some("Bash dois"), "faça"));
+        // Parado: o aviso está na cauda do transcript da conversa.
+        std::fs::write(sub.join("agent-b1.meta.json"), r#"{"toolUseId":"tu9"}"#).unwrap();
+        assert!(!parado(&transcript, "b1"));
+        std::fs::write(&transcript, format!("{}<tool-use-id>tu9</tool-use-id>\n<status>killed</status>", "x".repeat(300 * 1024))).unwrap();
+        assert!(parado(&transcript, "b1"));
+        assert_eq!(detalhe(&transcript, "b1", true).unwrap().resumo.estado, "parado");
     }
 }

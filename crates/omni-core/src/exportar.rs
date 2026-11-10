@@ -56,6 +56,15 @@ pub fn sem_segredos(texto: &str) -> String {
     }).collect::<Vec<_>>().join("\n")
 }
 
+/// Linha de diff (`+`, `-` ou espaço na frente) sem segredo. O marcador conta como parte do token em
+/// [`sem_segredos`] (`-sk-ant-…` passaria inteiro), então mascara só o conteúdo e o recoloca.
+pub fn sem_segredos_no_diff(linha: &str) -> String {
+    match linha.chars().next() {
+        Some(marca @ ('+' | '-' | ' ')) => format!("{marca}{}", sem_segredos(&linha[1..])),
+        _ => sem_segredos(linha),
+    }
+}
+
 /// O pacote em Markdown. `itens` na ordem da conversa, como a timeline.
 pub fn pacote(titulo: &str, cwd: &str, provider: &str, itens: &[(String, Item)]) -> String {
     let agente = nome_do_agente(provider);
@@ -183,6 +192,12 @@ mod tests {
     fn segredos_em_variavel_somem_e_texto_comum_fica() {
         assert_eq!(sem_segredos("DB_PASSWORD=hunter2"), "DB_PASSWORD=[segredo removido]");
         assert_eq!(sem_segredos("task-runner e sk-ok"), "task-runner e sk-ok");
+        for marca in ['+', '-', ' '] {
+            let linha = format!("{marca}sk-ant-abc123DEF456ghi789JKL012");
+            assert_eq!(sem_segredos_no_diff(&linha), format!("{marca}[segredo removido]"));
+            assert_eq!(sem_segredos_no_diff(&format!("{marca}ghp_abcdefghijklmnopqrstuvwxyz0123456789")), format!("{marca}[segredo removido]"));
+        }
+        assert_eq!(sem_segredos_no_diff("+let x = 1;"), "+let x = 1;");
         assert_eq!(slug("Login Quebra no Safári!"), "login-quebra-no-safari");
     }
 }

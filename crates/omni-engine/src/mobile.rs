@@ -970,7 +970,10 @@ async fn fluxos_historico(State(state): State<Arc<EngineState>>, RoutePath((id, 
 #[derive(Deserialize)] struct DesdeEvento { #[serde(default)] desde: u64 }
 /// Linha do tempo da execução, por cursor: `?desde=N` devolve só os eventos com `seq` maior que N.
 async fn fluxos_eventos(State(state): State<Arc<EngineState>>, RoutePath(id): RoutePath<String>, Query(q): Query<DesdeEvento>) -> Result<Json<Value>, ApiError> {
-    tokio::task::spawn_blocking(move || super::fluxos::eventos::ler_desde(&state,&id,q.desde).map(|e| Json(json!(e))).map_err(|e| error(StatusCode::BAD_REQUEST,&e.to_string())))
+    // O evento `falha` traz o stderr da CLI, e o token do celular lê esta rota: sai sem segredo.
+    let mascarar = |eventos: Vec<super::fluxos::eventos::Evento>| eventos.into_iter()
+        .map(|e| super::fluxos::eventos::Evento { texto: omni_core::exportar::sem_segredos(&e.texto), ..e }).collect::<Vec<_>>();
+    tokio::task::spawn_blocking(move || super::fluxos::eventos::ler_desde(&state,&id,q.desde).map(|e| Json(json!(mascarar(e)))).map_err(|e| error(StatusCode::BAD_REQUEST,&e.to_string())))
         .await.map_err(|_|error(StatusCode::INTERNAL_SERVER_ERROR,"Falha ao ler a linha do tempo"))?
 }
 
@@ -1310,7 +1313,7 @@ async fn subagentes(State(state): State<Arc<EngineState>>, RoutePath(id): RouteP
 fn item_sem_segredos(mut item: omni_core::feed::Item) -> omni_core::feed::Item {
     item.text = omni_core::exportar::sem_segredos(&item.text);
     if let Some(diff) = item.diff.as_mut() {
-        diff.linhas = diff.linhas.iter().map(|l| omni_core::exportar::sem_segredos(l)).collect();
+        diff.linhas = diff.linhas.iter().map(|l| omni_core::exportar::sem_segredos_no_diff(l)).collect();
     }
     item
 }
@@ -3122,6 +3125,18 @@ mod tests {
         assert_eq!(corpo["subagente"]["tipo"],"Explore");
         assert_eq!(corpo["subagente"]["estado"],"parado","sessão não está aberta no PC");
         assert!(corpo["subagente"]["prompt"].as_str().unwrap().starts_with("Leia tudo."));
+    }
+
+    /// O evento `falha` grava o stderr cru da CLI; a linha do tempo sai sem a chave. Chave falsa.
+    #[tokio::test] async fn eventos_de_fluxo_saem_sem_segredos() {
+        let (dir,state) = fixture();
+        let pasta = dir.path().join("execucoes").join("ex1");
+        std::fs::create_dir_all(&pasta).unwrap();
+        let evento = json!({"seq":1,"ms":1,"no":"n1","tipo":"falha","texto":"claude saiu: invalid key sk-ant-abc123DEF456ghi789JKL012"});
+        std::fs::write(pasta.join("eventos.jsonl"),format!("{evento}\n")).unwrap();
+        let EngineResponse::Api { status, body } = local(state,"GET","/fluxos/execucoes/ex1/eventos",None,None,vec![]).await else { panic!("não é Api") };
+        assert_eq!(status,200,"{body}");
+        assert!(body.contains("claude saiu: invalid key") && !body.contains("sk-ant-abc123DEF456ghi789JKL012"),"{body}");
     }
 
     #[test] fn base64_decode_confere_com_os_casos_do_rfc() {

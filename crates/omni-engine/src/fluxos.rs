@@ -161,9 +161,26 @@ pub fn carregar(state: &EngineState) {
 pub fn listar() -> Vec<Value> {
     let mut lista: Vec<Execucao> = execucoes().lock().expect("execucoes").values().filter_map(|v| v.lock().ok().map(|e| e.clone())).collect();
     lista.sort_by_key(|e| std::cmp::Reverse(e.criado_ms));
-    lista.into_iter().map(|e| json!({"id": e.id, "fluxo": e.fluxo.nome, "fluxo_id": e.fluxo.id, "projeto": e.projeto, "projeto_id": e.projeto_id,
-        "entrada": e.entrada.chars().take(160).collect::<String>(), "status": e.status, "criado_ms": e.criado_ms, "atualizado_ms": e.atualizado_ms,
-        "pr_url": e.pr_url, "custo_usd": e.custo_usd, "erro": e.erro, "aviso_seq": e.aviso_seq, "aviso": e.aviso, "pai": e.pai.map(|p| p.execucao)})).collect()
+    lista.into_iter().map(resumo_da_lista).collect()
+}
+
+/// Linha de `listar`: vai ao celular, então entrada, erro e aviso saem sem segredo.
+fn resumo_da_lista(e: Execucao) -> Value {
+    let mascarar = |t: &str| omni_core::exportar::sem_segredos(t);
+    json!({"id": e.id, "fluxo": e.fluxo.nome, "fluxo_id": e.fluxo.id, "projeto": e.projeto, "projeto_id": e.projeto_id,
+        "entrada": mascarar(&e.entrada.chars().take(160).collect::<String>()), "status": e.status, "criado_ms": e.criado_ms, "atualizado_ms": e.atualizado_ms,
+        "pr_url": e.pr_url, "custo_usd": e.custo_usd, "erro": e.erro.as_deref().map(mascarar), "aviso_seq": e.aviso_seq,
+        "aviso": e.aviso.as_deref().map(mascarar), "pai": e.pai.map(|p| p.execucao)})
+}
+
+/// Toda string dentro de `valor` (config de nó: prompt, objetivo, comando…) sem segredo.
+fn sem_segredos_no_valor(valor: &mut Value) {
+    match valor {
+        Value::String(t) => *t = omni_core::exportar::sem_segredos(t),
+        Value::Array(itens) => itens.iter_mut().for_each(sem_segredos_no_valor),
+        Value::Object(campos) => campos.values_mut().for_each(sem_segredos_no_valor),
+        _ => {}
+    }
 }
 
 pub fn obter(id: &str) -> Option<Execucao> { execucoes().lock().ok()?.get(id)?.lock().ok().map(|e| e.clone()) }
@@ -959,7 +976,7 @@ fn sem_segredos_no_item(mut item: Value) -> Value {
     if let Some(texto) = item["text"].as_str() { item["text"] = json!(omni_core::exportar::sem_segredos(texto)); }
     if let Some(linhas) = item["diff"]["linhas"].as_array_mut() {
         for linha in linhas.iter_mut() {
-            if let Some(texto) = linha.as_str() { *linha = json!(omni_core::exportar::sem_segredos(texto)); }
+            if let Some(texto) = linha.as_str() { *linha = json!(omni_core::exportar::sem_segredos_no_diff(texto)); }
         }
     }
     item
@@ -970,6 +987,10 @@ fn sem_segredos_no_item(mut item: Value) -> Value {
 pub fn para_a_tela(mut e: Execucao) -> Execucao {
     let mascarar = |t: &str| omni_core::exportar::sem_segredos(t);
     e.erro = e.erro.as_deref().map(mascarar);
+    e.entrada = mascarar(&e.entrada);
+    e.aviso = e.aviso.as_deref().map(mascarar);
+    e.fluxo.descricao = mascarar(&e.fluxo.descricao);
+    for no in e.fluxo.nos.iter_mut() { sem_segredos_no_valor(&mut no.config); }
     for n in e.nos.values_mut() {
         n.saida = mascarar(&n.saida);
         n.atividade = mascarar(&n.atividade);
@@ -1123,10 +1144,13 @@ mod tests {
                 {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": format!("gh auth login --with-token {token}")}}]}}),
             json!({"type": "item.completed", "item": {"type": "command_execution", "command": format!("export OPENAI={chave}")}}),
             json!({"type": "item.completed", "item": {"type": "agent_message", "text": format!("token {token}")}}),
+            json!({"type": "assistant", "message": {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "t2", "name": "Write", "input": {"file_path": "/p/.env", "content": chave}}]}}),
         ];
         fs::write(pasta.join("n1.log"), eventos.iter().map(|e| format!("{e}\n")).collect::<String>()).unwrap();
         let itens = historico(&state, "ex1", "n1").unwrap();
-        assert_eq!(itens.len(), 6, "{itens:?}");
+        assert_eq!(itens.len(), 7, "{itens:?}");
+        assert_eq!(itens[6]["diff"]["linhas"][0], "+[segredo removido]", "linha de diff só com a chave");
         let tudo = serde_json::to_string(&itens).unwrap();
         assert!(!tudo.contains(chave) && !tudo.contains(token), "{tudo}");
     }
@@ -1138,10 +1162,17 @@ mod tests {
         let mut e: Execucao = serde_json::from_value(json!({"id": "x", "fluxo": serde_json::to_value(fluxo_simples()).unwrap(), "projeto": "P",
             "projeto_id": "p", "entrada": "x", "pasta": "/p", "status": "falhou", "erro": format!("falhou: {chave}"), "criado_ms": 1, "atualizado_ms": 1,
             "nos": {"c": {"status": "falhou", "saida": format!("API_KEY={chave}"), "atividade": format!("Bash curl {chave}"), "erro": chave}}, "fila": []})).unwrap();
+        e.entrada = format!("use {chave}");
+        e.aviso = Some(format!("falhou com {chave}"));
+        if let Some(no) = e.fluxo.nos.first_mut() { no.config = json!({"prompt": format!("Chame a API com {chave}"), "lista": [chave]}); }
+        let lista = resumo_da_lista(e.clone());
+        assert!(!lista.to_string().contains(chave), "{lista}");
+        assert!(lista["entrada"].as_str().unwrap().starts_with("use "));
         e = para_a_tela(e);
         let tudo = serde_json::to_string(&e).unwrap();
         assert!(!tudo.contains(chave), "{tudo}");
         assert_eq!(e.nos["c"].status, "falhou");
+        assert!(e.fluxo.nos[0].config["prompt"].as_str().unwrap().starts_with("Chame a API com"));
     }
 
     /// Sem CLI nenhuma: entrada → aprovação para e espera; aprovar segue até o fim. Estado gravado

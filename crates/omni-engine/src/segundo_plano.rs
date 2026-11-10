@@ -33,7 +33,10 @@ pub fn reunir(sessoes: &[SessaoNoOmni], execucoes: &[Value], agora_ms: u64) -> V
                 desde_ms: None, projeto_id: s.projeto_id.clone(), sessao: Some(s.conversa_id.clone()), execucao: None, subagente: None, concluido_ms: None });
         }
         let subagentes = s.pasta_de_subagentes.as_deref().filter(|_| s.provider == "claude").map(|p| subagentes_ativos(p, agora_ms)).unwrap_or_default();
+        // Parado pelo usuário ou pela CLI: o `.jsonl` foi escrito há pouco, mas ele não roda mais.
+        let transcript = s.pasta_de_subagentes.as_deref().and_then(Path::parent).map(|p| p.with_extension("jsonl"));
         for a in subagentes {
+            if !a.concluido && transcript.as_deref().is_some_and(|t| omni_core::subagentes::parado(t, &a.id)) { continue; }
             let atividade = if !a.ultima_acao.is_empty() { a.ultima_acao } else if a.concluido { "Concluído".into() } else { "Trabalhando".into() };
             itens.push(ItemDeFundo { tipo: "subagente".into(), titulo: a.nome, atividade,
                 desde_ms: Some(a.desde_ms), projeto_id: s.projeto_id.clone(), sessao: Some(s.conversa_id.clone()), execucao: None,
@@ -238,5 +241,18 @@ mod tests {
         }
         let itens = reunir(&[sessao("ca", "pa", Some(pasta), false)], &[], agora());
         assert_eq!(itens.iter().filter(|i| i.concluido_ms.is_some()).count(), CONCLUIDOS_MAX);
+    }
+
+    #[test]
+    fn subagente_parado_sai_da_lista_do_que_roda() {
+        let dir = tempfile::tempdir().unwrap();
+        let transcript = dir.path().join("sessao.jsonl");
+        let pasta = transcript.with_extension("").join("subagents");
+        subagente_recente(&pasta);
+        std::fs::write(pasta.join("agent-x.meta.json"), r#"{"toolUseId":"tu1"}"#).unwrap();
+        let sessoes = [sessao("ca", "pa", Some(pasta), false)];
+        assert_eq!(reunir(&sessoes, &[], agora()).len(), 1);
+        std::fs::write(&transcript, "<tool-use-id>tu1</tool-use-id>\n<status>killed</status>").unwrap();
+        assert!(reunir(&sessoes, &[], agora()).is_empty());
     }
 }
