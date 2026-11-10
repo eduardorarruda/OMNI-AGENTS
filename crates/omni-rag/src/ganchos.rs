@@ -13,12 +13,28 @@ pub const MARCA_DA_PASSADA: &str = "OMNI_MEMORIA_PASSADA";
 const INDICE_NA_PASSADA: usize = 60;
 const ARQUIVO_DESLIGADA: &str = "memoria.desligada";
 
+/// O MCP do OMNI nas sessões do Claude abertas pelo OMNI (`--mcp-config`). Ligado por padrão.
+const ARQUIVO_MCP_DESLIGADO: &str = "mcp.desligado";
+
 pub fn memoria_ligada(base_db: &Path) -> bool {
     !base_db.with_file_name(ARQUIVO_DESLIGADA).exists()
 }
 
 pub fn ligar_memoria(base_db: &Path, ligada: bool) -> Result<(), String> {
-    let marca = base_db.with_file_name(ARQUIVO_DESLIGADA);
+    marcar(base_db, ARQUIVO_DESLIGADA, ligada)
+}
+
+pub fn mcp_ligado(base_db: &Path) -> bool {
+    !base_db.with_file_name(ARQUIVO_MCP_DESLIGADO).exists()
+}
+
+pub fn ligar_mcp(base_db: &Path, ligado: bool) -> Result<(), String> {
+    marcar(base_db, ARQUIVO_MCP_DESLIGADO, ligado)
+}
+
+/// Desligado = arquivo-marca ao lado do banco; ligado = sem ele.
+fn marcar(base_db: &Path, arquivo: &str, ligada: bool) -> Result<(), String> {
+    let marca = base_db.with_file_name(arquivo);
     if ligada {
         if marca.exists() { std::fs::remove_file(marca).map_err(|erro| erro.to_string())?; }
         return Ok(());

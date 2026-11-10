@@ -14,8 +14,8 @@ export interface EntradaChangelog {
 
 export const CHANGELOG: EntradaChangelog[] = [
   {
-    version: "0.7.13",
-    date: "2026-11-06",
+    version: "0.7.15",
+    date: "2026-11-09",
     changes: [
       "Corrigido: mandar mensagem não dá mais o erro \"O contexto mudou; atualize antes de responder\". Com o agente ocupado, ela espera a vez sozinha.",
       "Fila de mensagens: clique no X para tirar uma mensagem antes de ela entrar, no computador e no celular. Parar segura a fila, e a mensagem que ia entrar volta para ela.",
@@ -28,6 +28,30 @@ export const CHANGELOG: EntradaChangelog[] = [
       "Novo: grafo de conhecimento, com as ligações entre as suas notas de memória.",
       "Corrigido: arquivo citado na conversa que aparecia como \"Não existe no disco\" agora é achado pelo nome.",
       "Servidores Locais agora funcionam no Linux, e derrubar um servidor leva junto o que ele abriu.",
+    ],
+  },
+  {
+    version: "0.7.14",
+    date: "2026-11-08",
+    changes: [
+      "Corrigido: um texto estranho (\"selectable: no desktop…\") aparecia no meio das mensagens da conversa.",
+      "Corrigido: conversas retomadas pelo Histórico em versões anteriores mostravam \"Esta aba ainda não tem uma conversa registrada\". Agora a aba se liga sozinha à conversa.",
+      "Removido o \"Ver terminal ao vivo\" da conversa. A aba Terminal continua igual.",
+    ],
+  },
+  {
+    version: "0.7.13",
+    date: "2026-11-08",
+    changes: [
+      "Novo: veja os subagentes do Claude trabalhando dentro da conversa, com o que cada um está fazendo, e pare só um deles sem interromper os outros.",
+      "Novo: \"Ver terminal ao vivo\" na conversa, para acompanhar o terminal rodando sem trocar de aba.",
+      "Novo: tela Conhecimento, com uma base de documentos e a memória que o Claude pode consultar quando você pedir.",
+      "Imagens que o agente cita (como um print) aparecem na conversa num cartão com o nome do arquivo. Clicar no caminho escrito na resposta abre a imagem.",
+      "Corrigido: imagens não apareciam em conversas que trocaram de conta.",
+      "Corrigido: apertar Enter logo depois de o agente responder às vezes dava \"O contexto mudou\".",
+      "Corrigido: conversas do Codex apareciam vazias, sem as ações nem as mensagens anteriores.",
+      "Corrigido: ao criar uma conversa pelo navegador, o campo do nome perdia o foco e a conta voltava para Automática.",
+      "Corrigido: retomar uma conversa pelo Histórico deixava a aba Conversa em erro.",
     ],
   },
   {

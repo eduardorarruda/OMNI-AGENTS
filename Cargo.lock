@@ -2784,7 +2784,7 @@ dependencies = [
 
 [[package]]
 name = "omni-agents"
-version = "0.7.12"
+version = "0.7.14"
 dependencies = [
  "base64 0.22.1",
  "omni-core",
@@ -2838,6 +2838,7 @@ dependencies = [
  "include_dir",
  "omni-core",
  "omni-protocol",
+ "omni-rag",
  "portable-pty",
  "rand",
  "serde",

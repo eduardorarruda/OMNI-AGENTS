@@ -1,15 +1,12 @@
 //! Tela Conhecimento: a base mora no crate `omni-rag`; aqui só ficam a importação em segundo plano
-//! e o registro do MCP no Claude.
+//! e os interruptores da memória e do MCP.
 use omni_rag::{caminho_padrao, ganchos, grafo::{grafo_com_cache, Grafo}, Base, Fonte, Resultado};
 use serde::Serialize;
-use serde_json::Value;
 use std::{
-    path::{Path, PathBuf},
-    process::Command,
+    path::Path,
     sync::Once,
 };
 
-const NOME_DO_MCP: &str = "omni-rag";
 const RESULTADOS_NA_TELA: usize = 10;
 static RECUPERAR: Once = Once::new();
 
@@ -77,34 +74,14 @@ pub async fn rag_memoria_ligar(ligada: bool) -> Result<(), String> {
     bloqueante(move || ganchos::ligar_memoria(&caminho_padrao().ok_or("pasta de dados não encontrada")?, ligada)).await
 }
 
-fn configuracao_do_claude() -> Option<PathBuf> {
-    std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(|home| PathBuf::from(home).join(".claude.json"))
-}
-
+/// O MCP do OMNI entra nas sessões do Claude que o OMNI abre (`--mcp-config`, no engine): sem
+/// registrar nada no `.claude.json` de conta nenhuma. Aqui é só o interruptor.
 #[tauri::command]
 pub async fn rag_claude_ligado() -> Result<bool, String> {
-    bloqueante(|| {
-        let Some(caminho) = configuracao_do_claude() else { return Ok(false) };
-        let Ok(texto) = std::fs::read_to_string(caminho) else { return Ok(false) };
-        let estado: Value = serde_json::from_str(&texto).map_err(|erro| erro.to_string())?;
-        Ok(estado["mcpServers"][NOME_DO_MCP].is_object())
-    }).await
-}
-
-/// O app aberto pelo menu não tem o PATH do terminal: quem acha o `claude` é o shell de login.
-fn no_shell(comando: &str) -> Result<(), String> {
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
-    let saida = Command::new(shell).args(["-l", "-c", comando]).output().map_err(|erro| erro.to_string())?;
-    if saida.status.success() { return Ok(()); }
-    Err(format!("o Claude recusou: {}", String::from_utf8_lossy(&saida.stderr).trim()))
+    bloqueante(|| Ok(ganchos::mcp_ligado(&caminho_padrao().ok_or("pasta de dados não encontrada")?))).await
 }
 
 #[tauri::command]
 pub async fn rag_claude_ligar(ligado: bool) -> Result<(), String> {
-    bloqueante(move || {
-        if !ligado { return no_shell(&format!("claude mcp remove --scope user {NOME_DO_MCP}")); }
-        let executavel = std::env::current_exe().map_err(|erro| erro.to_string())?.with_file_name(NOME_DO_MCP);
-        if !executavel.is_file() { return Err(format!("não achei {}", executavel.display())); }
-        no_shell(&format!("claude mcp add --scope user {NOME_DO_MCP} -- '{}' mcp", executavel.display()))
-    }).await
+    bloqueante(move || ganchos::ligar_mcp(&caminho_padrao().ok_or("pasta de dados não encontrada")?, ligado)).await
 }

@@ -119,10 +119,10 @@ export function ConhecimentoView({ onClose }: { onClose: () => void }) {
 
       <label className="flex items-center gap-2 text-xs text-text-secondary">
         <input type="checkbox" checked={claude === true} disabled={claude === null || mudandoClaude} onChange={() => void alternarClaude()} />
-        Deixar o Claude consultar esta base quando eu pedir
+        Deixar o Claude usar o OMNI quando eu pedir: esta base, o histórico, a memória e os fluxos
         {mudandoClaude && <span className="text-text-muted">aplicando…</span>}
       </label>
-      {claude && <p className="text-[11px] text-text-muted">Vale para as conversas novas. As abertas precisam ser reiniciadas.</p>}
+      {claude && <p className="text-[11px] text-text-muted">Vale para as conversas do Claude abertas pelo OMNI a partir de agora; as abertas precisam ser reiniciadas. Aprovar etapas de fluxo continua só na tela.</p>}
 
       <label className="flex items-center gap-2 text-xs text-text-secondary">
         <input type="checkbox" aria-label="Memória compartilhada" checked={memoria?.ligada === true} disabled={!memoria} onChange={() => void alternarMemoria()} />

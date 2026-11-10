@@ -30,10 +30,11 @@ import {
   duplicateTerminal,
   ensureAgentTrust,
   ensureEngine,
-  listAgentClis,
-  restartTerminal,
   attachTerminal,
   beginConversation,
+  listAgentClis,
+  listConversations,
+  restartTerminal,
   spawnTerminal,
 } from "./features/terminal/terminalService";
 import { ConhecimentoView } from "./features/conhecimento/ConhecimentoView";
@@ -225,15 +226,13 @@ export function App() {
     // Outra conta: o transcript vai para lá antes, senão o `--resume` não acha a conversa.
     await levarParaConta(entry, profileId);
     await ensureAgentTrust(cli.id, cwd, profileId);
-    // Sem uma conversa registrada, a aba Conversa da sessão retomada ficava vazia.
-    const plano = await beginConversation({
-      projectId,
-      cwd,
-      provider: cli.id,
-      profileId,
-      command: resumeCommand(cli.command, entry),
-      title: entry.title ?? undefined,
-    });
+    // Sem conversa ligada, a aba Conversa não tem o que mostrar: reusa a do OMNI com esta sessão
+    // ou registra uma nova (conversa aberta fora do OMNI).
+    const command = resumeCommand(cli.command, entry);
+    const existente = (await listConversations()).find((c) => c.segments.some((s) => s.external_session_id === entry.session_id));
+    const plano = existente
+      ? { conversation_id: existente.id, initial_command: command }
+      : await beginConversation({ projectId, cwd, provider: cli.id, profileId, command, title: entry.title ?? undefined });
     const session = await spawnTerminal({
       projectId,
       name: `${cli.label} · ${(entry.title ?? "retomada").slice(0, 40)}`,

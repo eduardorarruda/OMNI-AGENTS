@@ -661,34 +661,53 @@ fn sem_aviso_de_update(comando: &str) -> String {
     format!("{binario} -c check_for_update_on_startup=false{}{resto}", if resto.is_empty() { "" } else { " " })
 }
 
-/// Só o `claude` interativo ganha a memória: `claude mcp ...` e afins não têm conversa.
-fn com_ganchos(comando: &str, arquivo: &str) -> String {
-    let mut partes = comando.split_whitespace();
-    let nome = partes.next().unwrap_or("").trim_matches('"').rsplit(['/', '\\']).next().unwrap_or("");
-    let conversa = partes.next().is_none_or(|argumento| argumento.starts_with('-'));
-    if nome != "claude" || !conversa || comando.contains("--settings") || comando.contains(" -p") { return comando.to_owned(); }
-    format!("{comando} --settings '{arquivo}'")
+/// `omni-rag` ao lado do engine, com o mesmo sufixo (no dev o nome leva o triple).
+fn caminho_do_rag() -> Option<PathBuf> {
+    let atual = env::current_exe().ok()?;
+    let nome = atual.file_name()?.to_string_lossy().into_owned();
+    let candidato = atual.with_file_name(nome.replacen("omni-engine", "omni-rag", 1));
+    candidato.is_file().then_some(candidato)
 }
 
-/// Grava os ganchos da memória e devolve o arquivo. `--settings` vale só para esta sessão: o Claude
-/// usado fora do OMNI, como o do Desktop, não muda. Sem o `omni-rag` ao lado, segue sem memória.
-fn arquivo_de_ganchos() -> Option<String> {
-    if cfg!(windows) { return None; }
-    let rag = env::current_exe().ok()?.with_file_name("omni-rag");
-    if !rag.is_file() { return None; }
-    let arquivo = engine_dir().ok()?.join("memoria-ganchos.json");
-    let gancho = |evento: &str, segundos: u32| serde_json::json!([{"hooks": [{"type": "command", "command": format!("'{}' hook {evento}", rag.display()), "timeout": segundos}]}]);
-    let conteudo = serde_json::json!({"hooks": {
-        "UserPromptSubmit": gancho("prompt", 5), "SessionStart": gancho("inicio", 5), "PostCompact": gancho("compactou", 5), "Stop": gancho("fim", 5),
-    }});
-    fs::write(&arquivo, conteudo.to_string()).ok()?;
-    Some(arquivo.to_string_lossy().into_owned())
+/// Só o `claude` interativo ganha memória e MCP: `claude mcp ...`, `claude -p` e afins não têm conversa.
+fn com_extras_do_claude(comando: &str, extras: &str) -> String {
+    let mut partes = comando.split_whitespace();
+    let nome = partes.next().unwrap_or("").trim_matches(['"', '\'']).rsplit(['/', '\\']).next().unwrap_or("")
+        .trim_end_matches(".exe").trim_end_matches(".cmd");
+    let conversa = partes.next().is_none_or(|argumento| argumento.starts_with('-'));
+    let ja_tem = comando.contains("--settings") || comando.contains("--mcp-config");
+    if extras.is_empty() || nome != "claude" || !conversa || ja_tem || comando.contains(" -p") { return comando.to_owned(); }
+    format!("{comando} {extras}")
+}
+
+/// Os argumentos que ligam a memória (ganchos, `--settings`) e o MCP do OMNI (`--mcp-config`) nesta
+/// sessão. Valem só para o Claude que o OMNI abre: o usado fora dele não muda, e cobre toda conta sem
+/// mexer no `.claude.json` de nenhuma. Caminhos com `/` e entre aspas simples: valem no Git Bash e no
+/// PowerShell, os dois shells do engine. Sem o `omni-rag` ao lado (dev sem build), nada muda.
+fn extras_do_claude() -> String {
+    let (Some(rag), Some(base), Ok(dir)) = (caminho_do_rag(), omni_rag::caminho_padrao(), engine_dir()) else { return String::new() };
+    let barra = |caminho: &Path| caminho.to_string_lossy().replace('\\', "/");
+    let exe = barra(&rag);
+    let mut extras = Vec::new();
+    if omni_rag::ganchos::memoria_ligada(&base) {
+        let gancho = |evento: &str| serde_json::json!([{"hooks": [{"type": "command", "command": format!("\"{exe}\" hook {evento}"), "timeout": 5}]}]);
+        let ganchos = serde_json::json!({"hooks": {
+            "UserPromptSubmit": gancho("prompt"), "SessionStart": gancho("inicio"), "PostCompact": gancho("compactou"), "Stop": gancho("fim"),
+        }});
+        let arquivo = dir.join("memoria-ganchos.json");
+        if fs::write(&arquivo, ganchos.to_string()).is_ok() { extras.push(format!("--settings '{}'", barra(&arquivo))); }
+    }
+    if omni_rag::ganchos::mcp_ligado(&base) {
+        let mcp = serde_json::json!({"mcpServers": {"omni": {"command": exe, "args": ["mcp"]}}});
+        let arquivo = dir.join("omni-mcp.json");
+        if fs::write(&arquivo, mcp.to_string()).is_ok() { extras.push(format!("--mcp-config '{}'", barra(&arquivo))); }
+    }
+    extras.join(" ")
 }
 
 fn spawn_initial_command_thread(session: Arc<LiveSession>, initial_command: Option<String>) {
     if let Some(initial_command) = initial_command.filter(|command| !command.trim().is_empty()) {
-        let initial_command = sem_aviso_de_update(&initial_command);
-        let initial_command = arquivo_de_ganchos().map_or(initial_command.clone(), |arquivo| com_ganchos(&initial_command, &arquivo));
+        let initial_command = com_extras_do_claude(&sem_aviso_de_update(&initial_command), &extras_do_claude());
         std::thread::spawn(move || {
             // ConPTY/PowerShell performs a cursor-position handshake during startup.
             // Let xterm answer it before injecting the selected agent command.
@@ -799,6 +818,16 @@ pub(crate) fn spawn_terminal_inner(
         initial_command.map(|comando| com_log_do_antigravity(&comando, &id))
     } else { initial_command };
     compartilhar_extensoes(state, origin.provider.as_deref(), origin.profile_id.as_deref());
+    // Agente aberto sem conversa (cliente antigo, comando digitado): liga pelo id que ele retoma.
+    let mut origin = origin;
+    if origin.conversation_id.is_none() {
+        if let (Some(dir), Some(provider), Some(comando)) = (state.state_file.parent(), origin.provider.as_deref(), initial_command.as_deref()) {
+            if let Some((conversa, externo)) = omni_core::conversations::vincular_sessao(dir, &id, provider, comando) {
+                origin.conversation_id = Some(conversa);
+                origin.external_session_id = origin.external_session_id.or(Some(externo));
+            }
+        }
+    }
     let (pid, writer, master, child, reader) =
         open_pty_and_spawn(&cwd, &shell, rows, cols, &origin.env, origin.provider.is_some())?;
     let metadata = TerminalSession {
@@ -1590,6 +1619,14 @@ fn load_historical_sessions(path: &Path) -> HashMap<String, SessionEntry> {
                     session.external_session_id = session.external_session_id.take().or(segment.external_session_id);
                 }
             }
+            if session.conversation_id.is_none() {
+                if let (Some(dir), Some(provider), Some(comando)) = (path.parent(), session.provider.clone(), session.initial_command.clone()) {
+                    if let Some((conversa, externo)) = omni_core::conversations::vincular_sessao(dir, &session.id, &provider, &comando) {
+                        session.conversation_id = Some(conversa);
+                        session.external_session_id = session.external_session_id.take().or(Some(externo));
+                    }
+                }
+            }
             session.state = if Path::new(&session.cwd).is_dir() { SessionState::Stopped } else { SessionState::Orphan };
             session.pid = None;
             (session.id.clone(), SessionEntry::Historical(session))
@@ -1669,12 +1706,13 @@ mod tests {
     }
 
     #[test]
-    fn memoria_liga_so_nas_conversas_do_claude() {
-        let com = |comando: &str| com_ganchos(comando, "/d/g.json");
-        assert_eq!(com("claude --session-id abc"), "claude --session-id abc --settings '/d/g.json'");
-        assert_eq!(com("claude"), "claude --settings '/d/g.json'");
-        assert_eq!(com("/x/claude --resume 1"), "/x/claude --resume 1 --settings '/d/g.json'");
+    fn memoria_e_mcp_so_nas_conversas_do_claude() {
+        let com = |comando: &str| com_extras_do_claude(comando, "--settings 'g.json'");
+        assert_eq!(com("claude --session-id abc"), "claude --session-id abc --settings 'g.json'");
+        assert_eq!(com("claude"), "claude --settings 'g.json'");
+        assert_eq!(com("C:\\x\\claude.exe --resume 1"), "C:\\x\\claude.exe --resume 1 --settings 'g.json'");
         for igual in ["codex resume", "claude mcp list", "claude -p oi", "claude --settings x", "npm run dev"] { assert_eq!(com(igual), igual); }
+        assert_eq!(com_extras_do_claude("claude", ""), "claude", "sem omni-rag ao lado, nada muda");
     }
 
     #[test]

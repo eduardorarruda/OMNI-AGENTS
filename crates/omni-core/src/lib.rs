@@ -23,6 +23,7 @@ pub mod tokens;
 pub mod processos;
 pub mod kanban;
 pub mod segundo_plano;
+pub mod subagentes;
 
 use serde::{Deserialize, Serialize};
 use std::{fs, path::{Path, PathBuf}};

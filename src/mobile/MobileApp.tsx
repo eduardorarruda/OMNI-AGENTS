@@ -14,6 +14,7 @@ import { AgentWorking, BlocoDeAcoes, LinhaDeAviso, LinhaDeComando, MessageBubble
 import { Composer } from "./Composer";
 import { ExportarConversa } from "./ExportarConversa";
 import { CartaoDePergunta } from "./CartaoDePergunta";
+import { TrabalhoAoVivo } from "./TrabalhoAoVivo";
 import { AjustesDaConversa, podeReabrir, type Ajustes } from "./AjustesDaConversa";
 import {
   ANEXO_MAX_BYTES,
@@ -891,6 +892,7 @@ export const ConversationDetail = memo(function ConversationDetail({ conversatio
       if (!revisao) throw reason;
       if (kind === "escolher" && atual.conversation?.capabilities?.escolha?.pergunta !== capability.escolha?.pergunta) throw reason;
       if (kind === "aprovar" && (!capability.approval_id || atual.conversation?.capabilities?.approval_id !== capability.approval_id)) throw reason;
+      if (kind === "prompt" && !atual.conversation?.capabilities?.prompt) throw reason;
       pending.current = { signature, key: actionKey(), revision: revisao };
       acao = await enviar();
     }
@@ -1187,6 +1189,7 @@ export const ConversationDetail = memo(function ConversationDetail({ conversatio
         onEscolher={(opcao) => void escolher(opcao)} onAvancar={() => void escolher("avancar")} onVoltar={() => void escolher("voltar")} />}
       {ativo && !capability?.approve &&
         <AgentWorking desde={trabalhandoDesde.current ?? Date.now()} provider={conversation.provider} tokens={conversation.tokens ?? null} />}
+      <TrabalhoAoVivo conversaId={conversation.id} provider={conversation.provider} ativo={ativo} live={Boolean(conversation.live)} />
       {(fila.length > 0 || entregando) && (
         <div className="chat-fila" aria-label="Mensagens na fila">
           <p className="chat-fila-rotulo">{filaDoEngine?.pausada ? "Fila pausada · mande algo novo para continuar" : "Na fila · entram quando o agente terminar"}</p>
