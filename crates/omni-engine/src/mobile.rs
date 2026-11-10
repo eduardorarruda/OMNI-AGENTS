@@ -1306,17 +1306,29 @@ async fn subagentes(State(state): State<Arc<EngineState>>, RoutePath(id): RouteP
     }).await.map_err(|_|error(StatusCode::INTERNAL_SERVER_ERROR,"Falha ao ler subagentes"))?
 }
 
-/// O que um subagente fez, no mesmo formato da timeline da conversa.
+/// Item da timeline do subagente sem chave nem senha: comandos, falas e diffs chegam ao celular.
+fn item_sem_segredos(mut item: omni_core::feed::Item) -> omni_core::feed::Item {
+    item.text = omni_core::exportar::sem_segredos(&item.text);
+    if let Some(diff) = item.diff.as_mut() {
+        diff.linhas = diff.linhas.iter().map(|l| omni_core::exportar::sem_segredos(l)).collect();
+    }
+    item
+}
+
+/// O que um subagente fez, no mesmo formato da timeline da conversa, e o detalhe dele (tipo, modelo,
+/// estado, pedido recebido e resultado).
 async fn subagente(State(state): State<Arc<EngineState>>, RoutePath((id, agente)): RoutePath<(String, String)>, Query(page): Query<Page>) -> Result<Json<Value>, ApiError> {
     tokio::task::spawn_blocking(move || {
-        let (caminho, _) = transcript_do_claude(&state,&id)?;
+        let (caminho, viva) = transcript_do_claude(&state,&id)?;
         let arquivo = omni_core::subagentes::arquivo(&caminho,&agente).ok_or_else(||error(StatusCode::NOT_FOUND,"Subagente não encontrado"))?;
         let itens: Vec<_> = {
             let mut feeds = state.mobile.feeds.lock().expect("feeds poisoned");
-            feeds.read(&arquivo,"claude").map_err(|_|error(StatusCode::NOT_FOUND,"Subagente não encontrado"))?
-                .iter().map(|e|("claude".to_owned(),e.item.clone())).collect()
+            // Toda linha do subagente é `isSidechain`: a leitura comum da conversa as descartaria.
+            feeds.read_subagente(&arquivo).map_err(|_|error(StatusCode::NOT_FOUND,"Subagente não encontrado"))?
+                .iter().map(|e|("claude".to_owned(),item_sem_segredos(e.item.clone()))).collect()
         };
-        Ok(Json(json!({"timeline":omni_core::conversations::page(&format!("{id}-{agente}"),itens,page.cursor,TIMELINE_PAGINA)})))
+        let detalhe = omni_core::subagentes::detalhe(&caminho,&agente,viva);
+        Ok(Json(json!({"subagente":detalhe,"timeline":omni_core::conversations::page(&format!("{id}-{agente}"),itens,page.cursor,TIMELINE_PAGINA)})))
     }).await.map_err(|_|error(StatusCode::INTERNAL_SERVER_ERROR,"Falha ao ler o subagente"))?
 }
 
@@ -3078,6 +3090,38 @@ mod tests {
         assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["conversation"]["id"],"c");
         let EngineResponse::Api { status, .. } = local(state,"POST","/conversas/c/nome",Some(r#"{"nome":"Novo"}"#.into()),None,vec![]).await else { panic!("não é Api") };
         assert!(status != 401 && status != 403, "barrado como se fosse o celular: {status}");
+    }
+
+    /// Detalhe do subagente: as linhas `isSidechain` entram na timeline, o pedido vem inteiro, e chave
+    /// no comando ou no pedido sai mascarada (a rota aceita o token do celular).
+    #[tokio::test] async fn subagente_mostra_historico_sidechain_sem_segredos() {
+        let (dir,state) = fixture();
+        let conta = dir.path().join("claude");
+        let transcript = conta.join("projects").join("x").join("sessao.jsonl");
+        let sub = transcript.with_extension("").join("subagents");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(&transcript,"").unwrap();
+        std::fs::write(sub.join("agent-a1.meta.json"),r#"{"agentType":"Explore","description":"Revisar","toolUseId":"tu1","model":"sonnet"}"#).unwrap();
+        std::fs::write(sub.join("agent-a1.jsonl"),[
+            json!({"type":"user","isSidechain":true,"uuid":"u1","timestamp":"2026-11-06T18:00:00Z","message":{"role":"user","content":"Leia tudo. Chave: sk-ant-abc123DEF456ghi789JKL012"}}),
+            json!({"type":"assistant","isSidechain":true,"uuid":"u2","message":{"role":"assistant","stop_reason":"tool_use","content":[
+                {"type":"tool_use","id":"t1","name":"Bash","input":{"command":"curl -H ghp_abcdefghijklmnopqrstuvwxyz0123456789 x"}}]}}),
+        ].iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();
+        atomic_write_json(&dir.path().join("profiles.json"),&json!({"profiles":[
+            {"id":"claude-p","provider":"claude","name":"Pessoal","config_dir":conta.to_string_lossy(),"builtin":false,"created_at_ms":0}]})).unwrap();
+        atomic_write_json(&dir.path().join("conversations.json"),&json!({"version":1,"conversations":[{"id":"c","project_id":"p","cwd":"/x","title":"T",
+            "created_at_ms":1,"segments":[{"provider":"claude","profile_id":"claude-p","external_session_id":null,
+            "transcript_path":transcript.to_string_lossy(),"terminal_session_id":null,"started_at_ms":1,"ended_at_ms":null}]}]})).unwrap();
+        let EngineResponse::Api { status, body } = local(state,"GET","/conversas/c/subagentes/a1",None,None,vec![]).await else { panic!("não é Api") };
+        assert_eq!(status,200,"{body}");
+        assert!(!body.contains("sk-ant-abc123DEF456ghi789JKL012") && !body.contains("ghp_abcdefghijklmnopqrstuvwxyz0123456789"),"{body}");
+        let corpo: Value = serde_json::from_str(&body).unwrap();
+        let mensagens = corpo["timeline"]["messages"].as_array().unwrap();
+        assert_eq!(mensagens.len(),2,"{body}");
+        assert_eq!((mensagens[1]["kind"].as_str(),mensagens[1]["tool"].as_str()),(Some("tool"),Some("Bash")));
+        assert_eq!(corpo["subagente"]["tipo"],"Explore");
+        assert_eq!(corpo["subagente"]["estado"],"parado","sessão não está aberta no PC");
+        assert!(corpo["subagente"]["prompt"].as_str().unwrap().starts_with("Leia tudo."));
     }
 
     #[test] fn base64_decode_confere_com_os_casos_do_rfc() {

@@ -369,9 +369,20 @@ fn item(kind: Kind, role: &str, text: String, tool: Option<String>, value: &Valu
     Item { kind, role: role.into(), text, tool, timestamp: value["timestamp"].as_str().map(str::to_owned), imagens: 0, diff: None }
 }
 
-/// Itens de uma linha do transcript, na ordem em que aparecem nela.
+/// Itens de uma linha do transcript, na ordem em que aparecem nela. Linha de subagente
+/// (`isSidechain`) não é da conversa principal: fica de fora.
 pub fn items(value: &Value, provider: &str) -> Vec<Item> {
     if value["isSidechain"] == true { return Vec::new(); }
+    items_da_linha(value, provider)
+}
+
+/// Itens de uma linha do transcript de um subagente (`subagents/agent-<id>.jsonl`), onde toda linha
+/// tem `isSidechain: true`.
+pub fn items_do_subagente(value: &Value) -> Vec<Item> {
+    items_da_linha(value, "claude")
+}
+
+fn items_da_linha(value: &Value, provider: &str) -> Vec<Item> {
     let mut saida = Vec::new();
     match provider {
         "claude" if value["type"] == "user" || value["type"] == "assistant" => {
@@ -544,11 +555,12 @@ fn chamada_da_api(linha: &[u8]) -> bool {
     linha.starts_with(br#"{"type":"api-request"#)
 }
 
-fn entradas(linha: &[u8], provider: &str) -> Vec<Entry> {
+fn entradas(linha: &[u8], provider: &str, subagente: bool) -> Vec<Entry> {
     if linha.iter().all(u8::is_ascii_whitespace) || chamada_da_api(linha) { return Vec::new(); }
     let Ok(value) = serde_json::from_slice::<Value>(linha) else { return Vec::new() };
     let base = value["uuid"].as_str().map(str::to_owned).unwrap_or_else(|| format!("{:016x}", hash(linha)));
-    items(&value, provider).into_iter().enumerate()
+    let itens = if subagente { items_do_subagente(&value) } else { items(&value, provider) };
+    itens.into_iter().enumerate()
         .map(|(i, item)| Entry { identity: format!("{provider}:{base}#{i}"), item })
         .collect()
 }
@@ -577,6 +589,15 @@ const CACHE_MAX: usize = 24;
 impl FeedCache {
     /// Itens do transcript em `path`, lendo só o que foi acrescentado desde a última chamada.
     pub fn read(&mut self, path: &Path, provider: &str) -> std::io::Result<&[Entry]> {
+        self.ler(path, provider, false)
+    }
+
+    /// Itens do transcript de um subagente do Claude: as linhas `isSidechain` entram.
+    pub fn read_subagente(&mut self, path: &Path) -> std::io::Result<&[Entry]> {
+        self.ler(path, "claude", true)
+    }
+
+    fn ler(&mut self, path: &Path, provider: &str, subagente: bool) -> std::io::Result<&[Entry]> {
         self.relogio += 1;
         let agora = self.relogio;
         // Cursor: SQLite, não JSONL. Relido inteiro (conversa local e pequena), no mesmo cache.
@@ -613,12 +634,12 @@ impl FeedCache {
                     // simplesmente terminou assim. Se já é um JSON inteiro ela aparece, mas fica
                     // provisória: a próxima leitura recomeça dela, então nada duplica quando a CLI
                     // completar a linha.
-                    let resto = entradas(&linha, provider);
+                    let resto = entradas(&linha, provider, subagente);
                     feed.provisorios = resto.len();
                     feed.entries.extend(resto);
                     break;
                 }
-                feed.entries.extend(entradas(&linha[..linha.len() - 1], provider));
+                feed.entries.extend(entradas(&linha[..linha.len() - 1], provider, subagente));
                 feed.offset += linha.len() as u64;
             }
         }
@@ -852,6 +873,29 @@ mod tests {
         std::fs::OpenOptions::new().append(true).open(&path).unwrap().write_all(format!("\n{}\n", linha(1)).as_bytes()).unwrap();
         let textos: Vec<_> = cache.read(&path, "claude").unwrap().iter().map(|e| e.item.text.clone()).collect();
         assert_eq!(textos, vec!["oi 0", "oi 1"]);
+    }
+
+    /// Transcript de subagente: toda linha tem `isSidechain: true`. A conversa principal continua sem
+    /// elas; a leitura do subagente mostra o pedido, as ferramentas e as falas.
+    #[test]
+    fn subagente_le_linhas_sidechain_e_a_conversa_principal_nao() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent-a1.jsonl");
+        let linhas = [
+            json!({"type":"user","isSidechain":true,"uuid":"u1","message":{"role":"user","content":"Revise o módulo X"}}),
+            json!({"type":"assistant","isSidechain":true,"uuid":"u2","message":{"role":"assistant","content":[
+                {"type":"text","text":"Vou ler"},{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"/p/x.rs"}}]}}),
+            json!({"type":"user","isSidechain":true,"uuid":"u3","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"..."}]}}),
+            json!({"type":"attachment","isSidechain":true,"uuid":"u4","attachment":{"type":"environment"}}),
+        ];
+        std::fs::write(&path, linhas.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();
+        let mut cache = FeedCache::default();
+        assert!(cache.read(&path, "claude").unwrap().is_empty(), "conversa principal ignora sidechain");
+        let mut sub = FeedCache::default();
+        let itens: Vec<_> = sub.read_subagente(&path).unwrap().iter().map(|e| (e.item.kind, e.item.text.clone())).collect();
+        assert_eq!(itens, vec![(Kind::Text, "Revise o módulo X".into()), (Kind::Text, "Vou ler".into()), (Kind::Tool, "/p/x.rs".into())]);
+        assert!(items(&linhas[1], "claude").is_empty());
+        assert_eq!(items_do_subagente(&linhas[1]).len(), 2);
     }
 
     use std::io::Write;

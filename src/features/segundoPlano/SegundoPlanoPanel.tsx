@@ -2,6 +2,7 @@ import { useState } from "react";
 import { acaoNaExecucao } from "../fluxos/fluxosService";
 import { tempoDesde } from "../tarefas/tarefasService";
 import { pararConversa } from "../terminal/terminalService";
+import { DetalheDoSubagente } from "./DetalheDoSubagente";
 import { useSegundoPlano, type ItemDeFundo } from "./useSegundoPlano";
 
 const ROTULOS: Record<string, string> = { sessao: "Sessão", subagente: "Subagente", fluxo: "Fluxo" };
@@ -18,8 +19,10 @@ const chaveDe = (i: ItemDeFundo) => `${i.tipo}:${i.execucao ?? i.sessao ?? ""}:$
 
 /** Aba da lateral: sessões esperando agente, subagentes e fluxos vivos, cada um com Abrir e Parar. */
 export function SegundoPlanoPanel({ projetoId, agora, onAbrirConversa, onAbrirFluxo }: Props) {
-  const { itens, erro } = useSegundoPlano(projetoId);
+  const { itens, concluidos = [], erro } = useSegundoPlano(projetoId);
   const [falhas, setFalhas] = useState<Record<string, string>>({});
+  // Detalhe aberto, por subagente: a lateral é estreita, então ele abre na própria linha.
+  const [aberto, setAberto] = useState<string | null>(null);
   const relogio = agora ?? Date.now();
 
   async function parar(item: ItemDeFundo) {
@@ -54,6 +57,7 @@ export function SegundoPlanoPanel({ projetoId, agora, onAbrirConversa, onAbrirFl
         {itens.map((item) => {
           const chave = chaveDe(item);
           const subagente = item.tipo === "subagente";
+          const detalhe = subagente && item.subagente && item.sessao ? `${item.sessao}:${item.subagente}` : null;
           return (
             <li key={chave} aria-label={item.titulo} className="rounded border border-border-subtle/60 px-2 py-1.5 text-xs">
               <div className="flex items-center justify-between gap-2">
@@ -63,17 +67,54 @@ export function SegundoPlanoPanel({ projetoId, agora, onAbrirConversa, onAbrirFl
               <p className="truncate text-text-muted" title={item.atividade}>{item.atividade}</p>
               {item.desde_ms !== null && <p className="text-text-muted">{tempoDesde(item.desde_ms, relogio)}</p>}
               {subagente && <p className="mt-1 text-[11px] text-text-muted">Parar para a sessão inteira, não só este subagente.</p>}
-              <div className="mt-1 flex gap-2">
+              <div className="mt-1 flex flex-wrap gap-2">
+                {detalhe && (
+                  <button type="button" className="underline" aria-expanded={aberto === detalhe}
+                    onClick={() => setAberto(aberto === detalhe ? null : detalhe)}>
+                    {aberto === detalhe ? "Fechar detalhes" : "Ver detalhes"}
+                  </button>
+                )}
                 <button type="button" className="underline" onClick={() => abrir(item)}>Abrir</button>
                 <button type="button" className="underline" onClick={() => void parar(item)}>
                   {subagente ? "Parar a sessão inteira" : "Parar"}
                 </button>
               </div>
               {falhas[chave] && <p role="alert" className="mt-1 text-[11px] text-red-400">Não parou: {falhas[chave]}</p>}
+              {detalhe && aberto === detalhe && item.sessao && item.subagente && (
+                <DetalheDoSubagente conversaId={item.sessao} agenteId={item.subagente} agora={agora} onAbrirConversa={onAbrirConversa} />
+              )}
             </li>
           );
         })}
       </ul>
+      {concluidos.length > 0 && (
+        <details className="text-xs">
+          <summary className="cursor-pointer px-1 py-1 text-text-muted">Concluídos ({concluidos.length})</summary>
+          <ul className="mt-1 space-y-1.5">
+            {concluidos.map((item) => {
+              const detalhe = item.sessao && item.subagente ? `${item.sessao}:${item.subagente}` : null;
+              return (
+                <li key={chaveDe(item)} aria-label={item.titulo} className="rounded border border-border-subtle/40 px-2 py-1.5">
+                  <span className="block truncate font-medium text-text-primary" title={item.titulo}>{item.titulo}</span>
+                  {typeof item.concluido_ms === "number" && <p className="text-text-muted">terminou {tempoDesde(item.concluido_ms, relogio)}</p>}
+                  <div className="mt-1 flex flex-wrap gap-2">
+                    {detalhe && (
+                      <button type="button" className="underline" aria-expanded={aberto === detalhe}
+                        onClick={() => setAberto(aberto === detalhe ? null : detalhe)}>
+                        {aberto === detalhe ? "Fechar" : "Ver resultado"}
+                      </button>
+                    )}
+                    {item.sessao && <button type="button" className="underline" onClick={() => abrir(item)}>Abrir conversa</button>}
+                  </div>
+                  {detalhe && aberto === detalhe && item.sessao && item.subagente && (
+                    <DetalheDoSubagente conversaId={item.sessao} agenteId={item.subagente} agora={agora} onAbrirConversa={onAbrirConversa} />
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </details>
+      )}
     </div>
   );
 }

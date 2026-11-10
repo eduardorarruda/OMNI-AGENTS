@@ -6,6 +6,8 @@ use std::{fs, io::{Read, Seek, SeekFrom}, path::Path};
 
 /// Subagente que escreveu no transcript há menos que isto conta como ativo.
 pub const SUBAGENTE_ATIVO_MS: u64 = 2 * 60 * 1000;
+/// Subagente que terminou há menos que isto continua no painel, na seção "Concluídos".
+pub const CONCLUIDO_VISIVEL_MS: u64 = 60 * 60 * 1000;
 /// Só o fim do transcript importa para a "última ação": não relê arquivo de megabytes a cada consulta.
 const CAUDA_BYTES: u64 = 64 * 1024;
 const ACAO_MAX: usize = 140;
@@ -24,12 +26,19 @@ pub struct ItemDeFundo {
     pub sessao: Option<String>,
     /// Execução de fluxo (`fluxo`).
     pub execucao: Option<String>,
+    /// Id do subagente (`subagente`): com `sessao`, abre o detalhe dele.
+    pub subagente: Option<String>,
+    /// Quando o subagente terminou. `Some` = vai para "Concluídos", não para a lista do que roda.
+    pub concluido_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct SubagenteAtivo { pub id: String, pub nome: String, pub ultima_acao: String, pub desde_ms: u64, pub atualizado_ms: u64 }
+pub struct SubagenteAtivo { pub id: String, pub nome: String, pub ultima_acao: String, pub desde_ms: u64, pub atualizado_ms: u64,
+    /// Terminou (`end_turn`, `SubagentHandback` ou `finished` no `.meta.json`).
+    pub concluido: bool }
 
-/// Subagentes com transcript alterado nos últimos 2 minutos em `pasta` (`<conversa>/subagents`).
+/// Subagentes de `pasta` (`<conversa>/subagents`): os que escreveram nos últimos 2 minutos sem ter
+/// terminado e os que terminaram na última hora (`concluido`).
 pub fn subagentes_ativos(pasta: &Path, agora_ms: u64) -> Vec<SubagenteAtivo> {
     let Ok(entradas) = fs::read_dir(pasta) else { return Vec::new() };
     let mut ativos: Vec<SubagenteAtivo> = entradas.flatten().filter_map(|e| ler_subagente(&e.path(), agora_ms)).collect();
@@ -41,18 +50,22 @@ fn ler_subagente(caminho: &Path, agora_ms: u64) -> Option<SubagenteAtivo> {
     if caminho.extension()?.to_str()? != "jsonl" { return None; }
     let atualizado_ms = fs::metadata(caminho).ok()?.modified().ok()?
         .duration_since(std::time::UNIX_EPOCH).ok()?.as_millis() as u64;
-    if agora_ms.saturating_sub(atualizado_ms) > SUBAGENTE_ATIVO_MS { return None; }
+    let idade = agora_ms.saturating_sub(atualizado_ms);
+    if idade > CONCLUIDO_VISIVEL_MS { return None; }
+    let meta = fs::read_to_string(caminho.with_extension("meta.json")).ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok()).unwrap_or(Value::Null);
+    let cauda = cauda(caminho);
+    let concluido = meta["finished"] == true || terminou(&cauda);
+    if !concluido && idade > SUBAGENTE_ATIVO_MS { return None; }
     let nome_do_arquivo = caminho.file_stem()?.to_str()?;
     let id = nome_do_arquivo.strip_prefix("agent-").unwrap_or(nome_do_arquivo).to_string();
     let primeira = primeira_linha(caminho);
-    let descricao = fs::read_to_string(caminho.with_extension("meta.json")).ok()
-        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-        .and_then(|v| v["description"].as_str().map(str::to_string)).filter(|d| !d.trim().is_empty());
+    let descricao = meta["description"].as_str().map(str::to_string).filter(|d| !d.trim().is_empty());
     let nome = descricao.or_else(|| primeira.as_ref().and_then(texto_do_usuario)).map_or_else(|| id.clone(), |t| cortar(&t, NOME_MAX));
     let desde_ms = primeira.as_ref().and_then(|l| crate::conversations::timestamp(&l["timestamp"])).unwrap_or(atualizado_ms);
     // O comando cru pode ter chave ou senha, e a lista chega ao celular: passa por `sem_segredos`.
-    let ultima_acao = crate::exportar::sem_segredos(&ultima_acao(caminho).unwrap_or_default());
-    Some(SubagenteAtivo { id, nome: crate::exportar::sem_segredos(&nome), ultima_acao, desde_ms, atualizado_ms })
+    let ultima_acao = crate::exportar::sem_segredos(&cauda.iter().rev().filter(|v| v["type"] == "assistant").find_map(acao_do_assistente).unwrap_or_default());
+    Some(SubagenteAtivo { id, nome: crate::exportar::sem_segredos(&nome), ultima_acao, desde_ms, atualizado_ms, concluido })
 }
 
 fn primeira_linha(caminho: &Path) -> Option<Value> {
@@ -74,19 +87,28 @@ fn cortar(texto: &str, max: usize) -> String {
     format!("{}…", texto.chars().take(max - 1).collect::<String>().trim_end())
 }
 
-/// A última ferramenta (ou fala) do assistente no fim do arquivo; linha cortada ou corrompida é ignorada.
-fn ultima_acao(caminho: &Path) -> Option<String> {
-    let mut arquivo = fs::File::open(caminho).ok()?;
-    let tamanho = arquivo.metadata().ok()?.len();
-    let inicio = tamanho.saturating_sub(CAUDA_BYTES);
-    arquivo.seek(SeekFrom::Start(inicio)).ok()?;
-    let mut bytes = Vec::new();
-    arquivo.read_to_end(&mut bytes).ok()?;
-    let texto = String::from_utf8_lossy(&bytes);
-    let mut linhas = texto.lines();
-    if inicio > 0 { linhas.next(); } // começa no meio de uma linha
-    let validas: Vec<Value> = linhas.filter_map(|l| serde_json::from_str::<Value>(l).ok()).collect();
-    validas.iter().rev().filter(|v| v["type"] == "assistant").find_map(acao_do_assistente)
+/// As linhas válidas do fim do arquivo; linha cortada ou corrompida é ignorada.
+fn cauda(caminho: &Path) -> Vec<Value> {
+    let ler = || -> Option<Vec<Value>> {
+        let mut arquivo = fs::File::open(caminho).ok()?;
+        let tamanho = arquivo.metadata().ok()?.len();
+        let inicio = tamanho.saturating_sub(CAUDA_BYTES);
+        arquivo.seek(SeekFrom::Start(inicio)).ok()?;
+        let mut bytes = Vec::new();
+        arquivo.read_to_end(&mut bytes).ok()?;
+        let texto = String::from_utf8_lossy(&bytes);
+        let mut linhas = texto.lines();
+        if inicio > 0 { linhas.next(); } // começa no meio de uma linha
+        Some(linhas.filter_map(|l| serde_json::from_str::<Value>(l).ok()).collect())
+    };
+    ler().unwrap_or_default()
+}
+
+/// Terminou: a última fala do assistente tem `end_turn`, ou ele entregou pelo `SubagentHandback`.
+fn terminou(cauda: &[Value]) -> bool {
+    let entregou = cauda.iter().any(|v| v["type"] == "assistant" && v["message"]["content"].as_array()
+        .is_some_and(|partes| partes.iter().any(|p| p["type"] == "tool_use" && p["name"] == "SubagentHandback")));
+    entregou || cauda.iter().rev().find(|v| v["type"] == "assistant").is_some_and(|v| v["message"]["stop_reason"] == "end_turn")
 }
 
 fn acao_do_assistente(linha: &Value) -> Option<String> {
@@ -187,9 +209,36 @@ mod tests {
     #[test]
     fn filtro_por_projeto() {
         let item = |p: &str| ItemDeFundo { tipo: "subagente".into(), titulo: "t".into(), atividade: "a".into(), desde_ms: Some(1),
-            projeto_id: p.into(), sessao: None, execucao: None };
+            projeto_id: p.into(), sessao: None, execucao: None, subagente: None, concluido_ms: None };
         let lista = vec![item("a"), item("b")];
         assert_eq!(filtrar_por_projeto(lista.clone(), Some("a")).len(), 1);
         assert_eq!(filtrar_por_projeto(lista, None).len(), 2);
+    }
+
+    fn linha_entrega(ts: &str, texto: &str) -> String {
+        serde_json::json!({"type":"assistant","isSidechain":true,"timestamp":ts,"message":{"role":"assistant","stop_reason":"tool_use","content":[
+            {"type":"tool_use","name":"SubagentHandback","input":{"message":texto}}]}}).to_string()
+    }
+
+    #[test]
+    fn concluido_continua_visivel_e_nao_conta_como_ativo() {
+        let dir = tempfile::tempdir().unwrap();
+        // Entregou o resultado há 10 min: some dos ativos, aparece nos concluídos.
+        escrever(dir.path(), "a1", &[linha_usuario("2026-11-06T18:00:00.000Z", "x"), linha_entrega("2026-11-06T18:01:00.000Z", "feito")], 10 * 60_000);
+        // Terminou com `end_turn` há 20 s: também concluído, mesmo dentro dos 2 min.
+        escrever(dir.path(), "a2", &[linha_usuario("2026-11-06T18:00:00.000Z", "y"),
+            serde_json::json!({"type":"assistant","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"ok"}]}}).to_string()], 20_000);
+        // Parado há 10 min sem terminar: fora das duas listas.
+        escrever(dir.path(), "a3", &[linha_usuario("2026-11-06T18:00:00.000Z", "z")], 10 * 60_000);
+        // Concluído há mais de uma hora: fora.
+        escrever(dir.path(), "a4", &[linha_usuario("2026-11-06T18:00:00.000Z", "w"), linha_entrega("2026-11-06T18:01:00.000Z", "feito")], CONCLUIDO_VISIVEL_MS + 1_000);
+        let lista = subagentes_ativos(dir.path(), AGORA);
+        let concluidos: Vec<_> = lista.iter().filter(|a| a.concluido).map(|a| a.id.as_str()).collect();
+        let ativos: Vec<_> = lista.iter().filter(|a| !a.concluido).map(|a| a.id.as_str()).collect();
+        assert_eq!((ativos, concluidos.len()), (vec![], 2), "{lista:?}");
+        assert!(concluidos.contains(&"a1") && concluidos.contains(&"a2"));
+        // `finished` no .meta.json basta.
+        fs::write(dir.path().join("agent-a3.meta.json"), r#"{"description":"Z","finished":true}"#).unwrap();
+        assert!(subagentes_ativos(dir.path(), AGORA).iter().any(|a| a.id == "a3" && a.concluido));
     }
 }

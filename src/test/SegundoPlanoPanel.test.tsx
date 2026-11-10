@@ -17,6 +17,10 @@ vi.mock("../features/fluxos/fluxosService", async (importOriginal) => ({
   acaoNaExecucao: vi.fn(),
 }));
 
+vi.mock("../features/segundoPlano/DetalheDoSubagente", () => ({
+  DetalheDoSubagente: ({ conversaId, agenteId }: { conversaId: string; agenteId: string }) => <p>detalhe de {agenteId} em {conversaId}</p>,
+}));
+
 const { useSegundoPlano } = vi.mocked(await import("../features/segundoPlano/useSegundoPlano"));
 const { pararConversa } = vi.mocked(await import("../features/terminal/terminalService"));
 const { acaoNaExecucao } = vi.mocked(await import("../features/fluxos/fluxosService"));
@@ -25,8 +29,8 @@ const AGORA = 1_800_000_000_000;
 const item = (extra: Partial<ItemDeFundo>): ItemDeFundo =>
   ({ tipo: "subagente", titulo: "Revisar fluxos", atividade: "Read src/fluxos.rs", desde_ms: AGORA - 5 * 60_000, projeto_id: "p", sessao: "c1", execucao: null, ...extra });
 
-function abrir(itens: ItemDeFundo[], erro: string | null = null) {
-  useSegundoPlano.mockReturnValue({ itens, erro });
+function abrir(itens: ItemDeFundo[], erro: string | null = null, concluidos: ItemDeFundo[] = []) {
+  useSegundoPlano.mockReturnValue({ itens, concluidos, erro });
   const onAbrirConversa = vi.fn();
   const onAbrirFluxo = vi.fn();
   render(<SegundoPlanoPanel projetoId="p" agora={AGORA} onAbrirConversa={onAbrirConversa} onAbrirFluxo={onAbrirFluxo} />);
@@ -87,4 +91,31 @@ it("engine fora do ar mostra aviso, não lista vazia", () => {
   abrir([], "Falha HTTP 500");
   expect(screen.getByRole("alert")).toHaveTextContent(/Não foi possível consultar o que roda em segundo plano/);
   expect(screen.queryByText(/Nada rodando em segundo plano/)).not.toBeInTheDocument();
+});
+
+it("clicar no subagente abre o detalhe dele na própria linha", async () => {
+  abrir([item({ subagente: "a1" })]);
+  const linha = screen.getByRole("listitem", { name: /Revisar fluxos/ });
+  expect(screen.queryByText(/detalhe de a1/)).not.toBeInTheDocument();
+  await userEvent.click(within(linha).getByRole("button", { name: "Ver detalhes" }));
+  expect(within(linha).getByText("detalhe de a1 em c1")).toBeInTheDocument();
+  await userEvent.click(within(linha).getByRole("button", { name: "Fechar detalhes" }));
+  expect(screen.queryByText(/detalhe de a1/)).not.toBeInTheDocument();
+});
+
+it("subagente sem id (engine antigo) não oferece detalhe", () => {
+  abrir([item({})]);
+  expect(screen.queryByRole("button", { name: "Ver detalhes" })).not.toBeInTheDocument();
+});
+
+it("concluídos ficam numa seção recolhida, com o resultado a um clique", async () => {
+  abrir([], null, [item({ titulo: "Mapear rotas", atividade: "Concluído", subagente: "a2", concluido_ms: AGORA - 3 * 60_000 })]);
+  expect(screen.queryByText(/Nada rodando em segundo plano/)).toBeInTheDocument();
+  const secao = screen.getByText("Concluídos (1)").closest("details")!;
+  expect(secao).not.toHaveAttribute("open");
+  await userEvent.click(screen.getByText("Concluídos (1)"));
+  const linha = within(secao).getByRole("listitem", { name: /Mapear rotas/ });
+  expect(within(linha).getByText("terminou há 3 min")).toBeInTheDocument();
+  await userEvent.click(within(linha).getByRole("button", { name: "Ver resultado" }));
+  expect(within(linha).getByText("detalhe de a2 em c1")).toBeInTheDocument();
 });

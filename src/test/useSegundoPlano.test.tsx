@@ -50,3 +50,14 @@ it("dois assinantes do mesmo projeto dividem a mesma consulta", async () => {
   await passar(4000);
   expect(engineApi).toHaveBeenCalledTimes(2);
 });
+
+it("separa o que roda dos concluídos; engine antigo sem `concluidos` dá lista vazia", async () => {
+  const concluido = { tipo: "subagente", titulo: "T", atividade: "Concluído", desde_ms: 1, projeto_id: "p", sessao: "c", execucao: null, subagente: "a", concluido_ms: 2 };
+  engineApi.mockResolvedValueOnce({ status: 200, body: JSON.stringify({ itens: [], concluidos: [concluido] }) } as Awaited<ReturnType<typeof engineApi>>);
+  const { result } = renderHook(() => useSegundoPlano("q"));
+  await passar(0);
+  expect(result.current.concluidos).toEqual([concluido]);
+  expect(result.current.itens).toEqual([]);
+  await passar(4000);
+  expect(result.current.concluidos).toEqual([]);
+});

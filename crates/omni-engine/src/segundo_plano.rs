@@ -20,19 +20,24 @@ pub struct SessaoNoOmni {
     pub pasta_de_subagentes: Option<PathBuf>,
 }
 
-/// Une sessões, subagentes e fluxos vivos. `execucoes` é o formato de `fluxos::listar()`.
+/// Quantos subagentes concluídos o painel guarda (os mais recentes).
+pub const CONCLUIDOS_MAX: usize = 10;
+
+/// Une sessões, subagentes e fluxos vivos. `execucoes` é o formato de `fluxos::listar()`. Subagentes que
+/// terminaram vêm com `concluido_ms` (no máximo [`CONCLUIDOS_MAX`]).
 pub fn reunir(sessoes: &[SessaoNoOmni], execucoes: &[Value], agora_ms: u64) -> Vec<ItemDeFundo> {
     let mut itens = Vec::new();
     for s in sessoes {
         if s.provider == "claude" && s.em_segundo_plano {
             itens.push(ItemDeFundo { tipo: "sessao".into(), titulo: s.titulo.clone(), atividade: "Esperando um agente em segundo plano terminar".into(),
-                desde_ms: None, projeto_id: s.projeto_id.clone(), sessao: Some(s.conversa_id.clone()), execucao: None });
+                desde_ms: None, projeto_id: s.projeto_id.clone(), sessao: Some(s.conversa_id.clone()), execucao: None, subagente: None, concluido_ms: None });
         }
         let subagentes = s.pasta_de_subagentes.as_deref().filter(|_| s.provider == "claude").map(|p| subagentes_ativos(p, agora_ms)).unwrap_or_default();
         for a in subagentes {
-            itens.push(ItemDeFundo { tipo: "subagente".into(), titulo: a.nome,
-                atividade: if a.ultima_acao.is_empty() { "Trabalhando".into() } else { a.ultima_acao },
-                desde_ms: Some(a.desde_ms), projeto_id: s.projeto_id.clone(), sessao: Some(s.conversa_id.clone()), execucao: None });
+            let atividade = if !a.ultima_acao.is_empty() { a.ultima_acao } else if a.concluido { "Concluído".into() } else { "Trabalhando".into() };
+            itens.push(ItemDeFundo { tipo: "subagente".into(), titulo: a.nome, atividade,
+                desde_ms: Some(a.desde_ms), projeto_id: s.projeto_id.clone(), sessao: Some(s.conversa_id.clone()), execucao: None,
+                subagente: Some(a.id), concluido_ms: a.concluido.then_some(a.atualizado_ms) });
         }
     }
     for e in execucoes {
@@ -40,9 +45,18 @@ pub fn reunir(sessoes: &[SessaoNoOmni], execucoes: &[Value], agora_ms: u64) -> V
         itens.push(ItemDeFundo { tipo: "fluxo".into(), titulo: e["fluxo"].as_str().unwrap_or("Fluxo").to_string(),
             atividade: if e["status"] == "aguardando" { "Esperando a sua aprovação".into() } else { "Rodando".into() },
             desde_ms: e["criado_ms"].as_u64(), projeto_id: e["projeto_id"].as_str().unwrap_or("").to_string(),
-            sessao: None, execucao: e["id"].as_str().map(str::to_string) });
+            sessao: None, execucao: e["id"].as_str().map(str::to_string), subagente: None, concluido_ms: None });
     }
     itens.sort_by_key(|i| i.desde_ms.unwrap_or(0));
+    let mut fins: Vec<u64> = itens.iter().filter_map(|i| i.concluido_ms).collect();
+    fins.sort_unstable_by(|a, b| b.cmp(a));
+    let corte = fins.get(CONCLUIDOS_MAX - 1).copied().unwrap_or(0);
+    let mut guardados = 0;
+    itens.retain(|i| match i.concluido_ms {
+        Some(fim) if fim >= corte && guardados < CONCLUIDOS_MAX => { guardados += 1; true }
+        Some(_) => false,
+        None => true,
+    });
     itens
 }
 
@@ -87,9 +101,11 @@ pub fn coletar(state: &EngineState, projeto: Option<&str>) -> Vec<ItemDeFundo> {
 
 #[derive(Deserialize)] struct Filtro { #[serde(default)] projeto: Option<String> }
 
+/// `itens`: o que roda agora. `concluidos`: subagentes da sessão viva que terminaram há pouco.
 async fn rota(State(state): State<Arc<EngineState>>, Query(filtro): Query<Filtro>) -> Json<Value> {
-    let itens = tokio::task::spawn_blocking(move || coletar(&state, filtro.projeto.as_deref().filter(|p| !p.is_empty()))).await.unwrap_or_default();
-    Json(json!({ "itens": itens }))
+    let todos = tokio::task::spawn_blocking(move || coletar(&state, filtro.projeto.as_deref().filter(|p| !p.is_empty()))).await.unwrap_or_default();
+    let (concluidos, itens): (Vec<_>, Vec<_>) = todos.into_iter().partition(|i| i.concluido_ms.is_some());
+    Json(json!({ "itens": itens, "concluidos": concluidos }))
 }
 
 pub fn rotas() -> Router<Arc<EngineState>> { Router::new().route("/segundo-plano", get(rota)) }
@@ -195,5 +211,32 @@ mod tests {
             let texto = std::fs::read_to_string(t.path()).unwrap();
             assert!(interaction::agente_em_segundo_plano(&texto), "{:?}", t.file_name());
         }
+    }
+
+    #[test]
+    fn subagente_leva_o_id_e_concluido_vai_a_parte() {
+        let dir = tempfile::tempdir().unwrap();
+        let pasta = dir.path().join("subagents");
+        subagente_recente(&pasta);
+        std::fs::write(pasta.join("agent-y.jsonl"), [
+            r#"{"type":"user","isSidechain":true,"timestamp":"2026-11-06T18:00:00Z","message":{"content":"outra"}}"#,
+            r#"{"type":"assistant","isSidechain":true,"message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"pronto"}]}}"#,
+        ].join("\n")).unwrap();
+        let itens = reunir(&[sessao("ca", "pa", Some(pasta), false)], &[], agora());
+        let x = itens.iter().find(|i| i.subagente.as_deref() == Some("x")).unwrap();
+        assert_eq!((x.sessao.as_deref(), x.concluido_ms), (Some("ca"), None));
+        assert!(itens.iter().find(|i| i.subagente.as_deref() == Some("y")).is_some_and(|i| i.concluido_ms.is_some()));
+    }
+
+    #[test]
+    fn guarda_so_os_concluidos_mais_recentes() {
+        let dir = tempfile::tempdir().unwrap();
+        let pasta = dir.path().join("subagents");
+        std::fs::create_dir_all(&pasta).unwrap();
+        for n in 0..CONCLUIDOS_MAX + 3 {
+            std::fs::write(pasta.join(format!("agent-c{n}.jsonl")), r#"{"type":"assistant","message":{"stop_reason":"end_turn","content":[]}}"#).unwrap();
+        }
+        let itens = reunir(&[sessao("ca", "pa", Some(pasta), false)], &[], agora());
+        assert_eq!(itens.iter().filter(|i| i.concluido_ms.is_some()).count(), CONCLUIDOS_MAX);
     }
 }
