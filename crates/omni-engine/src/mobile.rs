@@ -11,6 +11,7 @@ use std::{
 use tokio::sync::Notify;
 
 #[path = "fila.rs"] mod fila;
+#[path = "tunel.rs"] mod tunel;
 
 #[cfg(mobile_assets)]
 static ASSETS: include_dir::Dir<'_> = include_dir::include_dir!("$CARGO_MANIFEST_DIR/../../dist-mobile");
@@ -40,6 +41,8 @@ pub struct MobileRuntime {
     codex_descoberto_em: Mutex<u64>,
     /// Arquivos de cada pasta de projeto para o `@` do composer: (lido em, lista). Ver `arquivos_da_conversa`.
     arquivos: Mutex<HashMap<String, (u64, Arc<Vec<String>>)>>,
+    /// Link seguro pela Cloudflare (`tunel.rs`): listener, cloudflared e token próprios.
+    tunel: tunel::Tunel,
 }
 
 #[derive(Default)]
@@ -128,7 +131,7 @@ impl MobileRuntime {
             filas: Mutex::new(fila::carregar(dir)),
             history: Mutex::new(MobileHistory::default()),
             feeds: Mutex::new(omni_core::feed::FeedCache::default()),
-            codex_descoberto_em: Mutex::new(0), arquivos: Mutex::new(HashMap::new()) }
+            codex_descoberto_em: Mutex::new(0), arquivos: Mutex::new(HashMap::new()), tunel: tunel::Tunel::new(dir) }
     }
 }
 
@@ -372,6 +375,8 @@ pub fn settings(state: &EngineState, config: Option<MobileConfig>, rotate: bool)
             std::thread::spawn(move || serve_desfazer(porta));
         }
         *state.mobile.config.lock().map_err(|_|anyhow!("config poisoned"))? = config;
+        // "Trocar o código" vale também para quem entrou pelo link seguro.
+        if rotate { tunel::trocar_token(state); }
         // Rotacionar reinicia o listener junto: é o que derruba quem estava com o token antigo.
         state.mobile.changed.notify_one();
     }
@@ -444,6 +449,8 @@ pub fn totp(state: &EngineState, action: TotpAction) -> Result<EngineResponse> {
                 };
                 config.totp_secret = novo;
                 config.totp_confirmed = false;
+                // Cadastro novo: quem pareou pelo link seguro com o Authy antigo sai.
+                tunel::trocar_token(state);
             }
             TotpAction::Confirm { code } => {
                 if config.totp_secret.is_empty() { return Err(anyhow!("Gere o código do Authy primeiro")); }
@@ -455,6 +462,7 @@ pub fn totp(state: &EngineState, action: TotpAction) -> Result<EngineResponse> {
         }
         atomic_write_json(&state.state_file.with_file_name("mobile.json"),&*config)?;
     }
+    tunel::authy_mudou(state);
     settings(state,None,false)
 }
 
@@ -473,10 +481,17 @@ async fn parear(State(state): State<Arc<EngineState>>, Json(body): Json<Pareamen
 
 fn parear_em(state: &EngineState, codigo: &str, agora: u64) -> Result<Json<Value>,ApiError> {
     let config = state.mobile.config.lock().expect("config poisoned").clone();
+    conferir_pareamento(&config, &state.mobile.pareamento, codigo, agora)?;
+    Ok(Json(json!({"token":config.token})))
+}
+
+/// Confere o código do Authy com a trava de tentativas de `pareamento`. Separado de `parear_em`
+/// porque o link seguro (`tunel.rs`) usa a mesma conferência com trava e token próprios.
+fn conferir_pareamento(config: &MobileConfig, pareamento: &Mutex<Pareamento>, codigo: &str, agora: u64) -> Result<(),ApiError> {
     if !config.totp_confirmed || config.totp_secret.is_empty() {
         return Err(error(StatusCode::CONFLICT,"Configure o Authy na aba Celular do PC primeiro"));
     }
-    let mut pareamento = state.mobile.pareamento.lock().expect("pareamento poisoned");
+    let mut pareamento = pareamento.lock().expect("pareamento poisoned");
     let agora_ms = agora * 1000;
     pareamento.falhas.retain(|instante| agora_ms.saturating_sub(*instante) < TRAVA_MS);
     if pareamento.falhas.len() >= MAX_FALHAS {
@@ -486,7 +501,7 @@ fn parear_em(state: &EngineState, codigo: &str, agora: u64) -> Result<Json<Value
         Some(passo) if passo > pareamento.ultimo_passo => {
             pareamento.ultimo_passo = passo;
             pareamento.falhas.clear();
-            Ok(Json(json!({"token":config.token})))
+            Ok(())
         }
         // Passo já usado conta como erro: é exatamente a tentativa de reaproveitar um código visto.
         _ => {
@@ -500,7 +515,9 @@ pub fn start(state: Arc<EngineState>) {
     // A primeira leitura do histórico abre o começo de todo transcript de todas as contas: segundos,
     // numa máquina com muito histórico. Feita já na subida, quando ninguém está esperando, a primeira
     // abertura do celular ou da web encontra tudo pronto em vez de ficar carregando.
-    if state.mobile.config.lock().map(|config| config.enabled).unwrap_or(false) {
+    tunel::iniciar(state.clone());
+    let tunel_ligado = state.mobile.tunel.config.lock().map(|config| config.ligado).unwrap_or(false);
+    if tunel_ligado || state.mobile.config.lock().map(|config| config.enabled).unwrap_or(false) {
         let aquecer = state.clone();
         tokio::task::spawn_blocking(move || { historical_entries(&aquecer); });
     }
@@ -641,7 +658,7 @@ pub(crate) fn router(state: Arc<EngineState>) -> Router {
 /// mostrou o token do engine, que vale mais que o de dispositivo: é o próprio desktop.
 pub async fn local(state: Arc<EngineState>, method: &str, path: &str, body: Option<String>, body_base64: Option<String>,
     headers: Vec<(String, String)>) -> EngineResponse {
-    let app = rotas().layer(DefaultBodyLimit::max(32 * 1024)).with_state(state);
+    let app = rotas().merge(tunel::rotas_locais()).layer(DefaultBodyLimit::max(32 * 1024)).with_state(state);
     let corpo = match body_base64 {
         Some(codificado) => match base64_decode(&codificado) {
             Some(bytes) => axum::body::Body::from(bytes),
@@ -736,7 +753,12 @@ async fn same_origin(State(state): State<Arc<EngineState>>, request: Request, ne
         return error(StatusCode::UNAUTHORIZED,"Dispositivo não autorizado; leia o QR de novo no PC").into_response();
     }
     let mut response = next.run(request).await;
-    let headers = response.headers_mut();
+    cabecalhos_de_seguranca(response.headers_mut());
+    response
+}
+
+/// Cabeçalhos de toda resposta do servidor do celular (Tailscale e link seguro).
+fn cabecalhos_de_seguranca(headers: &mut HeaderMap) {
     headers.insert("cache-control","no-store".parse().unwrap());
     headers.insert("x-content-type-options","nosniff".parse().unwrap());
     headers.insert("referrer-policy","no-referrer".parse().unwrap());
@@ -744,7 +766,6 @@ async fn same_origin(State(state): State<Arc<EngineState>>, request: Request, ne
     // cores e o tamanho da fonte. Script continua só `'self'` — é ele que segura injeção de código;
     // estilo inline no máximo muda a aparência, e o markdown das mensagens já passa por sanitize.
     headers.insert("content-security-policy","default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data: blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'".parse().unwrap());
-    response
 }
 
 fn current(state: &EngineState, id: &str) -> Result<(omni_core::conversations::Conversation, Option<Arc<LiveSession>>), ApiError> {
