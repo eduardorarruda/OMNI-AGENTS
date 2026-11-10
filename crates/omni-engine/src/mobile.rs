@@ -28,6 +28,9 @@ pub struct MobileRuntime {
     serve_state: Mutex<(Option<String>,Option<String>)>,
     /// Tentativas de pareamento pelo Authy: instantes das falhas recentes e o último passo TOTP aceito.
     pareamento: Mutex<Pareamento>,
+    /// Último passo TOTP aceito, **um só para Tailscale e link seguro** e gravado em disco: um código
+    /// visto por cima do ombro não vale de novo nem pelo outro caminho, nem depois de reiniciar.
+    passo_totp: Mutex<u64>,
     status: Mutex<(Option<String>,Option<String>)>,
     changed: Notify,
     actions: Mutex<VecDeque<Action>>,
@@ -127,6 +130,7 @@ impl MobileRuntime {
             magic_dns: Mutex::new(None),
             serve_state: Mutex::new((None,None)),
             pareamento: Mutex::new(Pareamento::default()),
+            passo_totp: Mutex::new(omni_protocol::read_json_or_default::<PassoTotp>(&dir.join(PASSO_TOTP)).ultimo_passo),
             status: Mutex::new((None,None)),changed: Notify::new(),actions: Mutex::new(VecDeque::new()),pending: Notify::new(),
             filas: Mutex::new(fila::carregar(dir)),
             history: Mutex::new(MobileHistory::default()),
@@ -368,7 +372,7 @@ pub fn settings(state: &EngineState, config: Option<MobileConfig>, rotate: bool)
         }
         if config.enabled { preferir_tailscale(&mut config); validate(&config)?; }
         let anterior = state.mobile.config.lock().map_err(|_|anyhow!("config poisoned"))?.clone();
-        atomic_write_json(&state.state_file.with_file_name("mobile.json"),&config)?;
+        omni_protocol::atomic_write_secret_json(&state.state_file.with_file_name("mobile.json"),&config)?;
         if deixou_de_publicar(&anterior,&config) {
             let porta = anterior.bind.rsplit(':').next().and_then(|p|p.parse().ok()).unwrap_or(0);
             // Fora do caminho da tela: a CLI do Tailscale pode demorar, e a resposta não depende disto.
@@ -413,7 +417,24 @@ const MAX_FALHAS: usize = 5;
 const TRAVA_MS: u64 = 5 * 60_000;
 
 #[derive(Default)]
-pub struct Pareamento { falhas: VecDeque<u64>, ultimo_passo: u64 }
+pub struct Pareamento { falhas: VecDeque<u64> }
+
+const PASSO_TOTP: &str = "totp-passo.json";
+#[derive(Default, Serialize, Deserialize)]
+#[serde(default)]
+struct PassoTotp { ultimo_passo: u64 }
+
+/// O código confere e o passo dele ainda não foi usado (por nenhum dos dois caminhos). Marca como usado.
+fn codigo_novo(state: &EngineState, config: &MobileConfig, codigo: &str, agora: u64) -> bool {
+    let Some(passo) = totp_confere(&config.totp_secret, codigo.trim(), agora) else { return false };
+    let mut ultimo = state.mobile.passo_totp.lock().expect("passo poisoned");
+    if passo <= *ultimo { return false }
+    *ultimo = passo;
+    if let Err(erro) = omni_protocol::atomic_write_secret_json(&state.state_file.with_file_name(PASSO_TOTP), &PassoTotp { ultimo_passo: passo }) {
+        eprintln!("não consegui gravar o passo do Authy: {erro}");
+    }
+    true
+}
 
 /// Monta o TOTP a partir do segredo guardado. `None` com segredo corrompido.
 fn totp_de(secret: &str, conta: Option<&str>) -> Option<totp_rs::TOTP> {
@@ -460,7 +481,7 @@ pub fn totp(state: &EngineState, action: TotpAction) -> Result<EngineResponse> {
                 config.totp_confirmed = true;
             }
         }
-        atomic_write_json(&state.state_file.with_file_name("mobile.json"),&*config)?;
+        omni_protocol::atomic_write_secret_json(&state.state_file.with_file_name("mobile.json"),&*config)?;
     }
     tunel::authy_mudou(state);
     settings(state,None,false)
@@ -481,33 +502,29 @@ async fn parear(State(state): State<Arc<EngineState>>, Json(body): Json<Pareamen
 
 fn parear_em(state: &EngineState, codigo: &str, agora: u64) -> Result<Json<Value>,ApiError> {
     let config = state.mobile.config.lock().expect("config poisoned").clone();
-    conferir_pareamento(&config, &state.mobile.pareamento, codigo, agora)?;
+    conferir_pareamento(state, &config, codigo, agora)?;
     Ok(Json(json!({"token":config.token})))
 }
 
-/// Confere o código do Authy com a trava de tentativas de `pareamento`. Separado de `parear_em`
-/// porque o link seguro (`tunel.rs`) usa a mesma conferência com trava e token próprios.
-fn conferir_pareamento(config: &MobileConfig, pareamento: &Mutex<Pareamento>, codigo: &str, agora: u64) -> Result<(),ApiError> {
+/// Confere o código do Authy com a trava de tentativas do pareamento pelo Tailscale. O link seguro
+/// (`tunel.rs`) tem trava e aprovação próprias e só compartilha o `codigo_novo`.
+fn conferir_pareamento(state: &EngineState, config: &MobileConfig, codigo: &str, agora: u64) -> Result<(),ApiError> {
     if !config.totp_confirmed || config.totp_secret.is_empty() {
         return Err(error(StatusCode::CONFLICT,"Configure o Authy na aba Celular do PC primeiro"));
     }
-    let mut pareamento = pareamento.lock().expect("pareamento poisoned");
+    let mut pareamento = state.mobile.pareamento.lock().expect("pareamento poisoned");
     let agora_ms = agora * 1000;
     pareamento.falhas.retain(|instante| agora_ms.saturating_sub(*instante) < TRAVA_MS);
     if pareamento.falhas.len() >= MAX_FALHAS {
         return Err(error(StatusCode::TOO_MANY_REQUESTS,"Muitas tentativas erradas. Espere alguns minutos e tente de novo."));
     }
-    match totp_confere(&config.totp_secret, codigo.trim(), agora) {
-        Some(passo) if passo > pareamento.ultimo_passo => {
-            pareamento.ultimo_passo = passo;
-            pareamento.falhas.clear();
-            Ok(())
-        }
-        // Passo já usado conta como erro: é exatamente a tentativa de reaproveitar um código visto.
-        _ => {
-            pareamento.falhas.push_back(agora_ms);
-            Err(error(StatusCode::UNAUTHORIZED,"Código do Authy não confere. Use o código que está aparecendo agora."))
-        }
+    // Passo já usado conta como erro: é exatamente a tentativa de reaproveitar um código visto.
+    if codigo_novo(state, config, codigo, agora) {
+        pareamento.falhas.clear();
+        Ok(())
+    } else {
+        pareamento.falhas.push_back(agora_ms);
+        Err(error(StatusCode::UNAUTHORIZED,"Código do Authy não confere. Use o código que está aparecendo agora."))
     }
 }
 
@@ -550,7 +567,7 @@ pub fn start(state: Arc<EngineState>) {
                 Ok((address,atualizada,trocou)) => {
                     if trocou {
                         // Configuração gravada com loopback (a padrão) se corrige sozinha na subida.
-                        let _ = atomic_write_json(&state.state_file.with_file_name("mobile.json"),&atualizada);
+                        let _ = omni_protocol::atomic_write_secret_json(&state.state_file.with_file_name("mobile.json"),&atualizada);
                         *state.mobile.config.lock().expect("config poisoned") = atualizada.clone();
                     }
                     (Ok(address),atualizada)
