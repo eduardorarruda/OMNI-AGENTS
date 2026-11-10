@@ -123,6 +123,44 @@ pub fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> io::Result<()>
     fs::rename(temporary, path)
 }
 
+/// Como `atomic_write_json`, para arquivo com segredo (token, TOTP): no Unix nasce `0600`, só o dono
+/// lê. O temporário já é criado assim, então não há instante em que o segredo fique legível por outros.
+pub fn atomic_write_secret_json<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
+    use std::io::Write as _;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let encoded = serde_json::to_vec_pretty(value)?;
+    let temporary = path.with_extension("json.tmp");
+    let mut opcoes = fs::OpenOptions::new();
+    opcoes.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opcoes.mode(0o600);
+    }
+    let mut arquivo = opcoes.open(&temporary)?;
+    restrict_to_owner(&temporary)?; // o `.tmp` de uma escrita antiga pode ter outro modo
+    arquivo.write_all(&encoded)?;
+    arquivo.sync_all()?;
+    drop(arquivo);
+    fs::rename(temporary, path)
+}
+
+/// Deixa um arquivo (`0600`) ou pasta (`0700`) só para o dono, no Unix. Nada no Windows, onde a
+/// pasta do perfil do usuário já é privada.
+pub fn restrict_to_owner(path: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let modo = if fs::metadata(path)?.is_dir() { 0o700 } else { 0o600 };
+        fs::set_permissions(path, fs::Permissions::from_mode(modo))?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
 /// Lê um JSON, devolvendo o default quando o arquivo não existe ou está corrompido — todo store
 /// deste app é cache reconstruível, nunca fonte única.
 pub fn read_json_or_default<T: DeserializeOwned + Default>(path: &Path) -> T {
@@ -343,5 +381,28 @@ pub enum TotpAction {
 impl Default for MobileConfig {
     fn default() -> Self {
         Self { enabled: false, bind: "127.0.0.1:47322".into(), token: String::new(), serve: false, totp_secret: String::new(), totp_confirmed: false }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn arquivo_de_segredo_nasce_so_para_o_dono() {
+        use std::os::unix::fs::PermissionsExt;
+        // Sem `tempfile` aqui: o crate de protocolo não tem dependência de teste.
+        let pasta = std::env::temp_dir().join(format!("omni-protocol-segredo-{}", std::process::id()));
+        fs::create_dir_all(&pasta).unwrap();
+        let caminho = pasta.join("segredo.json");
+        fs::write(&caminho, "{}").unwrap();
+        fs::set_permissions(&caminho, fs::Permissions::from_mode(0o644)).unwrap();
+        atomic_write_secret_json(&caminho, &serde_json::json!({"token": "x"})).unwrap();
+        assert_eq!(fs::metadata(&caminho).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(read_json_or_default::<serde_json::Value>(&caminho)["token"], "x");
+        restrict_to_owner(&pasta).unwrap();
+        assert_eq!(fs::metadata(&pasta).unwrap().permissions().mode() & 0o777, 0o700);
+        fs::remove_dir_all(&pasta).unwrap();
     }
 }

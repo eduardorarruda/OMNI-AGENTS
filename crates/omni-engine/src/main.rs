@@ -171,6 +171,7 @@ async fn main() -> Result<()> {
     omni_core::cli_path::ampliar_path();
     let engine_dir = engine_dir()?;
     fs::create_dir_all(&engine_dir)?;
+    proteger_dados(&engine_dir);
     executable_identity(); // captura antes que uma atualização troque o arquivo
     let token = load_or_create_token(&engine_dir.join("engine.token"))?;
     let state_file = engine_dir.join("sessions.json");
@@ -1584,7 +1585,22 @@ fn load_or_create_token(path: &Path) -> Result<String> {
     }
     let token = random_token();
     fs::write(path, &token)?;
+    omni_protocol::restrict_to_owner(path)?;
     Ok(token)
+}
+
+/// Arquivos com segredo na pasta do engine: token do engine, do celular, do túnel e o Authy.
+const ARQUIVOS_DE_SEGREDO: [&str; 4] = ["engine.token", "mobile.json", "tunel.json", "totp-passo.json"];
+
+/// Pasta do engine `0700` e os segredos `0600` (Unix). Corrige também o que uma versão antiga gravou
+/// com o modo padrão. Falhar aqui não impede o engine de subir, mas fica no log.
+fn proteger_dados(dir: &Path) {
+    let alvos = std::iter::once(dir.to_path_buf()).chain(ARQUIVOS_DE_SEGREDO.iter().map(|nome| dir.join(nome)));
+    for alvo in alvos.filter(|alvo| alvo.exists()) {
+        if let Err(erro) = omni_protocol::restrict_to_owner(&alvo) {
+            eprintln!("não consegui restringir as permissões de {}: {erro}", alvo.display());
+        }
+    }
 }
 
 /// 32 bytes aleatórios em hex. Usado pelo token do engine e pelo token de dispositivo do celular.
@@ -1659,6 +1675,26 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn pasta_e_segredos_ficam_so_para_o_dono() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let modo = |c: &Path| fs::metadata(c).unwrap().permissions().mode() & 0o777;
+        for nome in ["mobile.json", "tunel.json", "sessions.json"] {
+            fs::write(dir.path().join(nome), "{}").unwrap();
+            fs::set_permissions(dir.path().join(nome), fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).unwrap();
+        proteger_dados(dir.path());
+        assert_eq!(modo(dir.path()), 0o700);
+        assert_eq!(modo(&dir.path().join("mobile.json")), 0o600);
+        assert_eq!(modo(&dir.path().join("tunel.json")), 0o600);
+        assert_eq!(modo(&dir.path().join("sessions.json")), 0o644, "só os arquivos de segredo");
+        load_or_create_token(&dir.path().join("engine.token")).unwrap();
+        assert_eq!(modo(&dir.path().join("engine.token")), 0o600);
+    }
 
     #[cfg(unix)]
     #[test]
