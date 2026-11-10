@@ -954,8 +954,32 @@ pub fn aprovar(state: &Arc<EngineState>, id: &str, no: &str, sim: bool) -> Resul
     Ok(())
 }
 
+/// Item do histórico sem chave nem senha: a rota aceita o token do celular.
+fn sem_segredos_no_item(mut item: Value) -> Value {
+    if let Some(texto) = item["text"].as_str() { item["text"] = json!(omni_core::exportar::sem_segredos(texto)); }
+    if let Some(linhas) = item["diff"]["linhas"].as_array_mut() {
+        for linha in linhas.iter_mut() {
+            if let Some(texto) = linha.as_str() { *linha = json!(omni_core::exportar::sem_segredos(texto)); }
+        }
+    }
+    item
+}
+
+/// A execução como sai pela rota (`GET /fluxos/execucoes/{id}`): saída, atividade e erro dos nós sem
+/// segredo. Só para mostrar — o executor segue com a saída original.
+pub fn para_a_tela(mut e: Execucao) -> Execucao {
+    let mascarar = |t: &str| omni_core::exportar::sem_segredos(t);
+    e.erro = e.erro.as_deref().map(mascarar);
+    for n in e.nos.values_mut() {
+        n.saida = mascarar(&n.saida);
+        n.atividade = mascarar(&n.atividade);
+        n.erro = n.erro.as_deref().map(mascarar);
+    }
+    e
+}
+
 /// O histórico de um nó, lido dos eventos que a CLI mandou: fala, ações e resultado — o mesmo
-/// leitor das conversas.
+/// leitor das conversas. Tudo passa por `sem_segredos`.
 pub fn historico(state: &EngineState, id: &str, no: &str) -> Result<Vec<Value>> {
     if !id_valido(id) || !id_valido(no) { return Err(anyhow!("Id inválido")); }
     let caminho = pasta_execucoes(state).join(id).join(format!("{no}.log"));
@@ -982,7 +1006,7 @@ pub fn historico(state: &EngineState, id: &str, no: &str) -> Result<Vec<Value>> 
             _ => {}
         }
     }
-    Ok(itens)
+    Ok(itens.into_iter().map(sem_segredos_no_item).collect())
 }
 
 /// Abre o nó numa conversa de verdade (terminal com a CLI retomando a sessão dele), no worktree da
@@ -1079,6 +1103,45 @@ mod tests {
 
         let tratado = rodar(fluxo("exit 3", true));
         assert_eq!((tratado.status.as_str(), tratado.nos["c"].caminho.as_deref(), tratado.nos["c"].voltas), ("concluido", Some("nao"), 1));
+    }
+
+    /// O histórico do nó chega ao celular (e logo pela internet): comando, saída e ações da CLI saem
+    /// sem chave nem senha. Chaves falsas, só de teste.
+    #[test]
+    fn historico_mascara_segredos() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = Arc::new(EngineState { persist_lock: Mutex::new(()), mobile: mobile::MobileRuntime::new(dir.path()),
+            token: "t".into(), state_file: dir.path().join("sessions.json"), sessions: Mutex::new(HashMap::new()), id_sequence: AtomicU64::new(1) });
+        let (chave, token) = ("sk-ant-abc123DEF456ghi789JKL012", "ghp_abcdefghijklmnopqrstuvwxyz0123456789");
+        let pasta = pasta_execucoes(&state).join("ex1");
+        fs::create_dir_all(&pasta).unwrap();
+        let eventos = [
+            json!({"type": "comando", "text": format!("curl -H 'x-api-key: {chave}' https://api")}),
+            json!({"type": "saida", "text": format!("GITHUB_TOKEN={token}")}),
+            json!({"type": "assistant", "message": {"role": "assistant", "content": [
+                {"type": "text", "text": format!("Usei {chave}")},
+                {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": format!("gh auth login --with-token {token}")}}]}}),
+            json!({"type": "item.completed", "item": {"type": "command_execution", "command": format!("export OPENAI={chave}")}}),
+            json!({"type": "item.completed", "item": {"type": "agent_message", "text": format!("token {token}")}}),
+        ];
+        fs::write(pasta.join("n1.log"), eventos.iter().map(|e| format!("{e}\n")).collect::<String>()).unwrap();
+        let itens = historico(&state, "ex1", "n1").unwrap();
+        assert_eq!(itens.len(), 6, "{itens:?}");
+        let tudo = serde_json::to_string(&itens).unwrap();
+        assert!(!tudo.contains(chave) && !tudo.contains(token), "{tudo}");
+    }
+
+    /// `GET /fluxos/execucoes/{id}` devolve a saída e a atividade de cada nó: também sem segredo.
+    #[test]
+    fn execucao_para_a_tela_mascara_saida_dos_nos() {
+        let chave = "sk-ant-abc123DEF456ghi789JKL012";
+        let mut e: Execucao = serde_json::from_value(json!({"id": "x", "fluxo": serde_json::to_value(fluxo_simples()).unwrap(), "projeto": "P",
+            "projeto_id": "p", "entrada": "x", "pasta": "/p", "status": "falhou", "erro": format!("falhou: {chave}"), "criado_ms": 1, "atualizado_ms": 1,
+            "nos": {"c": {"status": "falhou", "saida": format!("API_KEY={chave}"), "atividade": format!("Bash curl {chave}"), "erro": chave}}, "fila": []})).unwrap();
+        e = para_a_tela(e);
+        let tudo = serde_json::to_string(&e).unwrap();
+        assert!(!tudo.contains(chave), "{tudo}");
+        assert_eq!(e.nos["c"].status, "falhou");
     }
 
     /// Sem CLI nenhuma: entrada → aprovação para e espera; aprovar segue até o fim. Estado gravado

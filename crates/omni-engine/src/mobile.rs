@@ -946,7 +946,7 @@ async fn fluxos_iniciar(State(state): State<Arc<EngineState>>, via_local: Option
 }
 
 async fn fluxos_obter(RoutePath(id): RoutePath<String>, headers: HeaderMap) -> Response {
-    match super::fluxos::obter(&id) { Some(e) => com_etag(&headers,&json!(e)), None => error(StatusCode::NOT_FOUND,"Execução não encontrada").into_response() }
+    match super::fluxos::obter(&id) { Some(e) => com_etag(&headers,&json!(super::fluxos::para_a_tela(e))), None => error(StatusCode::NOT_FOUND,"Execução não encontrada").into_response() }
 }
 
 async fn fluxos_acao(State(state): State<Arc<EngineState>>, RoutePath((id, acao)): RoutePath<(String, String)>) -> Result<Json<Value>, ApiError> {
