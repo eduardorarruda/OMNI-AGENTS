@@ -14,7 +14,9 @@ import { mensagemNaoAchei, resolverCitado } from "./features/files/resolverCitad
 import { EVENTO_ABRIR_ARQUIVO } from "./mobile/anexos";
 import { QuickOpen } from "./features/files/QuickOpen";
 import { useWorkspace } from "./features/workspace/useWorkspace";
-import { collectResourceIds, findPane } from "./features/workspace/workspaceReducer";
+import { findPane } from "./features/workspace/workspaceReducer";
+import { sessoesAoFechar } from "./features/workspace/fecharProjetos";
+import type { Project } from "./types/workspace";
 import { RodapeDoProjeto, WorkspaceView } from "./features/workspace/WorkspaceView";
 import { useKanban } from "./features/kanban/useKanban";
 import { useKanbanDispatcher } from "./features/kanban/useKanbanDispatcher";
@@ -93,6 +95,15 @@ export function App() {
     [sessions]
   );
   const todosOsProjetos = useMemo(() => workspaces.flatMap((item) => item.projects), [workspaces]);
+
+  /** Encerra as sessões dos projetos que vão fechar (abas e agentes em segundo plano) e depois
+   *  fecha. Recusar a pergunta dos agentes em segundo plano não fecha nada. */
+  function fecharProjetos(fechando: Project[], depois: () => void) {
+    const outros = todosOsProjetos.filter((projeto) => !fechando.includes(projeto));
+    const ids = sessoesAoFechar(fechando, outros, sessions, (pergunta) => window.confirm(pergunta));
+    if (ids === null) return;
+    void Promise.allSettled(ids.map((id) => closeTerminal(id))).then(depois);
+  }
 
   function closeSettings() {
     setView(viewBeforeSettings);
@@ -306,16 +317,12 @@ export function App() {
         onShowWorkspace={(workspaceId) => { dispatch({ type: "SHOW_WORKSPACE", workspaceId }); setView("workspace"); }}
         onDeleteWorkspace={(workspaceId) => {
           const closingWorkspace = workspaces.find((item) => item.id === workspaceId);
-          const closing = (closingWorkspace?.projects ?? [])
-            .flatMap((project) => collectResourceIds(project.layout))
-            .map((id) => closeTerminal(id));
-          void Promise.allSettled(closing).then(() => dispatch({ type: "DELETE_WORKSPACE", workspaceId }));
+          fecharProjetos(closingWorkspace?.projects ?? [], () => dispatch({ type: "DELETE_WORKSPACE", workspaceId }));
         }}
         onMoveWorkspace={(workspaceId, beforeId) => dispatch({ type: "MOVE_WORKSPACE", workspaceId, beforeId })}
         onRemoveProjectFromWorkspace={(workspaceId, projectId) => {
           const project = workspaces.find((item) => item.id === workspaceId)?.projects.find((item) => item.id === projectId);
-          const closing = project ? collectResourceIds(project.layout).map((id) => closeTerminal(id)) : [];
-          void Promise.allSettled(closing).then(() => dispatch({ type: "CLOSE_PROJECT_IN_WORKSPACE", workspaceId, projectId }));
+          fecharProjetos(project ? [project] : [], () => dispatch({ type: "CLOSE_PROJECT_IN_WORKSPACE", workspaceId, projectId }));
         }}
         onRenameWorkspace={(workspaceId, name) => dispatch({ type: "RENAME_WORKSPACE", workspaceId, name })}
         onSetWorkspaceIcon={(workspaceId, icone) => dispatch({ type: "SET_WORKSPACE_ICON", workspaceId, icone })}
@@ -368,8 +375,7 @@ export function App() {
         }}
         onCloseProject={(projectId) => {
           const project = workspace.projects.find((item) => item.id === projectId);
-          const closing = project ? collectResourceIds(project.layout).map((id) => closeTerminal(id)) : [];
-          void Promise.allSettled(closing).then(() => dispatch({ type: "CLOSE_PROJECT", projectId }));
+          fecharProjetos(project ? [project] : [], () => dispatch({ type: "CLOSE_PROJECT", projectId }));
         }}
         onMoveProject={(projectId, beforeId) => dispatch({ type: "MOVE_PROJECT", projectId, beforeId })}
         onAttachTerminal={(sessionId, title) => {
