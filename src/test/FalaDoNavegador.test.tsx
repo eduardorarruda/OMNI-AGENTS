@@ -57,7 +57,7 @@ it("navegador sem serviço de fala (Brave, Opera) explica o motivo em vez de \"s
   render(<Teste />);
   await act(async () => { await userEvent.click(screen.getByRole("button", { name: "Falar o prompt" })); });
   act(() => { Falso.ultimo.onerror?.({ error: "network" }); Falso.ultimo.onend?.(); });
-  expect(screen.getByRole("status")).toHaveTextContent(/Use o Chrome ou o Edge/);
+  expect(screen.getByRole("status")).toHaveTextContent(/Baixe o modelo de voz.*use o Chrome ou o Edge/);
   expect(sessionStorage.getItem("omni-fala-sem-servico")).toBe("1");
 });
 
