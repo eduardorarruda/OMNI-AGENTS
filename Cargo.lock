@@ -2807,6 +2807,7 @@ dependencies = [
  "tokio",
  "toml 0.9.12+spec-1.1.0",
  "uuid",
+ "webkit2gtk",
  "webview2-com",
  "windows-core 0.61.2",
 ]

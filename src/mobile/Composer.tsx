@@ -7,7 +7,7 @@ import { useModoLeve } from "../lib/modoLeve";
 import { iconForPath, iconStyle } from "../features/files/fileIcons";
 import { tamanhoLegivel, type Anexo } from "./anexos";
 import type { Comando } from "./api";
-import { aplicarVocabulario, aprenderPalavras, FALA_SEM_SERVICO, falaDoNavegador, falaSemServico, gravar, lerVocabulario, navegadorGrava, ouvir, substituicoes, corrigir, transcrever, useVozInstalada, type Escuta, type Gravacao, type Palavra } from "./voz";
+import { aplicarVocabulario, aprenderPalavras, ehBrave, FALA_SEM_SERVICO, falaDoNavegador, motivoDoMicrofone, preferirVozDoPc, falaSemServico, gravar, lerVocabulario, SO_EM_HTTPS, navegadorGrava, ouvir, substituicoes, corrigir, transcrever, useVozInstalada, type Escuta, type Gravacao, type Palavra } from "./voz";
 
 interface ComposerProps {
   texto: string;
@@ -308,8 +308,8 @@ function BotaoDeVoz({ voz, texto, aoTexto, aoFim, travado }: { voz: Voz; texto: 
       try {
         gravacao.current = await gravar(aoTrecho);
         setFase("gravando");
-      } catch {
-        setErro("Sem acesso ao microfone. Libere a permissão do navegador e tente de novo.");
+      } catch (motivo) {
+        setErro(motivoDoMicrofone(motivo));
       }
       return;
     }
@@ -399,6 +399,23 @@ function BotaoDeFala({ texto, aoTexto, aoFim, travado, aoSemServico }: { texto: 
   );
 }
 
+/** Endereço http (o `http://100.x` do Tailscale): o navegador não deixa gravar. O botão fica, mas só
+ *  explica o porquê, em vez de o microfone sumir sem motivo. */
+function BotaoSemHttps() {
+  const [erro, setErro] = useState<string | null>(null);
+  return (
+    <>
+      <button type="button" className="composer-botao composer-voz" aria-label="Falar o prompt" title={SO_EM_HTTPS}
+        onClick={() => setErro(SO_EM_HTTPS)}>
+        <WarningIcon aria-hidden className="h-4 w-4" />
+      </button>
+      {erro && <span role="status" className="composer-voz-erro">{erro}</span>}
+    </>
+  );
+}
+
+const paginaInsegura = () => typeof window !== "undefined" && !window.isSecureContext;
+
 // Fora de conversa (ex.: criar fluxo): o engine usa só o vocabulário da pessoa, sem o do projeto.
 const VOZ_SEM_CONVERSA: Voz = { transcrever: (audio) => transcrever("-", audio), corrigir: (texto) => corrigir("-", texto) };
 
@@ -406,13 +423,15 @@ const VOZ_SEM_CONVERSA: Voz = { transcrever: (audio) => transcrever("-", audio),
 export function Microfone({ texto, onTexto, travado = false }: { texto: string; onTexto: (texto: string) => void; travado?: boolean }) {
   const atual = useRef(texto);
   atual.current = texto;
-  const podeVozDoPc = useVozInstalada() && navegadorGrava();
+  const vozInstalada = useVozInstalada();
+  const podeVozDoPc = vozInstalada && navegadorGrava();
   const [semServico, setSemServico] = useState(falaSemServico);
   const aoTexto = (novo: string) => { atual.current = novo; onTexto(novo); };
-  if (falaDoNavegador() && !(semServico && podeVozDoPc)) {
+  if (falaDoNavegador() && !preferirVozDoPc({ brave: ehBrave(), semServico, vozDoPc: podeVozDoPc })) {
     return <BotaoDeFala travado={travado} texto={() => atual.current} aoFim={() => undefined} aoTexto={aoTexto}
       aoSemServico={podeVozDoPc ? () => setSemServico(true) : undefined} />;
   }
+  if (vozInstalada && paginaInsegura()) return <BotaoSemHttps />;
   return podeVozDoPc ? <BotaoDeVoz voz={VOZ_SEM_CONVERSA} travado={travado} texto={() => atual.current} aoFim={() => undefined} aoTexto={aoTexto} /> : null;
 }
 
@@ -434,7 +453,7 @@ export function Composer({ texto, onTexto, anexos, onAdicionar, onRemover, onEnv
   const ditado = useDitado(textoAtual, onTexto, Boolean(voz) || Boolean(falaDoNavegador()));
   const podeVozDoPc = Boolean(voz) && navegadorGrava();
   const [semServico, setSemServico] = useState(falaSemServico);
-  const usarFala = Boolean(falaDoNavegador()) && !(semServico && podeVozDoPc);
+  const usarFala = Boolean(falaDoNavegador()) && !preferirVozDoPc({ brave: ehBrave(), semServico, vozDoPc: podeVozDoPc });
   // Menção aberta: onde começa o `@`, o que foi digitado depois dele e o que achou.
   const [mencao, setMencao] = useState<{ inicio: number; busca: string } | null>(null);
   const [sugestoes, setSugestoes] = useState<string[]>([]);
@@ -676,7 +695,7 @@ export function Composer({ texto, onTexto, anexos, onAdicionar, onRemover, onEnv
                 textoAtual.current = novo;
                 onTexto(novo);
               }} />
-            ) : voz && podeVozDoPc && (
+            ) : voz && !podeVozDoPc && paginaInsegura() ? <BotaoSemHttps /> : voz && podeVozDoPc && (
               <BotaoDeVoz voz={voz} travado={ocupado} texto={() => textoAtual.current} aoFim={ditado.terminou} aoTexto={(novo) => {
                 // O ref já anda junto: o próximo trecho chega antes do React renderizar este.
                 textoAtual.current = novo;

@@ -39,7 +39,50 @@ export interface Escuta { parar: () => void; cancelar: () => void }
 
 /** Erro `network` da fala do navegador: ele não alcança o serviço de fala. Brave, Opera, Vivaldi e o
  *  Chromium puro sempre dão isso (não têm o serviço do Google); Chrome e Edge, só sem internet. */
-export const FALA_SEM_SERVICO = "A fala deste navegador não está disponível (Brave, Opera e Chromium não têm o serviço). Use o Chrome ou o Edge, ou baixe a voz no PC em Configurações.";
+export const FALA_SEM_SERVICO = "Este navegador não tem o serviço de fala (Brave, Opera e Chromium não têm). Baixe o modelo de voz em Configurações > Voz, no OMNI do PC, para usar a voz do próprio PC; ou use o Chrome ou o Edge.";
+
+const LIBERAR_NO_NAVEGADOR = "O navegador bloqueou o microfone. Clique no cadeado ao lado do endereço, libere o microfone para esta página e tente de novo.";
+const LIBERAR_NO_SISTEMA = "O sistema bloqueou o microfone. Confira nas configurações de privacidade do computador se o OMNI pode usar o microfone e tente de novo.";
+const SEM_MICROFONE = "Nenhum microfone encontrado. Conecte um microfone e tente de novo.";
+const MICROFONE_OCUPADO = "O microfone está em uso por outro programa. Feche o outro programa (chamada, gravador) e tente de novo.";
+export const SO_EM_HTTPS = "O navegador só libera o microfone em endereço https. Use o link https do Acesso remoto.";
+
+function noApp(): boolean {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+}
+function paginaSegura(): boolean {
+  return typeof window !== "undefined" && window.isSecureContext;
+}
+
+/** Frase para a pessoa quando o microfone não liga (`getUserMedia` falhou). Cada motivo pede uma ação
+ *  diferente: liberar a permissão, conectar um microfone, fechar outro programa ou trocar para https. */
+export function motivoDoMicrofone(erro: unknown, onde: { seguro: boolean; noApp: boolean } = { seguro: paginaSegura(), noApp: noApp() }): string {
+  if (!onde.seguro) return SO_EM_HTTPS;
+  const nome = erro instanceof Error || erro instanceof DOMException ? erro.name : "";
+  if (nome === "NotAllowedError" || nome === "PermissionDeniedError" || nome === "SecurityError") return onde.noApp ? LIBERAR_NO_SISTEMA : LIBERAR_NO_NAVEGADOR;
+  if (nome === "NotFoundError" || nome === "DevicesNotFoundError" || nome === "OverconstrainedError") return SEM_MICROFONE;
+  if (nome === "NotReadableError" || nome === "TrackStartError" || nome === "AbortError") return MICROFONE_OCUPADO;
+  return "Não deu para ligar o microfone. Tente de novo; se continuar, confira se ele está conectado.";
+}
+
+/** Frase para o erro da fala do navegador; `null` quando não é erro (silêncio ou o nosso cancelar). */
+export function motivoDaFala(codigo: string): string | null {
+  if (codigo === "not-allowed") return LIBERAR_NO_NAVEGADOR;
+  if (codigo === "network" || codigo === "service-not-allowed") return FALA_SEM_SERVICO;
+  if (codigo === "audio-capture") return `${SEM_MICROFONE} Se houver um, ele pode estar em uso por outro programa.`;
+  return null;
+}
+
+/** Brave avisa de si em `navigator.brave`; ele tem o objeto de fala, mas não o serviço do Google. */
+export function ehBrave(): boolean {
+  return typeof navigator !== "undefined" && "brave" in navigator;
+}
+
+/** Grava pela voz do PC (whisper) em vez da fala do navegador: quando o navegador não tem o serviço
+ *  (Brave sempre; outros depois do primeiro erro) e o modelo está baixado. */
+export function preferirVozDoPc({ brave, semServico, vozDoPc }: { brave: boolean; semServico: boolean; vozDoPc: boolean }): boolean {
+  return vozDoPc && (brave || semServico);
+}
 const CHAVE_SEM_SERVICO = "omni-fala-sem-servico";
 /** Já deu `network` nesta aba: o microfone passa a usar a voz do PC, se houver. */
 export function falaSemServico(): boolean {
@@ -74,8 +117,10 @@ export function ouvir(aoTexto: (falado: string) => void, aoFim: (erro: string | 
     };
     r.onerror = (evento) => {
       // "no-speech" é só silêncio; "aborted" é o nosso cancelar.
-      if (evento.error === "not-allowed" || evento.error === "service-not-allowed") { erro = "Sem acesso ao microfone. Libere a permissão do navegador e tente de novo."; ativo = false; }
-      else if (evento.error === "network") { erro = FALA_SEM_SERVICO; ativo = false; marcarSemServico(); }
+      const motivo = motivoDaFala(evento.error);
+      if (!motivo) return;
+      erro = motivo; ativo = false;
+      if (motivo === FALA_SEM_SERVICO) marcarSemServico();
     };
     r.onend = () => {
       guardado = juntar(guardado, atual);
@@ -180,6 +225,8 @@ export interface Gravacao {
 }
 
 export async function gravar(aoTrecho: (audio: Blob) => void): Promise<Gravacao> {
+  // Endereço http: o navegador nem expõe `mediaDevices`.
+  if (!navigator.mediaDevices?.getUserMedia) throw new TypeError("microfone indisponível nesta página");
   const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
   const contexto = new AudioContext();
   const cortador = criarCortador((amostras) => aoTrecho(paraPcm16(amostras)));
