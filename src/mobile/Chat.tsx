@@ -592,8 +592,9 @@ export function AgentWorking({ desde, provider, tokens }: AgentWorkingProps) {
 }
 
 interface PairingScreenProps {
-  /** Troca o código do Authy pelo token. Lança com a mensagem do servidor quando recusa. */
-  parear: (codigo: string) => Promise<void>;
+  /** Troca o código do Authy pelo token. Lança com a mensagem do servidor quando recusa. Pelo link
+   *  seguro, chama `aoAguardar` quando o código passou e falta o dono aprovar no PC. */
+  parear: (codigo: string, aoAguardar?: () => void) => Promise<void>;
 }
 
 /**
@@ -607,14 +608,15 @@ export function PairingScreen({ parear }: PairingScreenProps) {
   const [codigo, setCodigo] = useState("");
   const [erro, setErro] = useState<string | null>(null);
   const [enviando, setEnviando] = useState(false);
+  const [aguardando, setAguardando] = useState(false);
 
   async function enviar(event: FormEvent) {
     event.preventDefault();
     if (codigo.length !== 6 || enviando) return;
     setEnviando(true); setErro(null);
-    try { await parear(codigo); }
+    try { await parear(codigo, () => setAguardando(true)); }
     catch (reason) { setErro(reason instanceof Error ? reason.message : String(reason)); setCodigo(""); }
-    finally { setEnviando(false); }
+    finally { setEnviando(false); setAguardando(false); }
   }
 
   return (
@@ -635,6 +637,9 @@ export function PairingScreen({ parear }: PairingScreenProps) {
             {enviando ? "Conferindo…" : "Parear"}
           </button>
         </form>
+        {aguardando && <p role="status" className="text-xs text-warning">
+          Código certo. Aguardando você aprovar no computador — toque em <strong>Permitir</strong> no PC.
+        </p>}
         {erro && <p role="alert" className="text-danger text-xs">{erro}</p>}
       </div>
       <p className="text-[11px] text-text-muted">

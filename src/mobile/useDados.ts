@@ -37,6 +37,30 @@ function useVisivel(): boolean {
  * Extraído do `MobileApp` porque a página de computador (`src/web`) precisa exatamente do mesmo
  * carregamento — mesma API, mesmo poll, mesmo pareamento. O que muda entre as duas é só o layout.
  */
+/** Resposta do `/parear`: pelo Tailscale vem o token direto; pelo link seguro vem um pedido que o
+ *  dono precisa aprovar no PC, e o celular pergunta até ter resposta. */
+interface RespostaDoPareamento { token?: string; pedido?: string; expira_em_s?: number }
+
+/** Intervalo entre as perguntas "já aprovaram?". */
+export const ESPERA_DA_APROVACAO_MS = 2000;
+
+export async function trocarCodigoPorToken(codigo: string, aoAguardar?: () => void): Promise<string> {
+  const json = { method: "POST", headers: { "Content-Type": "application/json" } };
+  let resposta = await request<RespostaDoPareamento>("/parear", { ...json, body: JSON.stringify({ codigo }) });
+  if (resposta.token) return resposta.token;
+  if (!resposta.pedido) throw new Error("O PC respondeu de um jeito inesperado. Tente de novo.");
+  aoAguardar?.();
+  const pedido = resposta.pedido;
+  // Folga sobre o prazo do PC: quem decide que expirou é ele (410), isto só evita esperar para sempre.
+  const limite = Date.now() + ((resposta.expira_em_s ?? 120) + 30) * 1000;
+  while (!resposta.token) {
+    if (Date.now() > limite) throw new Error("O pedido expirou sem aprovação. Digite um código novo.");
+    await new Promise((pronto) => window.setTimeout(pronto, ESPERA_DA_APROVACAO_MS));
+    resposta = await request<RespostaDoPareamento>("/parear/pedido", { ...json, body: JSON.stringify({ pedido }) });
+  }
+  return resposta.token;
+}
+
 export function useDados(aberta: string | null = null) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [vistas, setVistas] = useState<Record<string, string>>(lerVistas);
@@ -143,12 +167,8 @@ export function useDados(aberta: string | null = null) {
   );
 
   const parear = useCallback(
-    async (codigo: string) => {
-      const { token } = await request<{ token: string }>("/parear", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ codigo }),
-      });
+    async (codigo: string, aoAguardar?: () => void) => {
+      const token = await trocarCodigoPorToken(codigo, aoAguardar);
       salvarToken(token);
       setSemAcesso(false);
       setError(null);

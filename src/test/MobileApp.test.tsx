@@ -972,3 +972,52 @@ describe("fila do OMNI", () => {
     await waitFor(() => expect(screen.queryByLabelText("Mensagens na fila")).not.toBeInTheDocument(), { timeout: 5_000 });
   });
 });
+
+describe("pareamento pelo link seguro (aprovação no PC)", () => {
+  beforeEach(() => { localStorage.clear(); window.location.hash = ""; });
+
+  it("código certo fica esperando o PC aprovar e só então entra", async () => {
+    let aprovado = false;
+    const perguntas: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "/parear") return new Response(JSON.stringify({ pedido: "segredo-do-pedido", expira_em_s: 120 }), { status: 202 });
+      if (url === "/parear/pedido") {
+        perguntas.push(JSON.parse(String(init?.body)).pedido);
+        return aprovado ? new Response(JSON.stringify({ token: "token-do-tunel" }))
+          : new Response(JSON.stringify({ estado: "aguardando" }), { status: 202 });
+      }
+      const token = (init?.headers as Record<string, string> | undefined)?.["X-Omni-Token"];
+      if (token !== "token-do-tunel") return new Response(JSON.stringify({ error: "não autorizado" }), { status: 401 });
+      return new Response(JSON.stringify(url === "/projetos" ? PROJETOS : []));
+    }));
+    render(<MobileApp />);
+    const campo = await screen.findByLabelText("Código do Authy");
+    await act(async () => {
+      await userEvent.type(campo, "287082");
+      await userEvent.click(screen.getByRole("button", { name: "Parear" }));
+    });
+    expect(await screen.findByText(/Aguardando você aprovar no computador/)).toBeInTheDocument();
+    await waitFor(() => expect(perguntas.length).toBeGreaterThan(0), { timeout: 5000 });
+    expect(perguntas[0]).toBe("segredo-do-pedido");
+    expect(localStorage.getItem("omni-token")).toBeNull();
+    aprovado = true;
+    expect(await screen.findByRole("button", { name: /Abrir projeto/ }, { timeout: 6000 })).toBeInTheDocument();
+    expect(localStorage.getItem("omni-token")).toBe("token-do-tunel");
+  });
+
+  it("recusado no PC mostra o motivo e não guarda token", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url === "/parear") return new Response(JSON.stringify({ pedido: "p", expira_em_s: 120 }), { status: 202 });
+      if (url === "/parear/pedido") return new Response(JSON.stringify({ error: "O pedido foi recusado no computador." }), { status: 403 });
+      return new Response(JSON.stringify({ error: "não autorizado" }), { status: 401 });
+    }));
+    render(<MobileApp />);
+    const campo = await screen.findByLabelText("Código do Authy");
+    await act(async () => {
+      await userEvent.type(campo, "287082");
+      await userEvent.click(screen.getByRole("button", { name: "Parear" }));
+    });
+    expect(await screen.findByText(/recusado no computador/, undefined, { timeout: 6000 })).toBeInTheDocument();
+    expect(localStorage.getItem("omni-token")).toBeNull();
+  });
+});
